@@ -1,6 +1,15 @@
-# himitsu
+<center>
+  <h1>himitsu<sup>秘密</sup></h1>
+</center>
 
 SOPS-based secrets management with group recipient control. Wraps [sops](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age) to provide team-friendly encrypted variable management with automatic key rotation, GitHub collaborator sync, and typed codegen.
+
+## Features
+
+- Secrets are associated to groups and packaged for each app + env combo in a separate build step - no more repeating the same secrets over and over for each env.
+- `himitsu codegen ` builds *typed* packages that provide an importable module with type hints
+- `himitsu ci` can be used in a github action to act as a self-serve mechanism for onboarding team members and/or adding keys 
+- Use `himitsu decrypt` to write plaintext age locally and decrypt rather than hitting AWS everytime if using KMS  (saves on costs)
 
 ## Install
 
