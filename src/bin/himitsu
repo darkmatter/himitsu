@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HIMITSU_VERSION="0.1.0"
+HIMITSU_LIB="${HIMITSU_LIB:-$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)}"
+
+if [[ ! -d "$HIMITSU_LIB" ]]; then
+  echo "error: cannot locate himitsu lib directory" >&2
+  exit 1
+fi
+
+source "$HIMITSU_LIB/common.sh"
+
+usage() {
+  cat <<EOF
+himitsu $HIMITSU_VERSION — SOPS-based secrets management
+
+Usage: himitsu <command> [options]
+
+Commands:
+  init                        Scaffold a new himitsu directory
+  group   add|rm <name>       Manage recipient groups
+  recipient add|rm [name]     Manage recipients within a group
+  sync                        Sync recipients, updatekeys, and push GH secrets
+  ci                          Run CI checks and auto-fix recipient state
+  codegen <lang> <path>       Generate typed config from decrypted vars
+  encrypt                     Encrypt plaintext var files
+  decrypt                     Decrypt sops var files
+  set <group> <key> <value>   Set a variable in a group's sops file
+
+Options:
+  -d, --dir <path>            Himitsu directory (default: auto-detect)
+  -h, --help                  Show this help
+  -v, --version               Show version
+EOF
+}
+
+HIMITSU_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--dir)
+      HIMITSU_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -v|--version)
+      echo "himitsu $HIMITSU_VERSION"
+      exit 0
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+COMMAND="${1:-}"
+shift || true
+
+if [[ -z "$COMMAND" ]]; then
+  usage
+  exit 1
+fi
+
+case "$COMMAND" in
+  init)
+    if [[ -z "$HIMITSU_DIR" ]]; then
+      HIMITSU_DIR="${HIMITSU_DEFAULT_DIR:-.meta/himitsu}"
+    fi
+    export HIMITSU_DIR
+    source "$HIMITSU_LIB/init.sh"
+    cmd_init "$@"
+    ;;
+  group|recipient|sync|ci|codegen|encrypt|decrypt|set)
+    if [[ -z "$HIMITSU_DIR" ]]; then
+      HIMITSU_DIR="$(find_himitsu_root)"
+    fi
+    export HIMITSU_DIR
+    load_config
+
+    case "$COMMAND" in
+      group)
+        source "$HIMITSU_LIB/group.sh"
+        cmd_group "$@"
+        ;;
+      recipient)
+        source "$HIMITSU_LIB/recipient.sh"
+        cmd_recipient "$@"
+        ;;
+      sync)
+        source "$HIMITSU_LIB/sync.sh"
+        cmd_sync "$@"
+        ;;
+      ci)
+        source "$HIMITSU_LIB/ci.sh"
+        cmd_ci "$@"
+        ;;
+      codegen)
+        source "$HIMITSU_LIB/codegen.sh"
+        cmd_codegen "$@"
+        ;;
+      encrypt)
+        source "$HIMITSU_LIB/crypto.sh"
+        cmd_encrypt "$@"
+        ;;
+      decrypt)
+        source "$HIMITSU_LIB/crypto.sh"
+        cmd_decrypt "$@"
+        ;;
+      set)
+        source "$HIMITSU_LIB/crypto.sh"
+        cmd_set "$@"
+        ;;
+    esac
+    ;;
+  *)
+    die "unknown command: $COMMAND"
+    ;;
+esac
