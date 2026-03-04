@@ -8,14 +8,14 @@ This document gives detailed workflows for two common scenarios:
 It assumes the vNext architecture described in `docs/ARCHITECTURE.md` and the
 sharing model in `docs/SHARING.md`.
 
-For backend pattern tradeoffs (app-as-backend, dedicated backend, server
-backend), see `docs/BACKENDS.md`.
+For remote pattern tradeoffs (app-as-remote, dedicated remote, server remote),
+see `docs/BACKENDS.md`.
 
 ## Assumptions
 
 - You use `age` keys for encryption.
 - Your local state lives in `~/.himitsu/`.
-- Backends are git repositories under `~/.himitsu/data/<org>/<repo>/`.
+- Remotes are git repositories under `~/.himitsu/data/<org>/<repo>/`.
 - Shared secret files are stored as `vars/<env>/<KEY>.age`.
 - Sharing commands use signed envelopes and inbox processing.
 
@@ -28,7 +28,7 @@ Laptop A and Laptop B safely.
 
 ### Architecture for this use case
 
-- One backend repo (example: `yourname/passwords`).
+- One remote repo (example: `yourname/passwords`).
 - One recipient group for your own devices (example: `devices`).
 - Each device has its own age keypair (recommended).
 
@@ -50,28 +50,28 @@ What this does:
 2. Generates your local age key under `~/.himitsu/keys/age.txt`.
 3. Creates global config at `~/.himitsu/config.yaml`.
 
-### Step 2: Create your password backend
+### Step 2: Create your password remote
 
 ```bash
-himitsu backend create github --org yourname --name passwords
+himitsu remote add --github --org yourname --name passwords
 ```
 
 What this does:
 
 1. Creates private GitHub repo `yourname/passwords`.
 2. Clones it into `~/.himitsu/data/yourname/passwords/`.
-3. Sets it as active/default backend (if configured to do so).
+3. Sets it as active/default remote (if configured to do so).
 
 ### Step 3: Register Laptop A as recipient
 
 ```bash
-himitsu -b yourname/passwords recipient add laptop-a --self --group devices
+himitsu -r yourname/passwords recipient add laptop-a --self --group devices
 ```
 
 What this does:
 
 1. Reads Laptop A public key from `~/.himitsu/keys/age.txt`.
-2. Writes recipient file in backend recipients tree.
+2. Writes recipient file in the remote's recipients tree.
 3. Makes Laptop A eligible to decrypt future secrets encrypted for `devices`.
 
 ### Step 4: Add passwords
@@ -79,9 +79,9 @@ What this does:
 Use one environment namespace for personal data, for example `personal`.
 
 ```bash
-himitsu -b yourname/passwords set personal GITHUB_TOKEN "ghp_xxx"
-himitsu -b yourname/passwords set personal BANK_PIN "1234"
-himitsu -b yourname/passwords set personal EMAIL_APP_PASSWORD "xxxx-xxxx-xxxx"
+himitsu -r yourname/passwords set personal GITHUB_TOKEN "ghp_xxx"
+himitsu -r yourname/passwords set personal BANK_PIN "1234"
+himitsu -r yourname/passwords set personal EMAIL_APP_PASSWORD "xxxx-xxxx-xxxx"
 ```
 
 Each command writes/updates:
@@ -93,7 +93,7 @@ Each command writes/updates:
 ### Step 5: Push to remote so other devices can pull
 
 ```bash
-himitsu -b yourname/passwords backend push
+himitsu -r yourname/passwords remote push
 ```
 
 This creates a normal git commit and pushes encrypted files only.
@@ -104,18 +104,18 @@ On Laptop B:
 
 ```bash
 himitsu init
-himitsu backend add yourname/passwords
+himitsu remote add yourname/passwords
 ```
 
-At this point Laptop B has the backend clone, but it may not yet be a recipient.
+At this point Laptop B has the remote clone, but it may not yet be a recipient.
 
 ### Step 7: Add Laptop B recipient and re-key
 
 On Laptop B, export its public key:
 
 ```bash
-himitsu -b yourname/passwords recipient add laptop-b --self --group devices
-himitsu -b yourname/passwords backend push
+himitsu -r yourname/passwords recipient add laptop-b --self --group devices
+himitsu -r yourname/passwords remote push
 ```
 
 This commits Laptop B's public key to the recipient tree. However, existing
@@ -125,9 +125,9 @@ which only an existing recipient can do.
 On **Laptop A** (which can already decrypt), pull and re-key:
 
 ```bash
-himitsu -b yourname/passwords backend pull
-himitsu -b yourname/passwords sync
-himitsu -b yourname/passwords backend push
+himitsu -r yourname/passwords remote pull
+himitsu -r yourname/passwords sync
+himitsu -r yourname/passwords remote push
 ```
 
 `sync` re-encrypts all secrets for the updated recipient set (now including
@@ -136,7 +136,7 @@ Laptop B).
 On Laptop B, pull the re-keyed secrets:
 
 ```bash
-himitsu -b yourname/passwords backend pull
+himitsu -r yourname/passwords remote pull
 ```
 
 ### Step 8: Verify access from both devices
@@ -144,8 +144,8 @@ himitsu -b yourname/passwords backend pull
 On each device:
 
 ```bash
-himitsu -b yourname/passwords ls personal
-himitsu -b yourname/passwords get personal GITHUB_TOKEN
+himitsu -r yourname/passwords ls personal
+himitsu -r yourname/passwords get personal GITHUB_TOKEN
 ```
 
 Expected result:
@@ -158,8 +158,8 @@ Expected result:
 When you update passwords on any device:
 
 1. `set` secret(s)
-2. `backend push`
-3. On other devices: `backend pull`
+2. `remote push`
+3. On other devices: `remote pull`
 
 ### Device lost/stolen workflow
 
@@ -168,19 +168,19 @@ If Laptop B is compromised:
 1. Remove its recipient:
 
    ```bash
-   himitsu -b yourname/passwords recipient rm laptop-b --group devices
+   himitsu -r yourname/passwords recipient rm laptop-b --group devices
    ```
 
 2. Re-key all affected secrets:
 
    ```bash
-   himitsu -b yourname/passwords sync
+   himitsu -r yourname/passwords sync
    ```
 
 3. Push the rotation:
 
    ```bash
-   himitsu -b yourname/passwords backend push
+   himitsu -r yourname/passwords remote push
    ```
 
 After this, old Laptop B key can no longer decrypt newly re-encrypted files.
@@ -205,19 +205,19 @@ You do **not** need a separate `*-secrets` repository to start.
 
 There are three valid patterns:
 
-1. **No dedicated backend yet (ad-hoc share):**
+1. **No dedicated remote yet (ad-hoc share):**
    - You can run `himitsu share send --value ...` directly.
    - Useful for one-off sharing.
-   - Tradeoff: weaker local source-of-truth/audit compared to storing in backend first.
-2. **App repo as backend:**
-   - `acme/payments-app` itself is the backend (`backend: acme/payments-app`).
+   - Tradeoff: weaker local source-of-truth/audit compared to storing in a remote first.
+2. **App repo as remote:**
+   - `acme/payments-app` itself is the remote (`remote: acme/payments-app`).
    - No extra repo required.
-3. **Dedicated secrets backend (recommended for scale):**
+3. **Dedicated secrets remote (recommended for scale):**
    - App repo points to `acme/payments-secrets`.
    - Best when multiple repos/environments need shared lifecycle controls.
 
 So yes: `acme/payments-app` can share with `coopmoney/app` **without** an extra
-source secrets repo, as long as the destination exposes an inbox flow (or you
+source secrets remote, as long as the destination exposes an inbox flow (or you
 target their inbox repo such as `coopmoney/secrets-inbox`).
 
 Example direct share (no dedicated source secrets repo):
@@ -231,13 +231,13 @@ himitsu share send \
 
 ### Scenario setup used in this walkthrough
 
-This walkthrough uses pattern 3 (dedicated backends) because it is easier to
+This walkthrough uses pattern 3 (dedicated remotes) because it is easier to
 reason about ownership and rotation at scale.
 
 - Source app repo: `acme/payments-app`
-- Source secrets backend: `acme/payments-secrets`
+- Source secrets remote: `acme/payments-secrets`
 - Target app repo: `acme/ledger-app`
-- Target secrets backend: `acme/ledger-secrets`
+- Target secrets remote: `acme/ledger-secrets`
 - External team keys repo: `github.com/coopmoney/keys`
 - External team inbox repo: `coopmoney/secrets-inbox`
 
@@ -248,39 +248,39 @@ Secret to share:
 
 ### Part A: Share from one repo to another repo you own
 
-#### Step 1: Ensure both projects are backend-bound
+#### Step 1: Ensure both projects are remote-bound
 
-In each app repo, `.himitsu.yaml` should point to the intended backend.
+In each app repo, `.himitsu.yaml` should point to the intended remote.
 
 Example (`acme/payments-app/.himitsu.yaml`):
 
 ```yaml
-backend: acme/payments-secrets
+remote: acme/payments-secrets
 ```
 
 Example (`acme/ledger-app/.himitsu.yaml`):
 
 ```yaml
-backend: acme/ledger-secrets
+remote: acme/ledger-secrets
 ```
 
-If you choose pattern 2 (app repo as backend), this step becomes:
+If you choose pattern 2 (app repo as remote), this step becomes:
 
 ```yaml
 # payments-app/.himitsu.yaml
-backend: acme/payments-app
+remote: acme/payments-app
 
 # ledger-app/.himitsu.yaml
-backend: acme/ledger-app
+remote: acme/ledger-app
 ```
 
-#### Step 2: Write secret in source backend
+#### Step 2: Write secret in source remote
 
 From `payments-app`:
 
 ```bash
 himitsu set prod STRIPE_WEBHOOK_SECRET "whsec_xxx"
-himitsu backend push
+himitsu remote push
 ```
 
 This stores encrypted source-of-truth in `acme/payments-secrets`.
@@ -301,21 +301,21 @@ What happens:
 3. Signs envelope with sender signing key.
 4. Opens PR adding `.himitsu/inbox/<id>.json` in target inbox flow.
 
-#### Step 4: Accept in target backend
+#### Step 4: Accept in target remote
 
 In target workflow (or locally in `ledger-secrets`):
 
 ```bash
 himitsu inbox list --transport github_pr
 himitsu inbox accept <envelope-id>
-himitsu backend push
+himitsu remote push
 ```
 
 Accept action:
 
 1. Validates signature and replay status.
 2. Decrypts payload.
-3. Re-encrypts secret into target backend format.
+3. Re-encrypts secret into target remote's format.
 4. Commits encrypted file.
 
 #### Step 5: Consume in target app repo
@@ -323,17 +323,17 @@ Accept action:
 From `ledger-app`:
 
 ```bash
-himitsu backend pull
+himitsu remote pull
 himitsu get prod STRIPE_WEBHOOK_SECRET
 ```
 
-Now the secret exists in both backends, with independent lifecycle afterward.
+Now the secret exists in both remotes, with independent lifecycle afterward.
 
 ### Part B: Share the same secret with another team
 
-#### Step 1: Configure external team source in backend config
+#### Step 1: Configure external team source in remote config
 
-In source backend `himitsu.yaml`:
+In source remote `himitsu.yaml`:
 
 ```yaml
 remote_sources:
@@ -379,7 +379,7 @@ On their side, the receiver workflow should:
 1. Trigger on `.himitsu/inbox/*.json` PR changes.
 2. Run `himitsu inbox validate`.
 3. Run `himitsu inbox accept --from-pr`.
-4. Route secret to destination backend/path according to their policy.
+4. Route secret to destination remote/path according to their policy.
 5. Commit or open internal PR.
 
 Your responsibility ends at delivering a valid signed encrypted envelope.
@@ -409,13 +409,13 @@ Likely causes:
 
 - device key not in recipient set
 - secrets not re-keyed after recipient change
-- wrong backend selected
+- wrong remote selected
 
 Fix:
 
-1. Check backend with `-b` explicitly.
+1. Check remote with `-r` explicitly.
 2. Confirm recipient entry exists.
-3. Run `sync` then `backend push/pull`.
+3. Run `sync` then `remote push/pull`.
 
 ### "Share sent but receiver cannot accept"
 

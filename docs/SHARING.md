@@ -207,7 +207,7 @@ encryption and Ed25519 envelope signatures.
 5. Evaluate sender/path policy.
 6. Check expiration if present.
 7. Decrypt payload.
-8. Re-encrypt into backend format (`vars/<env>/<KEY>.age`).
+8. Re-encrypt into remote's format (`vars/<env>/<KEY>.age`).
 9. Commit or PR according to local policy.
 10. Record envelope as processed.
 

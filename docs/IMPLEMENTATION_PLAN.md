@@ -65,14 +65,14 @@ This document defines an execution plan for the vNext architecture:
 ### Goals
 
 - Implement config loading and mode detection.
-- Implement backend resolution and local secret operations.
+- Implement remote resolution and local secret operations.
 
 ### Deliverables
 
 - Global + project config loader.
 - CWD to HOME mode detection (with fallback: `.git` without `.himitsu.yaml`
   falls through to user mode).
-- Backend management: `create`, `add`, `push`, `pull`, `status`.
+- Remote management: `add`, `push`, `pull`, `status`.
 - Git CLI wrapper for clone/commit/push/pull operations.
 - `set/get/ls/encrypt/decrypt` using `age` Rust crate (native, no subprocess).
 - `group add|rm|ls` and `recipient add|rm|ls`.
@@ -224,38 +224,36 @@ This document defines an execution plan for the vNext architecture:
 
 ---
 
-## Phase 8 - Targets, Codegen, and Import
+## Phase 8 - Sync, Codegen, and Import
 
 ### Goals
 
-- Implement target workflows for application integration.
+- Implement sync destinations for project-level encrypted secret delivery.
 - Implement typed codegen for downstream consumers.
 - Implement import from external secret stores.
 
 ### Deliverables
 
-- `target apply` for encrypted symlinks.
-- `target render` for decrypted outputs.
-- `target clean` for secure cleanup.
-- Permission hardening for rendered plaintext.
+- `sync` command writes encrypted `.age` files to declared project destinations.
+- Autosync configuration (`autosync: true`, trigger on `set`/`commit`/`push`).
+- Context isolation enforcement (project mode only sees its own remote).
 - `codegen` command with TypeScript, Go, and Python output.
 - `import --sops <path>` for SOPS-encrypted YAML/JSON files.
 - `import --op <ref>` for 1Password items via `op` CLI.
 
 ### Acceptance Criteria
 
-- Symlink targets are idempotent and repairable.
-- Rendered targets are explicit-only and cleaned correctly.
+- `sync` writes encrypted files to project without plaintext.
+- Autosync triggers correctly based on configured event.
 - Codegen produces valid typed output for each supported language.
 - SOPS import decrypts and re-encrypts all keys into `vars/<env>/<KEY>.age`.
-- 1Password import fetches and encrypts items into backend format.
+- 1Password import fetches and encrypts items into remote's format.
 
 ### Risks
 
-- Cross-platform symlink behavior differences.
-- Plaintext leaks if destination handling is unsafe.
 - SOPS format variations (YAML vs JSON, nested vs flat keys).
 - 1Password CLI version/auth differences across platforms.
+- Autosync timing edge cases (concurrent mutations from multiple devices).
 
 ---
 
@@ -325,13 +323,13 @@ This document defines an execution plan for the vNext architecture:
 
 - [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
 - [ ] M1: Rust scaffold builds, `--help` works (Phase 1)
-- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/backend (Phase 2)
+- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)
 - [ ] M5: Nostr send/receive end-to-end (Phase 5)
 - [ ] M6: Email/ENS/Nostr identity resolvers with caching (Phase 6)
 - [ ] M7: Schema validation and autocomplete (Phase 7)
-- [ ] M8: Targets + codegen + import (Phase 8)
+- [ ] M8: Sync + codegen + import (Phase 8)
 - [ ] M9: Rust binary is default, shell archived (Phase 9)
 
 ---

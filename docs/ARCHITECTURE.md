@@ -18,14 +18,14 @@ for:
 
 ## 2) Core Model
 
-### 2.1 Backends
+### 2.1 Remotes
 
-A backend is a git repo containing encrypted secrets and metadata. Backends are
+A remote is a git repo containing encrypted secrets and metadata. Remotes are
 cloned into:
 
 `~/.himitsu/data/<org>/<repo>/`
 
-Multiple projects can point at the same backend.
+Multiple projects can point at the same remote.
 
 ### 2.2 Modes
 
@@ -36,8 +36,8 @@ Himitsu resolves context by walking from CWD to `$HOME`:
 2. If `.git` is found but no `.himitsu.yaml` exists, fall through to user mode.
 3. Otherwise run in **user mode**.
 
-Project mode reads `<repo>/.himitsu.yaml` for backend binding.
-User mode uses `~/.himitsu/config.yaml` default backend or `-b <org/repo>`.
+Project mode reads `<repo>/.himitsu.yaml` for remote binding.
+User mode uses `~/.himitsu/config.yaml` default remote or `-r <org/repo>`.
 
 ### 2.3 Secret Storage
 
@@ -60,13 +60,13 @@ diffs simple and allows fast listing/search without decrypting everything.
 
 ```text
 ~/.himitsu/
-├── config.yaml                    # User config (default backend, relays, etc.)
+├── config.yaml                    # User config (default remote, relays, etc.)
 ├── keys/
 │   ├── age.txt                    # Age private key
 │   ├── signing_ed25519            # Envelope signing private key
 │   └── signing_ed25519.pub       # Envelope signing public key
 ├── data/
-│   └── <org>/<repo>/              # Backend clones
+│   └── <org>/<repo>/              # Remote clones
 ├── cache/
 │   ├── remote-identities/         # Pulled identities (github, well-known, ENS)
 │   └── transport/nostr/           # Relay caches/checkpoints
@@ -76,11 +76,11 @@ diffs simple and allows fast listing/search without decrypting everything.
     └── inbox.db                   # Replay-protection + envelope processing state
 ```
 
-### 3.2 Backend layout
+### 3.2 Remote layout
 
 ```text
 ~/.himitsu/data/<org>/<repo>/
-├── himitsu.yaml                   # Backend config (policies, remotes, targets)
+├── himitsu.yaml                   # Remote config (policies, identity sources, sync)
 ├── data.json                      # Group/env/app metadata
 ├── vars/
 │   ├── common/
@@ -103,7 +103,7 @@ diffs simple and allows fast listing/search without decrypting everything.
 
 ```yaml
 # <project>/.himitsu.yaml
-backend: myorg/secrets
+remote: myorg/secrets
 
 codegen:
   lang: typescript
@@ -116,7 +116,7 @@ codegen:
 
 ```yaml
 # ~/.himitsu/config.yaml
-default_backend: myorg/secrets
+default_remote: myorg/secrets
 
 nostr:
   relays:
@@ -128,10 +128,10 @@ sharing:
   default_transport: github_pr
 ```
 
-### 4.2 Backend config
+### 4.2 Remote config
 
 ```yaml
-# backend himitsu.yaml
+# remote himitsu.yaml
 policies:
   - path_prefix: "vars/common/"
     include: ["group:all"]
@@ -140,7 +140,7 @@ policies:
     include: ["group:admins", "remote:github:coopmoney/keys#team=security"]
     exclude: ["group:contractors"]
 
-remote_sources:
+identity_sources:
   - id: coopmoney_keys
     kind: github_keys_repo
     repo: coopmoney/keys
@@ -155,18 +155,6 @@ remote_sources:
     kind: ens_text_record
     key_public: himitsu_public_key
     key_inbox: himitsu_inbox
-
-targets:
-  - name: stripeEncrypted
-    type: encrypted_symlink
-    source: vars/prod/STRIPE_KEY.age
-    destination: ~/code/app/config/stripe_key.age
-
-  - name: appEnv
-    type: decrypted_file
-    source: vars/dev/
-    format: dotenv
-    destination: ~/code/app/.env.local
 ```
 
 ## 5) Recipient Resolution
@@ -216,7 +204,7 @@ Update semantics:
 - `himitsu recipient remote sync` fetches fresh data and updates the lockfile.
 - On subsequent operations, pinned fingerprints are verified before use.
 - Manual `--force` flag bypasses pin verification (with warning).
-- Lockfile should be committed to the backend repo for team-wide pinning.
+- Lockfile should be committed to the remote repo for team-wide pinning.
 
 ## 6) Sharing Architecture
 
@@ -232,18 +220,52 @@ The full spec lives in `docs/SHARING.md`.
 - Email + well-known identity resolution
 - ENS identity resolution
 
-## 7) Targets
+## 7) Sync and Context Isolation
 
-Two target types are supported:
+### 7.1 Sync destinations
 
-1. `encrypted_symlink`: safe default, links `.age` files into app paths.
-2. `decrypted_file`: explicit render command writes plaintext output.
+Projects declare which secrets they need via `.himitsu.yaml`. The encrypted
+`.age` files are committed to the project repo so that secrets are available
+without external fetches. `himitsu sync` writes encrypted files from the remote
+clone into the project.
 
-Safety rules:
+No plaintext is ever written to disk or committed. Secrets are always stored and
+synced in encrypted form.
 
-- no implicit plaintext rendering in `sync`/`ci`
-- rendered plaintext files use strict permissions
-- `target clean` removes rendered artifacts
+### 7.2 Autosync
+
+When `autosync` is enabled in the project config, mutations propagate to sync
+destinations automatically:
+
+```yaml
+# <project>/.himitsu.yaml
+remote: myorg/secrets
+autosync: true       # default: false
+autosync_on: push    # "set", "commit", or "push" (default: "push")
+```
+
+- `set`: sync immediately after `himitsu set`
+- `commit`: sync when changes are committed to the remote
+- `push`: sync when `himitsu remote push` is run
+
+### 7.3 Context isolation
+
+Project mode only shows secrets belonging to the project's remote. A project
+cannot implicitly access secrets from other remotes (e.g. personal secrets).
+
+To grant a project access to a secret from another remote (e.g. a personal
+password), the user must explicitly share it via the inbox flow:
+
+```bash
+# From user mode, share a personal secret with a project remote
+himitsu -r me/passwords share send \
+  --to github:acme/app-secrets \
+  --path vars/prod/PERSONAL_API_KEY
+```
+
+The project remote must accept the envelope through its inbox before the secret
+becomes available. This ensures all cross-context access is auditable and goes
+through proper authorization.
 
 ## 8) Rust Rewrite
 
@@ -253,7 +275,7 @@ The shell implementation is replaced by a Rust workspace.
 
 - `cli`: command parsing and UX
 - `config`: mode detection, config loading, schema validation
-- `backend`: backend discovery and secret file I/O
+- `remote`: remote discovery, resolution, secret file I/O, sync
 - `git`: git CLI wrapper (clone, commit, push, pull, status)
 - `crypto`: age encryption/decryption (via `age` crate) + Ed25519 envelope signing
 - `policy`: recipient policy engine
@@ -261,7 +283,6 @@ The shell implementation is replaced by a Rust workspace.
 - `protocol`: envelope/profile/payload models + canonical JSON
 - `transport`: transport trait + GitHub PR inbox + Nostr relay adapters
 - `inbox`: list/accept/reject/replay-tracking pipeline
-- `targets`: apply/render/clean
 - `schema`: static+dynamic schema generation
 - `codegen`: typed config generation (TypeScript, Go, Python)
 - `import`: external source importers (SOPS, 1Password)
@@ -273,20 +294,22 @@ The Ed25519 signing keypair is used for envelope authentication.
 - **Generation**: `himitsu init` generates `~/.himitsu/keys/signing_ed25519` and
   `signing_ed25519.pub` if they do not exist.
 - **Storage**: private key is never committed; public key is published via
-  profile or committed to backend `recipients/` for verification.
+  profile or committed to the remote's `recipients/` for verification.
 - **Rotation**: `himitsu key rotate --signing` generates a new keypair and
   optionally publishes the updated public key to configured profiles.
 - **Backup**: users are responsible for backing up `~/.himitsu/keys/`. The
   signing key is not recoverable if lost.
 
-### 8.3 CLI continuity
+### 8.3 CLI surface
 
 Keep existing semantics where possible:
 
 - `init`, `set`, `get`, `ls`, `encrypt`, `decrypt`, `sync`
-- `recipient add|rm|ls`, `group add|rm|ls`, `backend create|add|push|pull|status`
-- add/expand `share`, `inbox`, `target`, `schema`, `codegen`
-- new: `import` (SOPS, 1Password)
+- `recipient add|rm|ls`, `group add|rm|ls`
+- `remote add|push|pull|status`
+- `share send`, `inbox list|accept|reject`
+- `schema refresh`, `codegen`
+- `import --sops|--op`
 
 ## 9) Security Model
 
@@ -324,7 +347,7 @@ Receiver automation (in recipient repo) can:
 
 1. validate envelope signature and policy
 2. decrypt payload with inbox key
-3. re-encrypt into destination backend format
+3. re-encrypt into destination remote's format
 4. commit or open internal PR
 5. annotate result for audit trail
 
@@ -343,7 +366,7 @@ Relay metadata is untrusted; confidentiality is enforced by payload encryption.
 
 ### 13.1 Import sources
 
-`himitsu import` brings secrets from external systems into a backend:
+`himitsu import` brings secrets from external systems into a remote:
 
 ```bash
 # Import from SOPS-encrypted YAML/JSON
@@ -376,6 +399,8 @@ Import is always additive: existing secrets are not overwritten unless
 - no plaintext storage in repositories
 - no GPG recipient support (age-only; GPG keys from the shell implementation are
   not carried forward)
+- no alternative storage backends (v1 is always local filesystem; keychain,
+  remote server, etc. are future considerations)
 
 ## 15) Detailed Implementation Plan
 
@@ -386,9 +411,19 @@ deliverables, risks, and acceptance criteria.
 
 For hands-on end-to-end walkthroughs, see `docs/USE_CASES.md`.
 
-## 17) Backend Strategy and Server Model
+## 17) Future: Storage Backend Abstraction
 
-For backend-mode comparisons and server backend feedback (including Cloudflare
-Workers and public hosted service considerations), see `docs/BACKENDS.md`.
+v1 always stores secrets on the local filesystem under `~/.himitsu/`. Future
+versions may introduce alternative storage backends:
 
-For concrete HTTP API contracts for `himitsu server`, see `docs/SERVER_API.md`.
+- `local` (default, current behavior)
+- `keychain` (macOS Keychain, GNOME Keyring, Windows Credential Manager)
+- `server` (hosted service, e.g. `https://server.com/secrets`)
+
+When storage is non-local, some features are unavailable (e.g. sync
+destinations cannot write `.age` files to disk if the backend is a remote
+server). The remote/sync model remains the same; only the local storage layer
+changes.
+
+For backend-mode comparisons and server considerations, see `docs/BACKENDS.md`.
+For HTTP API contracts, see `docs/SERVER_API.md`.
