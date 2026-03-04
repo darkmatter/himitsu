@@ -76,11 +76,14 @@ This document defines an execution plan for the vNext architecture:
 - Git CLI wrapper for clone/commit/push/pull operations.
 - `set/get/ls/encrypt/decrypt` using `age` Rust crate (native, no subprocess).
 - `group add|rm|ls` and `recipient add|rm|ls`.
+- SQLite secret index (`~/.himitsu/state/index.db`): incremental updates on
+  mutations, `himitsu search` across all remotes.
 
 ### Acceptance Criteria
 
 - Core local commands produce expected filesystem results.
 - Equivalent flows succeed on baseline fixtures.
+- `himitsu search` returns results across multiple remotes.
 
 ### Risks
 
@@ -323,7 +326,7 @@ This document defines an execution plan for the vNext architecture:
 
 - [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
 - [ ] M1: Rust scaffold builds, `--help` works (Phase 1)
-- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote (Phase 2)
+- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)
 - [ ] M5: Nostr send/receive end-to-end (Phase 5)

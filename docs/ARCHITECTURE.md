@@ -73,6 +73,7 @@ diffs simple and allows fast listing/search without decrypting everything.
 ├── locks/
 │   └── sources.lock.json          # Pinned remote source fingerprints/commits (see §5.1)
 └── state/
+    ├── index.db                   # Secret index across all remotes (see §7.4)
     └── inbox.db                   # Replay-protection + envelope processing state
 ```
 
@@ -248,10 +249,11 @@ autosync_on: push    # "set", "commit", or "push" (default: "push")
 - `commit`: sync when changes are committed to the remote
 - `push`: sync when `himitsu remote push` is run
 
-### 7.3 Context isolation
+### 7.3 Context isolation (mutations)
 
-Project mode only shows secrets belonging to the project's remote. A project
-cannot implicitly access secrets from other remotes (e.g. personal secrets).
+Mutation commands (`set`, `get`, `encrypt`, `decrypt`, `codegen`) are scoped to
+the active remote. In project mode, only the project's remote is writable. A
+project cannot implicitly mutate or decrypt secrets from other remotes.
 
 To grant a project access to a secret from another remote (e.g. a personal
 password), the user must explicitly share it via the inbox flow:
@@ -266,6 +268,48 @@ himitsu -r me/passwords share send \
 The project remote must accept the envelope through its inbox before the secret
 becomes available. This ensures all cross-context access is auditable and goes
 through proper authorization.
+
+### 7.4 Global search index
+
+`himitsu search` searches across **all** remotes the user has access to,
+regardless of which project or mode is active. Search is read-only discovery; it
+never decrypts values.
+
+```bash
+himitsu search stripe          # Fuzzy search across all remotes
+himitsu search -r me/passwords bank   # Scope to a specific remote
+```
+
+The index is a SQLite database at `~/.himitsu/state/index.db`:
+
+```sql
+CREATE TABLE remotes (
+  id       TEXT PRIMARY KEY,   -- "org/repo"
+  url      TEXT,
+  synced_at TEXT               -- ISO 8601
+);
+
+CREATE TABLE secrets (
+  id        INTEGER PRIMARY KEY,
+  remote_id TEXT NOT NULL REFERENCES remotes(id),
+  env       TEXT NOT NULL,     -- "prod", "dev", "common", etc.
+  path      TEXT NOT NULL,     -- "vars/prod/STRIPE_KEY.age"
+  key_name  TEXT NOT NULL,     -- "STRIPE_KEY"
+  updated_at TEXT,
+  UNIQUE(remote_id, path)
+);
+```
+
+Index maintenance:
+
+- **Incremental**: updated on `set`, `sync`, `remote pull`, `import`,
+  `inbox accept`.
+- **Periodic**: `himitsu search --refresh` or a background fetch can pull
+  file listings from remotes the user has access to but has not cloned locally
+  (via GitHub API or git ls-remote). This allows discovering secrets in remotes
+  you're a recipient of without needing a full local clone.
+- **No plaintext**: the index stores only metadata (key names, paths, envs,
+  remotes). Secret values are never indexed.
 
 ## 8) Rust Rewrite
 
@@ -283,6 +327,7 @@ The shell implementation is replaced by a Rust workspace.
 - `protocol`: envelope/profile/payload models + canonical JSON
 - `transport`: transport trait + GitHub PR inbox + Nostr relay adapters
 - `inbox`: list/accept/reject/replay-tracking pipeline
+- `index`: SQLite secret index, cross-remote search, periodic refresh
 - `schema`: static+dynamic schema generation
 - `codegen`: typed config generation (TypeScript, Go, Python)
 - `import`: external source importers (SOPS, 1Password)
@@ -307,6 +352,7 @@ Keep existing semantics where possible:
 - `init`, `set`, `get`, `ls`, `encrypt`, `decrypt`, `sync`
 - `recipient add|rm|ls`, `group add|rm|ls`
 - `remote add|push|pull|status`
+- `search` (cross-remote)
 - `share send`, `inbox list|accept|reject`
 - `schema refresh`, `codegen`
 - `import --sops|--op`
