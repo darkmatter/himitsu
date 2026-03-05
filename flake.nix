@@ -11,7 +11,8 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        runtimeDeps = with pkgs; [
+        # Dependencies for the legacy shell implementation only
+        shellDeps = with pkgs; [
           sops
           age
           jq
@@ -43,7 +44,7 @@
             chmod +x $out/bin/himitsu-shell
 
             wrapProgram $out/bin/himitsu-shell \
-              --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
+              --prefix PATH : ${pkgs.lib.makeBinPath shellDeps} \
               --set HIMITSU_LIB "$out/lib/himitsu"
 
             runHook postInstall
@@ -56,7 +57,7 @@
           };
         };
 
-        # Rust implementation
+        # Rust implementation (age-only)
         himitsu = pkgs.rustPlatform.buildRustPackage {
           pname = "himitsu";
           version = "0.1.0";
@@ -83,7 +84,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = runtimeDeps ++ (with pkgs; [
+          packages = shellDeps ++ (with pkgs; [
             bats
             shellcheck
             cargo

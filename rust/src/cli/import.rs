@@ -1,41 +1,27 @@
-use clap::{Args, Subcommand};
+use clap::Args;
 
-/// Import secrets from external stores.
+/// Import secrets from external stores (SOPS, 1Password).
 #[derive(Debug, Args)]
 pub struct ImportArgs {
-    #[command(subcommand)]
-    pub command: ImportCommand,
-}
+    /// Path to a SOPS-encrypted file to import.
+    #[arg(long)]
+    pub sops: Option<String>,
 
-#[derive(Debug, Subcommand)]
-pub enum ImportCommand {
-    /// Import from a SOPS-encrypted file.
-    Sops {
-        /// Path to the SOPS file.
-        file: String,
+    /// 1Password reference to import (e.g. op://vault/item or op://vault/item/field).
+    #[arg(long)]
+    pub op: Option<String>,
 
-        /// Target environment.
-        #[arg(long)]
-        env: String,
+    /// Target environment.
+    #[arg(long)]
+    pub env: String,
 
-        /// Overwrite existing secrets.
-        #[arg(long)]
-        overwrite: bool,
-    },
+    /// Secret key name (required for single-field 1Password import).
+    #[arg(long)]
+    pub key: Option<String>,
 
-    /// Import from 1Password.
-    Op {
-        /// 1Password reference (e.g. op://vault/item/field).
-        reference: String,
-
-        /// Target environment.
-        #[arg(long)]
-        env: String,
-
-        /// Secret key name (required for single field import).
-        #[arg(long)]
-        key: Option<String>,
-    },
+    /// Overwrite existing secrets.
+    #[arg(long)]
+    pub overwrite: bool,
 }
 
 pub fn run(_args: ImportArgs) {

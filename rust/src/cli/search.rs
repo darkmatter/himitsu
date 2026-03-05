@@ -5,6 +5,10 @@ use clap::Args;
 pub struct SearchArgs {
     /// Search query to match against key names.
     pub query: String,
+
+    /// Refresh the search index before querying.
+    #[arg(long)]
+    pub refresh: bool,
 }
 
 pub fn run(_args: SearchArgs) {

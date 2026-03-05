@@ -149,6 +149,8 @@ cargo fmt -- --check              # Format check
 
 - [ ] Implement config loading and mode detection.
 - [ ] Implement remote resolution and local secret operations.
+- [ ] Add optional macOS Keychain storage for generated age private keys.
+- [ ] Add `SOPS_AGE_KEY_CMD` key resolution that checks Keychain first, then file fallback.
 
 ### Modules / files
 
@@ -159,6 +161,9 @@ rust/src/
 │   ├── global.rs                 # GlobalConfig: parse ~/.himitsu/config.yaml
 │   ├── project.rs                # ProjectConfig: parse <repo>/.himitsu.yaml
 │   └── remote.rs                 # RemoteConfig: parse remote himitsu.yaml
+├── keyring/
+│   ├── mod.rs                    # KeyProvider trait + scope/fingerprint mapping
+│   └── macos.rs                  # macOS Keychain adapter via `security` CLI
 ├── remote/
 │   ├── mod.rs                    # Remote discovery, resolution, list known remotes
 │   └── store.rs                  # Secret file I/O: read/write vars/<env>/<KEY>.age
@@ -180,6 +185,9 @@ rust/src/
 │   ├── recipient.rs              # Full implementation
 │   ├── group.rs                  # Full implementation
 │   └── remote.rs                 # Full implementation (add/push/pull/status)
+src/lib/
+├── common.sh                     # `SOPS_AGE_KEY_CMD` keychain-first lookup helper
+└── init.sh                       # Optional keychain save when generating age key
 tests/
 ├── integration/
 │   ├── init_test.rs              # CLI integration tests for init
@@ -192,6 +200,13 @@ tests/
 │   └── search_test.rs            # cross-remote search
 └── fixtures/                     # (from Phase 0)
 ```
+
+### Keychain indexing (when enabled)
+
+- Scope pointer item: `service=io.darkmatter.himitsu.agekey.scope.v1`, `account=gh:<org>:<repo>:<group>` with value `<fingerprint>`.
+- Key material item: `service=io.darkmatter.himitsu.agekey.byfp.v1`, `account=<fingerprint>` with value `AGE-SECRET-KEY-...`.
+- Resolution order for `SOPS_AGE_KEY_CMD`: scope pointer → fingerprint key item → `SOPS_AGE_KEY_FILE` fallback.
+- Scope values are normalized (`org`/`repo` lowercase, `group` escaped) to ensure unique matching across all org/repo/group combos.
 
 ### Test cases
 
@@ -213,6 +228,12 @@ cargo test --test '*'             # Integration tests only
 - [ ] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
 - [ ] `crypto::age::encrypt` with multiple recipients succeeds
 - [ ] `crypto::age::decrypt` with wrong key fails with clear error
+- [ ] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
+- [ ] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
+- [ ] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
+- [ ] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
+- [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
+- [ ] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
 - [ ] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
 - [ ] `remote::store::read_secret` reads and decrypts `.age` file
 - [ ] `remote::store::list_secrets` returns all keys for an env
@@ -228,6 +249,10 @@ cargo test --test '*'             # Integration tests only
 
 - [ ] `init` creates `~/.himitsu/` with keys/, config.yaml, state/
 - [ ] `init` is idempotent (running twice doesn't error or overwrite keys)
+- [ ] `init` with keychain enabled stores generated private key in Keychain
+- [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
+- [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`
+- [ ] `SOPS_AGE_KEY_CMD` falls back to file-based key when keychain item is missing
 - [ ] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
 - [ ] `get prod API_KEY` returns `"secret"` after set
 - [ ] `set` then `get` with multiline values preserves newlines
@@ -257,11 +282,15 @@ cargo test --test '*'             # Integration tests only
 - [ ] Core local commands produce expected filesystem results.
 - [ ] Equivalent flows succeed on baseline fixtures.
 - [ ] `himitsu search` returns results across multiple remotes.
+- [ ] Keychain mode stores generated age keys and decrypts via `SOPS_AGE_KEY_CMD` without plaintext key files required.
+- [ ] Key lookup remains uniquely addressable for all `<org>/<repo>/<group>` scopes.
 
 ### Risks
 
 - Edge cases with path expansion and symlinked directories.
 - Value quoting/newline handling in `set`.
+- Keychain access prompts/ACL behavior may break CI or non-interactive sessions.
+- Scope normalization bugs could cause key lookup misses.
 
 ---
 

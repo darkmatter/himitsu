@@ -21,13 +21,21 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "himitsu", version, about, long_about = None)]
 pub struct Cli {
+    /// Target remote (org/repo). Overrides project binding and default remote.
+    #[arg(short = 'r', long, global = true)]
+    pub remote: Option<String>,
+
+    /// Increase log verbosity (-v for debug, -vv for trace).
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    pub verbose: u8,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Initialize a new himitsu store.
+    /// Initialize a new himitsu store at ~/.himitsu.
     Init(init::InitArgs),
 
     /// Set a secret value.

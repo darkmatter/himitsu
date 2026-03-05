@@ -1,12 +1,8 @@
 use clap::Args;
 
-/// Initialize a new himitsu store.
+/// Initialize a new himitsu store at ~/.himitsu.
 #[derive(Debug, Args)]
-pub struct InitArgs {
-    /// Path to the himitsu directory.
-    #[arg(short, long)]
-    pub dir: Option<String>,
-}
+pub struct InitArgs {}
 
 pub fn run(_args: InitArgs) {
     eprintln!("himitsu init: not yet implemented");

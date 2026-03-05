@@ -11,6 +11,9 @@ pub struct RecipientArgs {
 pub enum RecipientCommand {
     /// Add a recipient.
     Add {
+        /// Recipient name (e.g. laptop-a, alice).
+        name: String,
+
         /// Add yourself as a recipient.
         #[arg(long = "self")]
         self_: bool,
@@ -19,10 +22,6 @@ pub enum RecipientCommand {
         #[arg(long)]
         age_key: Option<String>,
 
-        /// Recipient label.
-        #[arg(long)]
-        label: Option<String>,
-
         /// Group to add the recipient to.
         #[arg(long)]
         group: Option<String>,
@@ -30,7 +29,7 @@ pub enum RecipientCommand {
 
     /// Remove a recipient.
     Rm {
-        /// Name or label of the recipient to remove.
+        /// Name of the recipient to remove.
         name: String,
 
         /// Group to remove the recipient from.
