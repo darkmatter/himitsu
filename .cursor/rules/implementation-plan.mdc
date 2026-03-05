@@ -1,0 +1,14 @@
+---
+description: Check off implementation plan items when completing them
+alwaysApply: true
+---
+
+# Implementation Plan Checklist
+
+When you complete work that corresponds to an item in `docs/IMPLEMENTATION_PLAN.md`, update that file to mark it done:
+
+1. **Find the matching item** (Goals, Deliverables, Acceptance Criteria, Test cases, Definition of Done, or cross-cutting workstream items).
+2. **Check it off** by changing `- [ ]` to `- [x]` for that item.
+3. **Phase completion**: When all items in a phase are done, check off the phase header line (e.g. `- [ ] **Phase 1 complete**` → `- [x] **Phase 1 complete**`).
+
+Example: After implementing `himitsu init` and its tests, mark the relevant test cases and acceptance criteria as done.

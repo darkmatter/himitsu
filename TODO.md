@@ -78,12 +78,12 @@ bats tests/bats/              # Run all existing shell tests
 
 ## Phase 1 - Rust Project Scaffold
 
-- [ ] **Phase 1 complete**
+- [x] **Phase 1 complete**
 
 ### Goals
 
-- [ ] Create Rust crate and executable `himitsu`.
-- [ ] Implement command parsing and logging framework.
+- [x] Create Rust crate and executable `himitsu`.
+- [x] Implement command parsing and logging framework.
 
 ### Modules / files
 
@@ -122,16 +122,16 @@ cargo clippy -- -D warnings       # Lint
 cargo fmt -- --check              # Format check
 ```
 
-- [ ] `himitsu --help` prints full command tree with all subcommands
-- [ ] `himitsu --version` prints version string
-- [ ] `himitsu <subcommand> --help` works for every subcommand stub
-- [ ] Binary builds on macOS (aarch64-apple-darwin)
+- [x] `himitsu --help` prints full command tree with all subcommands
+- [x] `himitsu --version` prints version string
+- [x] `himitsu <subcommand> --help` works for every subcommand stub
+- [x] Binary builds on macOS (aarch64-apple-darwin)
 - [ ] Binary builds on Linux (x86_64-unknown-linux-gnu)
 - [ ] `nix build` produces both shell and Rust binaries
 
 ### Acceptance Criteria
 
-- [ ] `himitsu --help` works with planned command tree.
+- [x] `himitsu --help` works with planned command tree.
 - [ ] Project builds on macOS and Linux.
 
 ### Risks
@@ -844,7 +844,7 @@ fn set_get_roundtrip() {
 ## Milestone Checklist
 
 - [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
-- [ ] M1: Rust scaffold builds, `--help` works (Phase 1)
+- [x] M1: Rust scaffold builds, `--help` works (Phase 1)
 - [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)

@@ -1,0 +1,21 @@
+[package]
+name = "himitsu"
+version = "0.1.0"
+edition = "2021"
+description = "Age-based secrets management with transport-agnostic sharing"
+license = "MIT"
+
+[[bin]]
+name = "himitsu"
+path = "rust/src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

@@ -27,6 +27,7 @@ Commands:
   encrypt                     Encrypt plaintext var files
   decrypt                     Decrypt sops var files
   set <group> <key> <value>   Set a variable in a group's sops file
+  backend create|push|pull    Manage git-backed remote storage
 
 Options:
   -d, --dir <path>            Himitsu directory (default: auto-detect)
@@ -77,7 +78,7 @@ case "$COMMAND" in
     source "$HIMITSU_LIB/init.sh"
     cmd_init "$@"
     ;;
-  group|recipient|sync|ci|codegen|encrypt|decrypt|set)
+  group|recipient|sync|ci|codegen|encrypt|decrypt|set|backend)
     if [[ -z "$HIMITSU_DIR" ]]; then
       HIMITSU_DIR="$(find_himitsu_root)"
     fi
@@ -116,6 +117,10 @@ case "$COMMAND" in
       set)
         source "$HIMITSU_LIB/crypto.sh"
         cmd_set "$@"
+        ;;
+      backend)
+        source "$HIMITSU_LIB/backend.sh"
+        cmd_backend "$@"
         ;;
     esac
     ;;
