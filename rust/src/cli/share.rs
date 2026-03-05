@@ -1,5 +1,8 @@
 use clap::{Args, Subcommand};
 
+use super::Context;
+use crate::error::{HimitsuError, Result};
+
 /// Share secrets with external recipients.
 #[derive(Debug, Args)]
 pub struct ShareArgs {
@@ -25,7 +28,8 @@ pub enum ShareCommand {
     },
 }
 
-pub fn run(_args: ShareArgs) {
-    eprintln!("himitsu share: not yet implemented");
-    std::process::exit(1);
+pub fn run(_args: ShareArgs, _ctx: &Context) -> Result<()> {
+    Err(HimitsuError::NotSupported(
+        "share is not yet implemented (planned for Phase 4)".into(),
+    ))
 }

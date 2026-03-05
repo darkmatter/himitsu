@@ -1,0 +1,3 @@
+keys_dir: ".keys"
+vars_dir: "vars"
+recipients_dir: "recipients"

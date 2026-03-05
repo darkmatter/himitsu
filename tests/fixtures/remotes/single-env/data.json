@@ -1,0 +1,8 @@
+{
+  "apps": {},
+  "groups": {
+    "team": {
+      "groups": ["dev"]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+policies:
+  - path_prefix: "vars/dev/"
+    include: ["group:team"]

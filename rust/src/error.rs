@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 /// Top-level error type for himitsu.
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum HimitsuError {
     #[error("config file not found: {0}")]
@@ -19,18 +18,47 @@ pub enum HimitsuError {
     #[error("secret not found: {key} in environment {env}")]
     SecretNotFound { env: String, key: String },
 
+    #[error("remote not found: {0}")]
+    RemoteNotFound(String),
+
     #[error("remote error: {0}")]
     Remote(String),
 
     #[error("git error: {0}")]
     Git(String),
 
+    #[error("group error: {0}")]
+    Group(String),
+
+    #[error("recipient error: {0}")]
+    Recipient(String),
+
+    #[error("not initialized: run `himitsu init` first")]
+    NotInitialized,
+
+    #[error("not supported: {0}")]
+    NotSupported(String),
+
+    #[error("keychain error: {0}")]
+    Keychain(String),
+
+    #[error("index error: {0}")]
+    Index(String),
+
+    #[error("YAML parse error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
 
 /// Convenience alias used throughout the crate.
-#[allow(dead_code)]
 pub type Result<T> = std::result::Result<T, HimitsuError>;
 
 #[cfg(test)]
@@ -57,5 +85,12 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         let err: HimitsuError = io_err.into();
         assert!(matches!(err, HimitsuError::Io(_)));
+    }
+
+    #[test]
+    fn yaml_error_converts() {
+        let yaml_err: std::result::Result<String, _> = serde_yaml::from_str("{{invalid");
+        let err: HimitsuError = yaml_err.unwrap_err().into();
+        assert!(matches!(err, HimitsuError::Yaml(_)));
     }
 }

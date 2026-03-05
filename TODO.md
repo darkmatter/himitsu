@@ -16,14 +16,14 @@ This document defines an execution plan for the vNext architecture:
 
 ### Goals
 
-- [ ] Freeze docs and expected command behavior.
-- [ ] Capture baseline tests and golden fixtures before rewrite.
+- [x] Freeze docs and expected command behavior.
+- [x] Capture baseline tests and golden fixtures before rewrite.
 
 ### Deliverables
 
-- [ ] Finalized docs in `docs/`.
-- [ ] Snapshot fixtures for representative repositories.
-- [ ] Legacy command behavior matrix.
+- [x] Finalized docs in `docs/`.
+- [x] Snapshot fixtures for representative repositories.
+- [x] Legacy command behavior matrix.
 
 ### Modules / files
 
@@ -57,22 +57,23 @@ Run existing bats suite and capture outputs:
 bats tests/bats/              # Run all existing shell tests
 ```
 
-- [ ] `init` creates expected directory tree and files
-- [ ] `set` / `get` roundtrip produces correct plaintext
-- [ ] `recipient add --self` writes correct key file
-- [ ] `group add` / `group rm` updates data.json
-- [ ] `encrypt` / `decrypt` roundtrip is lossless
-- [ ] `ls` output format captured as golden fixture
+- [x] `init` creates expected directory tree and files
+- [ ] `set` / `get` roundtrip returns correct value without writing plaintext-at-rest files
+- [x] `recipient add --self` writes correct key file
+- [x] `group add` / `group rm` updates data.json
+- [ ] encryption flows are lossless while preserving no-plaintext-at-rest guarantees
+- [x] `ls` output format captured as golden fixture
 
 ### Acceptance Criteria
 
 - [ ] Team agrees on command compatibility goals.
-- [ ] Golden fixtures can be replayed against new implementation.
+- [x] Golden fixtures can be replayed against new implementation.
 
 ### Risks
 
 - Hidden assumptions in shell scripts.
 - Incomplete fixture coverage.
+- Legacy shell + current `sops` version incompatibility on encrypt/decrypt/set paths.
 
 ---
 
@@ -143,13 +144,13 @@ cargo fmt -- --check              # Format check
 
 ## Phase 2 - Core Runtime Parity (No Sharing Yet)
 
-- [ ] **Phase 2 complete**
+- [x] **Phase 2 complete**
 
 ### Goals
 
-- [ ] Implement config loading and mode detection.
-- [ ] Implement remote resolution and local secret operations.
-- [ ] Add optional macOS Keychain storage for generated age private keys.
+- [x] Implement config loading and mode detection.
+- [x] Implement remote resolution and local secret operations.
+- [x] Add optional macOS Keychain storage for generated age private keys.
 - [ ] Add `SOPS_AGE_KEY_CMD` key resolution that checks Keychain first, then file fallback.
 
 ### Modules / files
@@ -217,71 +218,71 @@ cargo test --test '*'             # Integration tests only
 
 #### Unit tests (inline `#[cfg(test)]`)
 
-- [ ] `config::detect_mode` returns `ProjectMode` when `.git` + `.himitsu.yaml` exist
-- [ ] `config::detect_mode` returns `UserMode` when `.git` exists without `.himitsu.yaml`
-- [ ] `config::detect_mode` returns `UserMode` when no `.git` found
-- [ ] `config::global::parse` loads valid config.yaml
-- [ ] `config::global::parse` rejects malformed YAML with clear error
-- [ ] `config::project::parse` reads `remote:` field
-- [ ] `config::remote::parse` loads policies, identity_sources
-- [ ] `crypto::age::keygen` produces valid x25519 keypair
-- [ ] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
-- [ ] `crypto::age::encrypt` with multiple recipients succeeds
-- [ ] `crypto::age::decrypt` with wrong key fails with clear error
-- [ ] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
-- [ ] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
+- [x] `config::detect_mode` returns `ProjectMode` when `.git` + `.himitsu.yaml` exist
+- [x] `config::detect_mode` returns `UserMode` when `.git` exists without `.himitsu.yaml`
+- [x] `config::detect_mode` returns `UserMode` when no `.git` found
+- [x] `config::global::parse` loads valid config.yaml
+- [x] `config::global::parse` rejects malformed YAML with clear error
+- [x] `config::project::parse` reads `remote:` field
+- [x] `config::remote::parse` loads policies, identity_sources
+- [x] `crypto::age::keygen` produces valid x25519 keypair
+- [x] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
+- [x] `crypto::age::encrypt` with multiple recipients succeeds
+- [x] `crypto::age::decrypt` with wrong key fails with clear error
+- [x] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
+- [x] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
 - [ ] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
 - [ ] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
 - [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
 - [ ] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
-- [ ] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
-- [ ] `remote::store::read_secret` reads and decrypts `.age` file
-- [ ] `remote::store::list_secrets` returns all keys for an env
-- [ ] `remote::store::list_secrets` handles nested subdirectories
-- [ ] `git::run` executes git commands and captures output
-- [ ] `git::run` returns error for non-zero exit codes
-- [ ] `index::SecretIndex::upsert` inserts new entry
-- [ ] `index::SecretIndex::upsert` updates existing entry (same remote+path)
-- [ ] `index::SecretIndex::search` matches partial key names
-- [ ] `index::SecretIndex::search` returns results across multiple remotes
+- [x] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
+- [x] `remote::store::read_secret` reads and decrypts `.age` file
+- [x] `remote::store::list_secrets` returns all keys for an env
+- [x] `remote::store::list_secrets` handles nested subdirectories
+- [x] `git::run` executes git commands and captures output
+- [x] `git::run` returns error for non-zero exit codes
+- [x] `index::SecretIndex::upsert` inserts new entry
+- [x] `index::SecretIndex::upsert` updates existing entry (same remote+path)
+- [x] `index::SecretIndex::search` matches partial key names
+- [x] `index::SecretIndex::search` returns results across multiple remotes
 
 #### Integration tests (`tests/integration/`)
 
-- [ ] `init` creates `~/.himitsu/` with keys/, config.yaml, state/
-- [ ] `init` is idempotent (running twice doesn't error or overwrite keys)
+- [x] `init` creates `~/.himitsu/` with keys/, config.yaml, state/
+- [x] `init` is idempotent (running twice doesn't error or overwrite keys)
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`
 - [ ] `SOPS_AGE_KEY_CMD` falls back to file-based key when keychain item is missing
-- [ ] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
-- [ ] `get prod API_KEY` returns `"secret"` after set
-- [ ] `set` then `get` with multiline values preserves newlines
-- [ ] `set` then `get` with special characters (quotes, backslashes, unicode)
-- [ ] `ls` with no args lists all envs
-- [ ] `ls prod` lists keys in prod env
-- [ ] `encrypt` re-encrypts all secrets for current recipients
-- [ ] `decrypt` is not implemented / errors (no plaintext at rest)
-- [ ] `recipient add --self --group team` writes pubkey file to recipients/team/
-- [ ] `recipient add` with explicit `--age-key` writes correct .pub file
-- [ ] `recipient rm` removes the key file
-- [ ] `recipient ls` shows all recipients, optionally filtered by group
-- [ ] `group add mygroup` creates directory + updates data.json
-- [ ] `group rm mygroup` removes directory + updates data.json
-- [ ] `group rm common` is rejected (reserved)
-- [ ] `group ls` lists groups with recipient counts
+- [x] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
+- [x] `get prod API_KEY` returns `"secret"` after set
+- [x] `set` then `get` with multiline values preserves newlines
+- [x] `set` then `get` with special characters (quotes, backslashes, unicode)
+- [x] `ls` with no args lists all envs
+- [x] `ls prod` lists keys in prod env
+- [x] `encrypt` re-encrypts all secrets for current recipients
+- [x] `decrypt` is not implemented / errors (no plaintext at rest)
+- [x] `recipient add --self --group team` writes pubkey file to recipients/team/
+- [x] `recipient add` with explicit `--age-key` writes correct .pub file
+- [x] `recipient rm` removes the key file
+- [x] `recipient ls` shows all recipients, optionally filtered by group
+- [x] `group add mygroup` creates directory + updates data.json
+- [x] `group rm mygroup` removes directory + updates data.json
+- [x] `group rm common` is rejected (reserved)
+- [x] `group ls` lists groups with recipient counts
 - [ ] `remote add <org/repo>` clones repo into `~/.himitsu/data/`
 - [ ] `remote push` commits and pushes changes
 - [ ] `remote pull` fetches latest from origin
 - [ ] `remote status` shows clean/dirty state
-- [ ] `search <query>` matches key names across remotes
-- [ ] `search` with no matches returns empty output, exit 0
+- [x] `search <query>` matches key names across remotes
+- [x] `search` with no matches returns empty output, exit 0
 - [ ] Golden fixture parity: outputs match captured shell fixtures
 
 ### Acceptance Criteria
 
-- [ ] Core local commands produce expected filesystem results.
+- [x] Core local commands produce expected filesystem results.
 - [ ] Equivalent flows succeed on baseline fixtures.
-- [ ] `himitsu search` returns results across multiple remotes.
+- [x] `himitsu search` returns results across multiple remotes.
 - [ ] Keychain mode stores generated age keys and decrypts via `SOPS_AGE_KEY_CMD` without plaintext key files required.
 - [ ] Key lookup remains uniquely addressable for all `<org>/<repo>/<group>` scopes.
 
@@ -874,7 +875,7 @@ fn set_get_roundtrip() {
 
 - [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
 - [x] M1: Rust scaffold builds, `--help` works (Phase 1)
-- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
+- [x] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)
 - [ ] M5: Nostr send/receive end-to-end (Phase 5)

@@ -1,0 +1,8 @@
+keys_dir: ".keys"
+vars_dir: "vars"
+recipients_dir: "recipients"
+
+backend:
+  type: github
+  repo: acme/himitsu-secrets
+  url: git@github.com:acme/himitsu-secrets.git

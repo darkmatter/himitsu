@@ -2,14 +2,16 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-SOPS-based secrets management with group recipient control. Wraps [sops](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age) to provide team-friendly encrypted variable management with automatic key rotation, GitHub collaborator sync, and typed codegen.
+Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`vars/<env>/<KEY>.age`) in git-backed remotes, with group-based recipient control and cross-remote search.
 
 ## Features
 
-- Secrets are associated to groups and packaged for each app + env combo in a separate build step - no more repeating the same secrets over and over for each env.
-- `himitsu codegen ` builds *typed* packages that provide an importable module with type hints
-- `himitsu ci` can be used in a github action to act as a self-serve mechanism for onboarding team members and/or adding keys 
-- Use `himitsu decrypt` to write plaintext age locally and decrypt rather than hitting AWS everytime if using KMS  (saves on costs)
+- **Age-only encryption** -- secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys. No KMS, no GPG.
+- **One file per secret** -- `vars/<env>/<KEY>.age` keeps diffs simple and listing fast.
+- **Group-based recipients** -- organize keys into groups (team, admins, devices) with per-path policies.
+- **Cross-remote search** -- `himitsu search` finds secrets across all your remotes.
+- **Transport-agnostic sharing** -- share secrets via GitHub PR inbox or Nostr (planned).
+- **Typed codegen** -- generate TypeScript, Go, or Python config from your secrets (planned).
 
 ## Install
 
@@ -25,221 +27,178 @@ nix run github:darkmatter/himitsu -- <command>
     packages = [ himitsu.packages.${system}.default ];
   };
 }
+
+# Or build from source
+cargo build --release
 ```
 
 ## Quick Start
 
 ```bash
-# Initialize in your repo
+# 1. Initialize himitsu (creates ~/.himitsu/ with age keys and config)
 himitsu init
 
-# Add yourself as a recipient
-himitsu recipient add --self --group team
+# 2. Create a remote to store secrets
+himitsu remote add myorg/secrets
 
-# Create a group and map it to environments
-# (edit .meta/himitsu/data.json to configure group -> env mappings)
+# 3. Add yourself as a recipient
+himitsu -r myorg/secrets recipient add laptop --self --group team
 
-# Add a secret
-himitsu set dev DB_HOST localhost
+# 4. Add secrets
+himitsu -r myorg/secrets set prod API_KEY "sk_live_xxx"
+himitsu -r myorg/secrets set prod DB_PASSWORD "hunter2"
+himitsu -r myorg/secrets set dev DB_PASSWORD "devpass"
 
-# Encrypt / decrypt all var files
-himitsu encrypt
-himitsu decrypt
+# 5. Read secrets back
+himitsu -r myorg/secrets get prod API_KEY
 
-# After adding/removing recipients, sync everything
-himitsu sync
+# 6. List environments and keys
+himitsu -r myorg/secrets ls          # lists: dev, prod
+himitsu -r myorg/secrets ls prod     # lists: API_KEY, DB_PASSWORD
+
+# 7. Search across all remotes
+himitsu search DB
+
+# 8. Push changes
+himitsu -r myorg/secrets remote push
 ```
 
 ## Directory Layout
 
+### Global state (`~/.himitsu/`)
+
 ```
-.meta/himitsu/
-  .keys/
-    age.txt              # Your local age secret key (gitignored)
-  vars/
-    common.sops.json     # Shared across all environments
-    dev.sops.json        # Dev environment secrets
-    prod.sops.json       # Prod environment secrets
-  recipients/
-    team/
-      alice.age          # Age public key
-      bob.ssh            # SSH public key
-    admins/
-      carol.age
-    master.age           # Standalone recipient (like a 1-member group)
-  .sops.yaml             # Auto-generated from recipients/
-  .himitsu.yaml          # Config overrides
-  data.json              # Group -> environment + app mappings
+~/.himitsu/
+  config.yaml              # User config (default remote, etc.)
+  keys/
+    age.txt                # Your age private key
+  data/
+    <org>/<repo>/          # Remote clones
+  state/
+    index.db               # Cross-remote search index
+  cache/
+  locks/
 ```
+
+### Remote layout (`~/.himitsu/data/<org>/<repo>/`)
+
+```
+himitsu.yaml               # Remote config (policies, identity sources)
+data.json                  # Group/env metadata
+vars/
+  common/
+    API_BASE_URL.age
+  dev/
+    DB_PASSWORD.age
+  prod/
+    DB_PASSWORD.age
+recipients/
+  team/
+    alice.pub              # age public key
+    bob.pub
+  admins/
+    root.pub
+```
+
+### Project binding (`<repo>/.himitsu.yaml`)
+
+```yaml
+remote: myorg/secrets
+
+codegen:
+  lang: typescript
+  path: src/generated/config.ts
+```
+
+When `.himitsu.yaml` exists in a git repo, himitsu runs in **project mode** and uses the bound remote automatically (no `-r` flag needed).
 
 ## Commands
 
 ### `himitsu init`
 
-Scaffold a new himitsu directory with keypair, config, and directory structure.
+Create `~/.himitsu/` with age keypair, config, and directory structure.
 
-### `himitsu group add|rm|ls <name>`
+### `himitsu set <env> <key> <value>`
 
-Manage recipient groups. The `common` group is reserved and cannot be removed.
+Encrypt and store a secret.
 
-### `himitsu recipient add|rm|ls [name]`
+### `himitsu get <env> <key>`
 
-Manage recipients within groups.
+Decrypt and print a secret value.
+
+### `himitsu ls [env]`
+
+List environments, or list keys within an environment.
+
+### `himitsu encrypt [env]`
+
+Re-encrypt all secrets for the current recipient set. Run this after adding or removing recipients.
+
+### `himitsu search <query>`
+
+Search key names across all remotes. Use `--refresh` to rebuild the index first.
+
+### `himitsu recipient add|rm|ls`
 
 ```bash
-# Add yourself (generates/uses local age key)
-himitsu recipient add --self --group team
+# Add yourself
+himitsu -r myorg/secrets recipient add laptop --self --group team
 
 # Add someone by age public key
-himitsu recipient add deploy-bot --age-key "age1..." --group admins
-
-# Add by SSH key
-himitsu recipient add alice --ssh-path ~/.ssh/id_ed25519.pub --group team
-
-# Add by GPG key ID
-himitsu recipient add bob --gpg "ABCD1234" --group team
+himitsu -r myorg/secrets recipient add deploy-bot --age-key "age1..." --group admins
 
 # Remove
-himitsu recipient rm alice --group team
+himitsu -r myorg/secrets recipient rm deploy-bot --group admins
+
+# List
+himitsu -r myorg/secrets recipient ls
 ```
 
-### `himitsu sync`
-
-Regenerate `.sops.yaml`, run `sops updatekeys` on all var files, fetch GitHub collaborator SSH keys and add them as recipients.
+### `himitsu group add|rm|ls`
 
 ```bash
-himitsu sync                # Standard sync
-himitsu sync --push-secrets # Also push decrypted values as GitHub Actions secrets
+himitsu -r myorg/secrets group add admins
+himitsu -r myorg/secrets group ls
+himitsu -r myorg/secrets group rm temp    # 'common' is reserved
 ```
 
-### `himitsu ci`
-
-Designed for CI environments. Validates recipient state, adds new GitHub collaborators, and auto-commits changes.
+### `himitsu remote add|push|pull|status`
 
 ```bash
-himitsu ci             # Auto-commit if changes found
-himitsu ci --check     # Fail if state is out of date (no modifications)
-himitsu ci --no-commit # Apply fixes but don't commit
+himitsu remote add myorg/secrets              # Clone existing
+himitsu remote add --github --org myorg --name secrets  # Create + clone
+
+himitsu -r myorg/secrets remote push
+himitsu -r myorg/secrets remote pull
+himitsu -r myorg/secrets remote status
 ```
 
-### `himitsu codegen [language] [path]`
+### `himitsu sync [env]`
 
-Generate typed config from decrypted vars. Without arguments, reads codegen targets from `data.json`.
+Re-encrypt all secrets for the updated recipient set and sync to project destinations.
 
-```bash
-himitsu codegen ts packages/gen/vars
-himitsu codegen       # Uses data.json app config
-```
+## Global Options
 
-### `himitsu encrypt` / `himitsu decrypt`
-
-Bulk encrypt plaintext `vars/*.json` to `vars/*.sops.json`, or decrypt the reverse.
-
-### `himitsu set <group> <key> <value>`
-
-Set a key-value pair in a group's encrypted sops file.
-
-## Configuration
-
-### `data.json`
-
-Maps groups to environments and apps to codegen targets:
-
-```json
-{
-  "apps": {
-    "web": {
-      "codegen": {
-        "path": "packages/gen/vars",
-        "language": "ts"
-      }
-    }
-  },
-  "groups": {
-    "team": {
-      "groups": ["dev"],
-      "apps": ["web"]
-    },
-    "admins": {
-      "groups": ["dev", "prod"]
-    }
-  }
-}
-```
-
-### `.himitsu.yaml`
-
-Override default directory names:
-
-```yaml
-keys_dir: ".keys"
-vars_dir: "vars"
-recipients_dir: "recipients"
-```
-
-## GitHub Action
-
-Use himitsu as a GitHub Action for self-serve recipient management:
-
-```yaml
-# .github/workflows/himitsu.yml
-on:
-  pull_request:
-    paths: [".meta/himitsu/recipients/**"]
-  workflow_dispatch:
-    inputs:
-      operation:
-        type: choice
-        options: [ci, add-recipient, rm-recipient, sync]
-      recipient-name:
-        type: string
-        required: false
-
-jobs:
-  himitsu:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: darkmatter/himitsu@main
-        with:
-          operation: ${{ github.event.inputs.operation || 'ci' }}
-          recipient-name: ${{ github.event.inputs.recipient-name }}
-          sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
-```
-
-### Action Inputs
-
-| Input | Description | Default |
-|-------|-------------|---------|
-| `operation` | `ci`, `sync`, `add-recipient`, `rm-recipient`, `codegen` | `ci` |
-| `recipient-name` | Label for add/rm operations | |
-| `recipient-key` | Public key value | |
-| `recipient-type` | `age`, `ssh`, or `gpg` | `age` |
-| `group` | Target group | `team` |
-| `sops-age-key` | Age secret key for decryption | |
-| `himitsu-dir` | Path to himitsu directory | `.meta/himitsu` |
-| `auto-commit` | Commit changes automatically | `true` |
-| `github-token` | Token for API access | `${{ github.token }}` |
-
-### Self-Serve Flows
-
-**PR-based**: A developer adds their `.age` key file to `recipients/<group>/`, opens a PR, and CI validates + runs `sops updatekeys`.
-
-**workflow_dispatch**: A developer triggers the action with their key, and the action handles file creation, re-encryption, and commit.
+| Flag | Description |
+|------|-------------|
+| `-r <org/repo>` | Target remote. Overrides project binding and default remote. |
+| `-v` | Increase log verbosity (`-v` debug, `-vv` trace). |
 
 ## Development
 
 ```bash
-# Enter dev shell with all dependencies
+# Enter dev shell
 nix develop
 
-# Run tests
-bats tests/bats/
+# Build
+cargo build
 
-# Check scripts
-shellcheck src/bin/himitsu src/lib/*.sh
+# Run tests
+cargo test
+
+# Lint
+cargo clippy -- -D warnings
+cargo fmt -- --check
 ```
 
 ## License

@@ -1,0 +1,19 @@
+{
+  "apps": {
+    "web": {
+      "codegen": {
+        "language": "ts",
+        "path": "packages/gen/vars"
+      }
+    }
+  },
+  "groups": {
+    "team": {
+      "groups": ["common", "dev"],
+      "apps": ["web"]
+    },
+    "admins": {
+      "groups": ["prod"]
+    }
+  }
+}

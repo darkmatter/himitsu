@@ -1,5 +1,11 @@
 mod cli;
-mod error;
+pub mod config;
+pub mod crypto;
+pub mod error;
+pub mod git;
+pub mod index;
+pub mod keyring;
+pub mod remote;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -17,5 +23,8 @@ fn main() {
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    cli.run();
+    if let Err(e) = cli.run() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
 }

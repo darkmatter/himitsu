@@ -16,14 +16,14 @@ This document defines an execution plan for the vNext architecture:
 
 ### Goals
 
-- [ ] Freeze docs and expected command behavior.
-- [ ] Capture baseline tests and golden fixtures before rewrite.
+- [x] Freeze docs and expected command behavior.
+- [x] Capture baseline tests and golden fixtures before rewrite.
 
 ### Deliverables
 
-- [ ] Finalized docs in `docs/`.
-- [ ] Snapshot fixtures for representative repositories.
-- [ ] Legacy command behavior matrix.
+- [x] Finalized docs in `docs/`.
+- [x] Snapshot fixtures for representative repositories.
+- [x] Legacy command behavior matrix.
 
 ### Modules / files
 
@@ -57,22 +57,23 @@ Run existing bats suite and capture outputs:
 bats tests/bats/              # Run all existing shell tests
 ```
 
-- [ ] `init` creates expected directory tree and files
-- [ ] `set` / `get` roundtrip produces correct plaintext
-- [ ] `recipient add --self` writes correct key file
-- [ ] `group add` / `group rm` updates data.json
-- [ ] `encrypt` / `decrypt` roundtrip is lossless
-- [ ] `ls` output format captured as golden fixture
+- [x] `init` creates expected directory tree and files
+- [ ] `set` / `get` roundtrip returns correct value without writing plaintext-at-rest files
+- [x] `recipient add --self` writes correct key file
+- [x] `group add` / `group rm` updates data.json
+- [ ] encryption flows are lossless while preserving no-plaintext-at-rest guarantees
+- [x] `ls` output format captured as golden fixture
 
 ### Acceptance Criteria
 
 - [ ] Team agrees on command compatibility goals.
-- [ ] Golden fixtures can be replayed against new implementation.
+- [x] Golden fixtures can be replayed against new implementation.
 
 ### Risks
 
 - Hidden assumptions in shell scripts.
 - Incomplete fixture coverage.
+- Legacy shell + current `sops` version incompatibility on encrypt/decrypt/set paths.
 
 ---
 

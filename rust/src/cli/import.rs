@@ -1,5 +1,8 @@
 use clap::Args;
 
+use super::Context;
+use crate::error::{HimitsuError, Result};
+
 /// Import secrets from external stores (SOPS, 1Password).
 #[derive(Debug, Args)]
 pub struct ImportArgs {
@@ -24,7 +27,8 @@ pub struct ImportArgs {
     pub overwrite: bool,
 }
 
-pub fn run(_args: ImportArgs) {
-    eprintln!("himitsu import: not yet implemented");
-    std::process::exit(1);
+pub fn run(_args: ImportArgs, _ctx: &Context) -> Result<()> {
+    Err(HimitsuError::NotSupported(
+        "import is not yet implemented (planned for Phase 8)".into(),
+    ))
 }

@@ -15,7 +15,17 @@ pub mod set;
 pub mod share;
 pub mod sync;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
+
+use crate::error::Result;
+
+/// Global options available to all subcommands.
+pub struct Context {
+    pub himitsu_home: PathBuf,
+    pub remote_override: Option<String>,
+}
 
 /// Himitsu - age-based secrets management with transport-agnostic sharing.
 #[derive(Debug, Parser)]
@@ -85,24 +95,29 @@ pub enum Command {
 }
 
 impl Cli {
-    pub fn run(self) {
+    pub fn run(self) -> Result<()> {
+        let ctx = Context {
+            himitsu_home: crate::config::himitsu_home(),
+            remote_override: self.remote,
+        };
+
         match self.command {
-            Command::Init(args) => init::run(args),
-            Command::Set(args) => set::run(args),
-            Command::Get(args) => get::run(args),
-            Command::Ls(args) => ls::run(args),
-            Command::Encrypt(args) => encrypt::run(args),
-            Command::Decrypt(args) => decrypt::run(args),
-            Command::Sync(args) => sync::run(args),
-            Command::Search(args) => search::run(args),
-            Command::Recipient(args) => recipient::run(args),
-            Command::Group(args) => group::run(args),
-            Command::Remote(args) => remote::run(args),
-            Command::Share(args) => share::run(args),
-            Command::Inbox(args) => inbox::run(args),
-            Command::Schema(args) => schema::run(args),
-            Command::Codegen(args) => codegen::run(args),
-            Command::Import(args) => import::run(args),
+            Command::Init(args) => init::run(args, &ctx),
+            Command::Set(args) => set::run(args, &ctx),
+            Command::Get(args) => get::run(args, &ctx),
+            Command::Ls(args) => ls::run(args, &ctx),
+            Command::Encrypt(args) => encrypt::run(args, &ctx),
+            Command::Decrypt(args) => decrypt::run(args, &ctx),
+            Command::Sync(args) => sync::run(args, &ctx),
+            Command::Search(args) => search::run(args, &ctx),
+            Command::Recipient(args) => recipient::run(args, &ctx),
+            Command::Group(args) => group::run(args, &ctx),
+            Command::Remote(args) => remote::run(args, &ctx),
+            Command::Share(args) => share::run(args, &ctx),
+            Command::Inbox(args) => inbox::run(args, &ctx),
+            Command::Schema(args) => schema::run(args, &ctx),
+            Command::Codegen(args) => codegen::run(args, &ctx),
+            Command::Import(args) => import::run(args, &ctx),
         }
     }
 }

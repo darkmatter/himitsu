@@ -1,5 +1,8 @@
 use clap::Args;
 
+use super::Context;
+use crate::error::{HimitsuError, Result};
+
 /// Generate typed config code from secrets.
 ///
 /// When run without arguments, reads language and output path from
@@ -19,7 +22,8 @@ pub struct CodegenArgs {
     pub env: Option<String>,
 }
 
-pub fn run(_args: CodegenArgs) {
-    eprintln!("himitsu codegen: not yet implemented");
-    std::process::exit(1);
+pub fn run(_args: CodegenArgs, _ctx: &Context) -> Result<()> {
+    Err(HimitsuError::NotSupported(
+        "codegen is not yet implemented (planned for Phase 8)".into(),
+    ))
 }

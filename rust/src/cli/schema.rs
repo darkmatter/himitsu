@@ -1,5 +1,8 @@
 use clap::{Args, Subcommand};
 
+use super::Context;
+use crate::error::{HimitsuError, Result};
+
 /// Generate and manage JSON schemas for himitsu config files.
 #[derive(Debug, Args)]
 pub struct SchemaArgs {
@@ -13,7 +16,8 @@ pub enum SchemaCommand {
     Refresh,
 }
 
-pub fn run(_args: SchemaArgs) {
-    eprintln!("himitsu schema: not yet implemented");
-    std::process::exit(1);
+pub fn run(_args: SchemaArgs, _ctx: &Context) -> Result<()> {
+    Err(HimitsuError::NotSupported(
+        "schema is not yet implemented (planned for Phase 7)".into(),
+    ))
 }

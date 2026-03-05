@@ -1,0 +1,8 @@
+remote: acme/secrets
+
+autosync: true
+autosync_on: push
+
+codegen:
+  lang: typescript
+  path: src/generated/config.ts

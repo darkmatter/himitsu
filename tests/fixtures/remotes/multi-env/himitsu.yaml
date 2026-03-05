@@ -1,0 +1,9 @@
+policies:
+  - path_prefix: "vars/common/"
+    include: ["group:team"]
+
+  - path_prefix: "vars/dev/"
+    include: ["group:team"]
+
+  - path_prefix: "vars/prod/"
+    include: ["group:admins"]

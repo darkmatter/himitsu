@@ -1,7 +1,6 @@
-# Himitsu Architecture (vNext Draft)
+# Himitsu Architecture
 
-This document replaces the old SOPS-centric model with a unified architecture
-for:
+Architecture for:
 
 - centralized local state in `~/.himitsu/`
 - `age`-only secret encryption
@@ -311,9 +310,7 @@ Index maintenance:
 - **No plaintext**: the index stores only metadata (key names, paths, envs,
   remotes). Secret values are never indexed.
 
-## 8) Rust Rewrite
-
-The shell implementation is replaced by a Rust workspace.
+## 8) Implementation
 
 ### 8.1 Top-level modules
 
@@ -428,25 +425,17 @@ himitsu import --op "op://vault/item" --env prod
 Import is always additive: existing secrets are not overwritten unless
 `--overwrite` is passed.
 
-### 13.2 Migration from shell implementation
-
-1. Introduce Rust binary behind feature flag, keep shell commands for fallback.
-2. Use `himitsu import --sops` to convert `vars/*.sops.json` into
-   `vars/<env>/<KEY>.age` format.
-3. Migrate recipient files to `.pub`/`.ssh` convention.
-4. Enable sharing transports incrementally (GitHub first, then Nostr, then others).
-5. Remove shell path once parity tests pass.
-
 ## 14) Non-goals (v1)
 
 - no KMS integration
 - no automatic secret rotation engine
 - no requirement for hosted control plane
 - no plaintext storage in repositories
-- no GPG recipient support (age-only; GPG keys from the shell implementation are
-  not carried forward)
-- no alternative storage backends (v1 is always local filesystem; keychain,
-  remote server, etc. are future considerations)
+- no GPG recipient support (age-only)
+- no alternative secret storage backends (v1 encrypted secret data stays on the
+  local filesystem; remote server, etc. are future considerations)
+- optional OS keychain usage for local age private key material is allowed, but
+  this does not change the secret storage backend
 
 ## 15) Detailed Implementation Plan
 
@@ -457,10 +446,14 @@ deliverables, risks, and acceptance criteria.
 
 For hands-on end-to-end walkthroughs, see `docs/USE_CASES.md`.
 
-## 17) Future: Storage Backend Abstraction
+## 17) Future: Secret Storage Backend Abstraction
 
 v1 always stores secrets on the local filesystem under `~/.himitsu/`. Future
 versions may introduce alternative storage backends:
+
+This section is about where encrypted secret payloads are stored. Optional
+keychain integration for local decryption keys is a separate concern and does
+not imply a keychain-backed secret store.
 
 - `local` (default, current behavior)
 - `keychain` (macOS Keychain, GNOME Keyring, Windows Credential Manager)

@@ -1,5 +1,8 @@
 use clap::{Args, Subcommand};
 
+use super::Context;
+use crate::error::{HimitsuError, Result};
+
 /// Manage the incoming secret inbox.
 #[derive(Debug, Args)]
 pub struct InboxArgs {
@@ -29,7 +32,8 @@ pub enum InboxCommand {
     },
 }
 
-pub fn run(_args: InboxArgs) {
-    eprintln!("himitsu inbox: not yet implemented");
-    std::process::exit(1);
+pub fn run(_args: InboxArgs, _ctx: &Context) -> Result<()> {
+    Err(HimitsuError::NotSupported(
+        "inbox is not yet implemented (planned for Phase 4)".into(),
+    ))
 }

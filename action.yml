@@ -1,41 +1,33 @@
 name: "Himitsu CI"
-description: "Self-serve SOPS-based secrets recipient management"
+description: "Age-based secrets management for GitHub Actions"
 branding:
   icon: "lock"
   color: "purple"
 
 inputs:
   operation:
-    description: "Operation to run: ci | sync | add-recipient | rm-recipient | codegen"
+    description: "Operation to run: sync | add-recipient | rm-recipient"
     required: true
-    default: "ci"
+    default: "sync"
+  remote:
+    description: "Target remote (org/repo)"
+    required: false
   recipient-name:
-    description: "Recipient label (for add-recipient / rm-recipient)"
+    description: "Recipient name (for add-recipient / rm-recipient)"
     required: false
   recipient-key:
-    description: "Public key value (for add-recipient)"
+    description: "Age public key (for add-recipient)"
     required: false
-  recipient-type:
-    description: "Key type: age | ssh | gpg (default: age)"
-    required: false
-    default: "age"
   group:
     description: "Target recipient group"
     required: false
     default: "team"
-  sops-age-key:
-    description: "Age secret key for decryption (pass from repo secret)"
-    required: false
-  himitsu-dir:
-    description: "Path to himitsu directory relative to repo root"
-    required: false
-    default: ".meta/himitsu"
   auto-commit:
     description: "Automatically commit changes (true/false)"
     required: false
     default: "true"
   github-token:
-    description: "GitHub token for collaborator lookups and commits"
+    description: "GitHub token for API access"
     required: false
     default: ${{ github.token }}
 
@@ -52,11 +44,9 @@ runs:
       run: bash ${{ github.action_path }}/action/entrypoint.sh
       env:
         HIMITSU_OP: ${{ inputs.operation }}
-        HIMITSU_DIR: ${{ inputs.himitsu-dir }}
+        HIMITSU_REMOTE: ${{ inputs.remote }}
         HIMITSU_RECIPIENT_NAME: ${{ inputs.recipient-name }}
         HIMITSU_RECIPIENT_KEY: ${{ inputs.recipient-key }}
-        HIMITSU_RECIPIENT_TYPE: ${{ inputs.recipient-type }}
         HIMITSU_GROUP: ${{ inputs.group }}
         HIMITSU_AUTO_COMMIT: ${{ inputs.auto-commit }}
-        SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
         GH_TOKEN: ${{ inputs.github-token }}
