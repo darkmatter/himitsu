@@ -10,73 +10,6 @@ This document defines an execution plan for the vNext architecture:
 
 ---
 
-## Phase 0 - Freeze and Baseline
-
-- [ ] **Phase 0 complete**
-
-### Goals
-
-- [x] Freeze docs and expected command behavior.
-- [x] Capture baseline tests and golden fixtures before rewrite.
-
-### Deliverables
-
-- [x] Finalized docs in `docs/`.
-- [x] Snapshot fixtures for representative repositories.
-- [x] Legacy command behavior matrix.
-
-### Modules / files
-
-No Rust modules. Fixture and doc work only.
-
-```
-tests/
-├── fixtures/
-│   ├── golden/
-│   │   ├── init-output.txt
-│   │   ├── set-get-roundtrip.txt
-│   │   ├── ls-output.txt
-│   │   ├── recipient-add-self.txt
-│   │   └── group-lifecycle.txt
-│   ├── configs/
-│   │   ├── minimal-himitsu.yaml
-│   │   ├── full-himitsu.yaml
-│   │   └── project-binding.yaml
-│   └── remotes/
-│       ├── single-env/           # Minimal remote layout (one env)
-│       └── multi-env/            # Full remote layout (common/dev/prod)
-docs/
-└── COMMAND_MATRIX.md             # Shell command → expected behavior mapping
-```
-
-### Test cases
-
-Run existing bats suite and capture outputs:
-
-```bash
-bats tests/bats/              # Run all existing shell tests
-```
-
-- [x] `init` creates expected directory tree and files
-- [ ] `set` / `get` roundtrip returns correct value without writing plaintext-at-rest files
-- [x] `recipient add --self` writes correct key file
-- [x] `group add` / `group rm` updates data.json
-- [ ] encryption flows are lossless while preserving no-plaintext-at-rest guarantees
-- [x] `ls` output format captured as golden fixture
-
-### Acceptance Criteria
-
-- [ ] Team agrees on command compatibility goals.
-- [x] Golden fixtures can be replayed against new implementation.
-
-### Risks
-
-- Hidden assumptions in shell scripts.
-- Incomplete fixture coverage.
-- Legacy shell + current `sops` version incompatibility on encrypt/decrypt/set paths.
-
----
-
 ## Phase 1 - Rust Project Scaffold
 
 - [ ] **Phase 1 complete**
@@ -144,7 +77,7 @@ cargo fmt -- --check              # Format check
 
 ## Phase 2 - Core Runtime Parity (No Sharing Yet)
 
-- [x] **Phase 2 complete**
+- [ ] **Phase 2 complete**
 
 ### Goals
 
@@ -231,10 +164,10 @@ cargo test --test '*'             # Integration tests only
 - [x] `crypto::age::decrypt` with wrong key fails with clear error
 - [x] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
 - [x] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
-- [ ] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
-- [ ] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
+- [x] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
+- [x] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
 - [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
-- [ ] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
+- [x] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
 - [x] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
 - [x] `remote::store::read_secret` reads and decrypts `.age` file
 - [x] `remote::store::list_secrets` returns all keys for an env
@@ -655,57 +588,6 @@ cargo test --test sync_test       # Sync integration tests
 
 ---
 
-## Phase 9 - Cutover and Legacy Removal
-
-- [ ] **Phase 9 complete**
-
-### Goals
-
-- [ ] Make Rust implementation the default.
-- [ ] Remove shell implementation and update packaging/docs.
-
-### Modules / files
-
-No new Rust modules. Packaging and cleanup work:
-
-```
-legacy/                           # Archived shell implementation
-├── bin/himitsu
-└── lib/*.sh
-flake.nix                         # Updated: Rust binary is default package
-action/entrypoint.sh              # Updated: use Rust binary
-action.yml                        # Updated if inputs changed
-README.md                         # Rewritten for Rust CLI
-```
-
-### Test cases
-
-```bash
-cargo test                        # Full test suite must pass
-nix build                         # Nix package builds
-nix flake check                   # Flake checks pass
-```
-
-- [ ] All Phase 0 golden fixtures pass against Rust binary
-- [ ] `nix build` produces working `himitsu` binary (Rust)
-- [ ] `nix run .# -- --help` works
-- [ ] GitHub Action works with Rust binary
-- [ ] No remaining references to shell binary in packaging
-- [ ] README accurately reflects Rust CLI
-
-### Acceptance Criteria
-
-- [ ] All planned commands operate from Rust binary.
-- [ ] CI green on supported platforms.
-- [ ] Migration guide validated on sample repos.
-
-### Risks
-
-- Missed command parity edge cases.
-- Packaging regressions for existing users.
-
----
-
 ## Testing Infrastructure
 
 ### How to run tests
@@ -737,9 +619,6 @@ cargo insta review
 # Lint and format
 cargo clippy -- -D warnings
 cargo fmt -- --check
-
-# Legacy shell tests (until cutover)
-bats tests/bats/
 ```
 
 ### CI pipeline (`.github/workflows/rust.yml`)
@@ -796,12 +675,6 @@ tests/
 │   ├── configs/                  # Sample YAML configs
 │   ├── remotes/                  # Sample remote directory layouts
 │   └── envelopes/                # Sample signed envelope JSON files
-└── bats/                         # Legacy shell tests (until Phase 9)
-    ├── test_helper.bash
-    ├── init.bats
-    ├── crypto.bats
-    ├── recipient.bats
-    └── group.bats
 ```
 
 ### Test helper pattern
@@ -873,16 +746,14 @@ fn set_get_roundtrip() {
 
 ## Milestone Checklist
 
-- [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
 - [x] M1: Rust scaffold builds, `--help` works (Phase 1)
-- [x] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
+- [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)
 - [ ] M5: Nostr send/receive end-to-end (Phase 5)
 - [ ] M6: Email/ENS/Nostr identity resolvers with caching (Phase 6)
 - [ ] M7: Schema validation and autocomplete (Phase 7)
 - [ ] M8: Sync + codegen + import (Phase 8)
-- [ ] M9: Rust binary is default, shell archived (Phase 9)
 
 ---
 
@@ -891,9 +762,3 @@ fn set_get_roundtrip() {
 The rewrite is complete when:
 
 - [ ] 1. Rust CLI fully replaces shell runtime.
-- [ ] 2. Secrets remain `age` encrypted end-to-end.
-- [ ] 3. GitHub PR inbox and Nostr roundtrip both work in production-like tests.
-- [ ] 4. Replay protection and signature verification are enforced by default.
-- [ ] 5. Config autocomplete and schema validation are available.
-- [ ] 6. Import from SOPS and 1Password is functional and tested.
-- [ ] 7. Shell implementation is archived and Nix packaging updated.

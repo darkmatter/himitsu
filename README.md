@@ -177,6 +177,42 @@ himitsu -r myorg/secrets remote status
 
 Re-encrypt all secrets for the updated recipient set and sync to project destinations.
 
+### Flake Outputs
+
+The flake provides the following outputs:
+
+- `packages.default` and `packages.himitsu` - The `himitsu` CLI binary.
+- `packages.age-key-cmd` - A wrapper script that outputs the local `himitsu` age private key. Useful as a `SOPS_AGE_KEY_CMD`.
+- `lib.mkEncryptedSecrets` - A Nix function to package a remote's encrypted `vars/` directory into a Nix derivation.
+- `lib.mkDecryptWrapper` - A Nix function to create a wrapper script that decrypts packaged secrets using the provided `ageKeyCmd`.
+
+Example usage of lib functions:
+
+```nix
+{
+  inputs.himitsu.url = "github:darkmatter/himitsu";
+  
+  outputs = { self, nixpkgs, himitsu, ... }: {
+    packages.x86_64-linux = {
+      # Package your production secrets
+      my-secrets = himitsu.lib.x86_64-linux.mkEncryptedSecrets {
+        name = "my-prod-secrets";
+        src = ./path/to/remote;
+        env = "prod";
+      };
+
+      # Create a decryption script
+      decrypt-my-secrets = himitsu.lib.x86_64-linux.mkDecryptWrapper {
+        name = "decrypt-prod-secrets";
+        secretsPkg = self.packages.x86_64-linux.my-secrets;
+        destDir = "/run/secrets/decrypted";
+        # Uses the local himitsu age-key-cmd by default
+      };
+    };
+  };
+}
+```
+
 ## Global Options
 
 | Flag | Description |

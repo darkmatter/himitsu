@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+#
+# demo.sh — Run the himitsu demo live in your terminal.
+#
+# For pauseable playback (spacebar = pause, q = quit), use the
+# pre-recorded asciicast instead:
+#
+#   ./demo/record.sh                # (re)generate demo.cast
+#   asciinema play demo/demo.cast   # spacebar to pause
+#
 
 # ── Helpers ───────────────────────────────────────────────
 HIMITSU_BIN="$(cd "$(dirname "$0")/.." && pwd)/target/release/himitsu"
 DEMO_HOME="$(mktemp -d)"
+DEMO_STORE="$DEMO_HOME/store/.himitsu"
 export HIMITSU_HOME="$DEMO_HOME"
 
 GREEN='\033[0;32m'
@@ -17,32 +27,44 @@ type_cmd() {
 	local display="$*"
 	for ((i = 0; i < ${#display}; i++)); do
 		printf '%s' "${display:$i:1}"
-		sleep 0.02
+		sleep 0.008
 	done
 	printf "${RESET}\n"
-	sleep 0.1
+	sleep 0.05
 }
 
-# Display 'himitsu ...' but run the actual binary
+# Display 'himitsu ...' but run the actual binary with -s pointing at our store
 h() {
+	type_cmd "himitsu $*"
+	"$HIMITSU_BIN" -s "$DEMO_STORE" "$@"
+	echo
+	sleep 0.15
+}
+
+# Run himitsu without the implicit -s (for commands that don't need a store)
+h_bare() {
 	type_cmd "himitsu $*"
 	"$HIMITSU_BIN" "$@"
 	echo
-	sleep 0.4
+	sleep 0.15
 }
 
 run() {
 	type_cmd "$@"
 	eval "$@"
 	echo
-	sleep 0.4
+	sleep 0.15
 }
 
 banner() {
 	echo
 	printf "${CYAN}${BOLD}# ── %s ──${RESET}\n" "$1"
 	echo
-	sleep 0.3
+	sleep 0.1
+}
+
+note() {
+	printf "${DIM}# %s${RESET}\n" "$1"
 }
 
 cleanup() { rm -rf "$DEMO_HOME"; }
@@ -62,71 +84,119 @@ cat <<'ART'
  age-based secrets management
 ART
 printf "${RESET}\n"
-sleep 0.8
+sleep 0.3
 
+# ----------------------------------------------------------
 banner "1. Help"
-h --help
+h_bare --help
 
+# ----------------------------------------------------------
 banner "2. Initialize"
 h init
 
-banner "3. Create a local remote"
-printf "${DIM}# In practice: himitsu remote add org/repo${RESET}\n"
-printf "${DIM}# For this demo we create the structure locally.${RESET}\n\n"
-sleep 0.3
-REMOTE_DIR="$DEMO_HOME/data/demo/secrets"
-mkdir -p "$REMOTE_DIR/vars" "$REMOTE_DIR/recipients/common"
-echo '{"groups":["common"]}' >"$REMOTE_DIR/data.json"
+note "An age keypair has been generated and the store scaffolded."
+sleep 0.1
+
+# Grab the public key for later use
 PUBKEY=$(grep "# public key:" "$DEMO_HOME/keys/age.txt" | cut -d' ' -f4)
-echo "$PUBKEY" >"$REMOTE_DIR/recipients/common/self.pub"
-printf "${DIM}# Created remote demo/secrets with self as recipient${RESET}\n\n"
-sleep 0.5
 
+# ----------------------------------------------------------
+banner "3. Version-control with git"
+h git init
+h git status
+
+# ----------------------------------------------------------
 banner "4. Set secrets"
-h -r demo/secrets set prod API_KEY "sk_live_abc123"
-h -r demo/secrets set prod DB_PASSWORD "hunter2"
-h -r demo/secrets set dev DB_PASSWORD "devpass"
-h -r demo/secrets set common API_BASE_URL "https://api.example.com"
+h set prod API_KEY "sk_live_abc123"
+h set prod DB_PASSWORD "hunter2"
+h set dev DB_PASSWORD "devpass"
+h set common API_BASE_URL "https://api.example.com"
 
+# ----------------------------------------------------------
 banner "5. Get secrets back"
-h -r demo/secrets get prod API_KEY
-h -r demo/secrets get prod DB_PASSWORD
+h get prod API_KEY
+h get prod DB_PASSWORD
+h get dev DB_PASSWORD
 
+# ----------------------------------------------------------
 banner "6. List environments"
-h -r demo/secrets ls
+h ls
 
+# ----------------------------------------------------------
 banner "7. List keys in an environment"
-h -r demo/secrets ls prod
+h ls prod
+h ls common
 
+# ----------------------------------------------------------
 banner "8. Re-encrypt for current recipients"
-h -r demo/secrets encrypt
+h encrypt
 
-printf "${DIM}# Verify secrets survive re-encryption:${RESET}\n"
-h -r demo/secrets get prod API_KEY
+note "Verify secrets survive re-encryption:"
+h get prod API_KEY
 
+# ----------------------------------------------------------
 banner "9. Recipient management"
-h -r demo/secrets recipient ls
-h -r demo/secrets recipient add alice --age-key "$PUBKEY" --group common
-h -r demo/secrets recipient ls
+h recipient ls
+h recipient add alice --age-key "$PUBKEY" --group common
+h recipient ls
 
+# ----------------------------------------------------------
 banner "10. Group management"
-h -r demo/secrets group add admins
-h -r demo/secrets group ls
+h group add admins
+h group add staging
+h group ls
 
-banner "11. Search across remotes"
+# ----------------------------------------------------------
+banner "11. Search across stores"
 h search DB --refresh
 h search API --refresh
 
-banner "12. Decrypt is rejected (no plaintext at rest)"
-type_cmd "himitsu decrypt"
-"$HIMITSU_BIN" decrypt 2>&1 || true
+# ----------------------------------------------------------
+banner "12. Schema generation"
+h schema list
+h schema dump config
 echo
-sleep 0.4
 
-banner "13. File layout"
+note "Write all schemas to the store:"
+h schema refresh
+
+run "ls $DEMO_STORE/schemas/"
+
+# ----------------------------------------------------------
+banner "13. Codegen"
+
+note "Generate TypeScript types from store contents:"
+h codegen --lang typescript --env prod --stdout
+
+note "Generate Go code:"
+h codegen --lang golang --env prod --stdout
+
+note "Generate Python dataclasses:"
+h codegen --lang python --env prod --stdout
+
+note "Generate Rust types:"
+h codegen --lang rust --env prod --stdout
+
+# ----------------------------------------------------------
+banner "14. Codegen to file"
+
+CODEGEN_OUT="$DEMO_HOME/generated/secrets.ts"
+h codegen --lang typescript --env prod --output "$CODEGEN_OUT"
+
+run "cat $CODEGEN_OUT"
+
+# ----------------------------------------------------------
+banner "15. Decrypt is rejected (no plaintext at rest)"
+type_cmd "himitsu decrypt"
+"$HIMITSU_BIN" -s "$DEMO_STORE" decrypt 2>&1 || true
+echo
+sleep 0.15
+
+# ----------------------------------------------------------
+banner "16. File layout"
 type_cmd "find \$HIMITSU_HOME -type f | sort"
 find "$DEMO_HOME" -type f | sed "s|$DEMO_HOME|\~/.himitsu|" | sort
 echo
 
 printf "\n${BOLD}${GREEN}Done. All operations completed successfully.${RESET}\n\n"
-sleep 1.5
+sleep 0.3

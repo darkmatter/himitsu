@@ -1,0 +1,75 @@
+// Himitsu configuration schema.
+// Canonical definitions for global, project, and remote config structures.
+// Used for codegen (Rust via prost, JSON Schema, TypeScript types, etc.).
+
+syntax = "proto3";
+
+package himitsu.config;
+
+message Config {
+  // Describes own identity, be it a person or an organization. Must contain at
+  // least one public key which will be a recipient on all shared secrets.
+  Identity identity = 1;
+
+  // Policies control which recipients can access secrets under a given path prefix.
+  repeated Policy policies = 2;
+
+  // Imports secrets from external stores.
+  repeated Remote imports = 3;
+
+  // Appends to an audit log on mutations. Defaults to true.
+  optional bool enable_audits = 4;
+
+  // Codegen configuration for typed secret accessors.
+  optional CodegenConfig codegen = 5;
+}
+
+// Submodules an external store of secrets.
+message Remote {
+  // Remote type (e.g. "github", "gitlab").
+  string type = 1;
+
+  // Remote URL or identifier.
+  string ref = 2;
+
+  // Secret path prefix to import from the remote.
+  string path = 3;
+}
+
+// A policy rule that controls which recipients can access secrets
+// under a given path prefix.
+message Policy {
+  // Path pattern this policy applies to (e.g. "vars/prod/").
+  string path_pattern = 1;
+
+  // Included recipient selectors (e.g. "group:all", "remote:github:org/keys#team=sec").
+  repeated string include = 2;
+
+  // Excluded recipient selectors (evaluated after include).
+  repeated string exclude = 3;
+}
+
+message Identity {
+  // Human-readable name for the identity.
+  optional string name = 1;
+
+  // Public keys associated with this identity.
+  repeated string public_keys = 2;
+}
+
+message CodegenConfig {
+  // Target language identifier.
+  CodegenLang lang = 1;
+
+  // Output file path, relative to the repository root.
+  string path = 2;
+}
+
+// Supported codegen target languages.
+enum CodegenLang {
+  CODEGEN_LANG_UNSPECIFIED = 0;
+  CODEGEN_LANG_TYPESCRIPT = 1;
+  CODEGEN_LANG_GOLANG = 2;
+  CODEGEN_LANG_PYTHON = 3;
+  CODEGEN_LANG_RUST = 4;
+}

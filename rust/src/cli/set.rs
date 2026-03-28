@@ -12,42 +12,39 @@ use crate::remote::store;
 pub struct SetArgs {
     /// Target environment (e.g. prod, dev).
     pub env: String,
-
     /// Secret key name.
     pub key: String,
-
     /// Secret value.
     pub value: String,
+    /// Skip git commit and push.
+    #[arg(long)]
+    pub no_push: bool,
 }
 
 pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
-    let mode = config::detect_mode(&std::env::current_dir()?);
-    let remote_ref = config::resolve_remote(&ctx.remote_override, &mode, &ctx.himitsu_home)?;
-    let remote_path = config::remote_path(&ctx.himitsu_home, &remote_ref);
-    crate::remote::ensure_remote_exists(&remote_path)?;
-
-    // Collect all recipients for encryption
-    let recipients = age::collect_all_recipients(&remote_path)?;
+    let recipients = age::collect_all_recipients(&ctx.store)?;
     if recipients.is_empty() {
         return Err(crate::error::HimitsuError::Recipient(
-            "no recipients found; add recipients first with `himitsu recipient add`".into(),
+            "no recipients found; run `himitsu init` or add recipients first".into(),
         ));
     }
 
-    // Encrypt the value
     let ciphertext = age::encrypt(args.value.as_bytes(), &recipients)?;
-
-    // Write to store
-    store::write_secret(&remote_path, &args.env, &args.key, &ciphertext)?;
+    store::write_secret(&ctx.store, &args.env, &args.key, &ciphertext)?;
 
     // Update search index
-    let index_path = ctx.himitsu_home.join("state/index.db");
-    if let Ok(idx) = SecretIndex::open(&index_path) {
-        let _ = idx.register_remote(&remote_ref, None);
+    if let Ok(idx) = SecretIndex::open(&config::index_path(&ctx.user_home)) {
+        let store_id = ctx.store.to_string_lossy().to_string();
+        let _ = idx.register_remote(&store_id, None);
         let path = format!("vars/{}/{}.age", args.env, args.key);
-        let _ = idx.upsert(&remote_ref, &args.env, &path, &args.key);
+        let _ = idx.upsert(&store_id, &args.env, &path, &args.key);
     }
 
-    println!("Set {}/{} in {}", args.env, args.key, remote_ref);
+    // Commit + push to git remote
+    if !args.no_push {
+        ctx.commit_and_push(&format!("himitsu: set {}/{}", args.env, args.key));
+    }
+
+    println!("Set {}/{}", args.env, args.key);
     Ok(())
 }

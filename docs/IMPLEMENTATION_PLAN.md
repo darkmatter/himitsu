@@ -221,10 +221,12 @@ cargo test --test '*'             # Integration tests only
 - [ ] `config::detect_mode` returns `ProjectMode` when `.git` + `.himitsu.yaml` exist
 - [ ] `config::detect_mode` returns `UserMode` when `.git` exists without `.himitsu.yaml`
 - [ ] `config::detect_mode` returns `UserMode` when no `.git` found
-- [ ] `config::global::parse` loads valid config.yaml
-- [ ] `config::global::parse` rejects malformed YAML with clear error
-- [ ] `config::project::parse` reads `remote:` field
-- [ ] `config::remote::parse` loads policies, identity_sources
+- [x] `config::Config::parse` loads valid unified `.himitsu.yaml`
+- [x] `config::Config::parse` rejects malformed YAML with clear error
+- [x] `config::Config::parse` reads `identity.public_keys`
+- [x] `config::Config::parse` loads `policies` with `path_pattern`, `include`, `exclude`
+- [x] `config::Config::parse` loads `imports` (`type`, `ref`, `path`)
+- [x] `config::Config::parse` loads optional `codegen` (`lang`, `path`)
 - [ ] `crypto::age::keygen` produces valid x25519 keypair
 - [ ] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
 - [ ] `crypto::age::encrypt` with multiple recipients succeeds
@@ -248,7 +250,7 @@ cargo test --test '*'             # Integration tests only
 
 #### Integration tests (`tests/integration/`)
 
-- [ ] `init` creates `~/.himitsu/` with keys/, config.yaml, state/
+- [x] `init` creates `~/.himitsu/` with keys/, `.himitsu.yaml`, state/
 - [ ] `init` is idempotent (running twice doesn't error or overwrite keys)
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
@@ -538,27 +540,30 @@ endpoint.
 ### Modules / files
 
 ```
+proto/
+├── config.proto                  # Canonical unified config schema (identity, policies, imports, codegen)
+├── secrets.proto                 # Canonical secrets schema (envelope, share, sync)
 rust/src/
-├── schema/
-│   ├── mod.rs                    # Orchestration: generate static + dynamic schemas
-│   ├── static_schema.rs          # Generate schemas/himitsu.schema.json
-│   └── dynamic.rs                # Generate schemas/recipients.schema.json from live data
+├── proto/
+│   └── mod.rs                    # Generated types, conversions, JSON Schema helpers
 ├── cli/
-│   └── schema.rs                 # Full implementation
+│   └── schema.rs                 # Full implementation (dump, dump-all, refresh, list)
+build.rs                          # prost compile .proto → Rust types with serde derives
 ```
 
 ### Test cases
 
 ```bash
 cargo test schema                 # Schema generation tests
+cargo test proto                  # Proto round-trip and JSON Schema tests
 ```
 
-- [ ] Static schema is valid JSON Schema draft 2020-12
-- [ ] Static schema validates a correct `himitsu.yaml`
-- [ ] Static schema rejects missing required fields
+- [x] Static schema is valid JSON Schema draft 2020-12
+- [x] Static schema validates a correct `himitsu.yaml`
+- [x] Static schema rejects missing required fields
 - [ ] Dynamic schema includes local group names as enum values
 - [ ] Dynamic schema includes remote team refs as enum values
-- [ ] `schema refresh` regenerates dynamic schema from current state
+- [x] `schema refresh` regenerates dynamic schema from current state
 - [ ] Config validation errors include path + field + clear message
 
 ### Acceptance Criteria
@@ -589,13 +594,8 @@ cargo test schema                 # Schema generation tests
 rust/src/
 ├── cli/
 │   ├── sync.rs                   # Full implementation (sync destinations + autosync)
-│   ├── codegen.rs                # Full implementation
+│   ├── codegen.rs                # Full implementation (TS, Go, Python, Rust from store scan)
 │   └── import.rs                 # Full implementation
-├── codegen/
-│   ├── mod.rs                    # Orchestration: detect lang, merge envs, write output
-│   ├── typescript.rs             # TypeScript interface + const generation
-│   ├── golang.rs                 # Go struct generation
-│   └── python.rs                 # Python dataclass generation
 ├── import/
 │   ├── mod.rs                    # Import trait, dispatch by source type
 │   ├── sops.rs                   # SOPS YAML/JSON parser: decrypt via sops binary, extract keys
@@ -621,10 +621,10 @@ cargo test --test sync_test       # Sync integration tests
 
 #### Codegen
 
-- [ ] TypeScript output is syntactically valid (parseable by tsc)
-- [ ] Go output is syntactically valid (parseable by go vet)
-- [ ] Python output is syntactically valid (parseable by python -c)
-- [ ] Codegen merges common env with specific env (common first, env overrides)
+- [x] TypeScript output is syntactically valid (parseable by tsc)
+- [x] Go output is syntactically valid (parseable by go vet)
+- [x] Python output is syntactically valid (parseable by python -c)
+- [x] Codegen merges common env with specific env (common first, env overrides)
 - [ ] Codegen respects app-scoped extraction from data.json
 - [ ] Snapshot tests: output matches expected for each language
 
@@ -643,7 +643,7 @@ cargo test --test sync_test       # Sync integration tests
 
 - [ ] `sync` writes encrypted files to project without plaintext.
 - [ ] Autosync triggers correctly based on configured event.
-- [ ] Codegen produces valid typed output for each supported language.
+- [x] Codegen produces valid typed output for each supported language.
 - [ ] SOPS import decrypts and re-encrypts all keys into `vars/<env>/<KEY>.age`.
 - [ ] 1Password import fetches and encrypts items into remote's format.
 

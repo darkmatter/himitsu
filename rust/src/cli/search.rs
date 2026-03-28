@@ -1,10 +1,11 @@
 use clap::Args;
 
 use super::Context;
+use crate::config;
 use crate::error::Result;
 use crate::index::SecretIndex;
 
-/// Search secrets across all remotes.
+/// Search secrets across all known projects.
 #[derive(Debug, Args)]
 pub struct SearchArgs {
     /// Search query to match against key names.
@@ -16,18 +17,16 @@ pub struct SearchArgs {
 }
 
 pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
-    let index_path = ctx.himitsu_home.join("state/index.db");
+    let index_path = config::index_path(&ctx.user_home);
     let idx = SecretIndex::open(&index_path)?;
 
-    // Optionally refresh the index
     if args.refresh {
-        refresh_index(&idx, ctx)?;
+        refresh_index(&idx, &ctx.user_home)?;
     }
 
-    let results = idx.search(&args.query, ctx.remote_override.as_deref())?;
+    let results = idx.search(&args.query, None)?;
 
     if results.is_empty() {
-        // Empty output, exit 0 per spec
         return Ok(());
     }
 
@@ -38,20 +37,24 @@ pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Refresh the search index by scanning all known remotes.
-fn refresh_index(idx: &SecretIndex, ctx: &Context) -> Result<()> {
-    let remotes = crate::remote::list_remotes(&ctx.himitsu_home)?;
-    for remote_ref in &remotes {
-        let remote_path = crate::config::remote_path(&ctx.himitsu_home, remote_ref);
-        idx.register_remote(remote_ref, None)?;
-        idx.clear_remote(remote_ref)?;
+/// Refresh the search index by scanning all known stores.
+fn refresh_index(idx: &SecretIndex, user_home: &std::path::Path) -> Result<()> {
+    let stores = config::load_known_stores(user_home);
+    for store_str in &stores {
+        let store_path = std::path::PathBuf::from(store_str);
+        if !store_path.exists() {
+            continue;
+        }
 
-        let envs = crate::remote::store::list_envs(&remote_path)?;
+        idx.register_remote(store_str, None)?;
+        idx.clear_remote(store_str)?;
+
+        let envs = crate::remote::store::list_envs(&store_path)?;
         for env in &envs {
-            let keys = crate::remote::store::list_secrets(&remote_path, env)?;
+            let keys = crate::remote::store::list_secrets(&store_path, env)?;
             for key in &keys {
                 let path = format!("vars/{env}/{key}.age");
-                idx.upsert(remote_ref, env, &path, key)?;
+                idx.upsert(store_str, env, &path, key)?;
             }
         }
     }

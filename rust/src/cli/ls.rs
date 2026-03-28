@@ -1,7 +1,6 @@
 use clap::Args;
 
 use super::Context;
-use crate::config;
 use crate::error::Result;
 use crate::remote::store;
 
@@ -13,14 +12,9 @@ pub struct LsArgs {
 }
 
 pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
-    let mode = config::detect_mode(&std::env::current_dir()?);
-    let remote_ref = config::resolve_remote(&ctx.remote_override, &mode, &ctx.himitsu_home)?;
-    let remote_path = config::remote_path(&ctx.himitsu_home, &remote_ref);
-    crate::remote::ensure_remote_exists(&remote_path)?;
-
     match args.env {
         Some(env) => {
-            let keys = store::list_secrets(&remote_path, &env)?;
+            let keys = store::list_secrets(&ctx.store, &env)?;
             if keys.is_empty() {
                 eprintln!("No secrets in environment '{env}'");
             } else {
@@ -30,7 +24,7 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
             }
         }
         None => {
-            let envs = store::list_envs(&remote_path)?;
+            let envs = store::list_envs(&ctx.store)?;
             if envs.is_empty() {
                 eprintln!("No environments found");
             } else {
@@ -40,6 +34,5 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
             }
         }
     }
-
     Ok(())
 }

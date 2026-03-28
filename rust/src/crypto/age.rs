@@ -5,6 +5,7 @@ use ::age::x25519::{Identity, Recipient};
 use secrecy::ExposeSecret;
 
 use crate::error::{HimitsuError, Result};
+use crate::keyring::KeyProvider;
 
 /// Generate a new age x25519 keypair.
 /// Returns (secret_key_string, public_key_string).
@@ -133,9 +134,32 @@ pub fn collect_all_recipients(remote_path: &Path) -> Result<Vec<Recipient>> {
     Ok(all)
 }
 
+/// Resolve the private key for a given scope.
+/// Checks the keychain provider first if supplied. Falls back to reading from the given `fallback_path`.
+pub fn resolve_private_key(
+    scope: &str,
+    fallback_path: &Path,
+    provider: Option<&dyn KeyProvider>,
+) -> Result<Identity> {
+    if let Some(p) = provider {
+        if let Ok(Some(fingerprint)) = p.load_scope(scope) {
+            if let Ok(Some(secret)) = p.load_key(&fingerprint) {
+                if let Ok(identity) = parse_identity(&secret) {
+                    return Ok(identity);
+                }
+            }
+        }
+    }
+
+    // Fallback to file
+    read_identity(fallback_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyring::MockKeyProvider;
+    use std::io::Write;
 
     #[test]
     fn keygen_produces_valid_keypair() {
@@ -190,5 +214,35 @@ mod tests {
     fn encrypt_no_recipients_fails() {
         let result = encrypt(b"test", &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_private_key_prefers_keychain_when_enabled_and_falls_back() {
+        let (secret, public) = keygen();
+        let scope = "gh:org:repo:team";
+        let fp = crate::keyring::fingerprint(&public);
+
+        let provider = MockKeyProvider::new();
+        provider.store_scope(scope, &fp).unwrap();
+        provider.store_key(&fp, &secret).unwrap();
+
+        // 1. Should load from keychain successfully (even without fallback file)
+        let empty_path = Path::new("/nonexistent");
+        let identity = resolve_private_key(scope, empty_path, Some(&provider)).unwrap();
+        // Since we got here without error and file doesn't exist, it used the keychain
+        assert_eq!(identity.to_string().expose_secret(), &secret);
+
+        // 2. Should fall back to file if keychain fails or isn't provided
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.write_all(secret.as_bytes()).unwrap();
+
+        let identity_fallback = resolve_private_key(scope, temp_file.path(), None).unwrap();
+        assert_eq!(identity_fallback.to_string().expose_secret(), &secret);
+
+        // 3. Should fall back to file if keychain scope is missing
+        let empty_provider = MockKeyProvider::new();
+        let identity_fallback_2 =
+            resolve_private_key(scope, temp_file.path(), Some(&empty_provider)).unwrap();
+        assert_eq!(identity_fallback_2.to_string().expose_secret(), &secret);
     }
 }
