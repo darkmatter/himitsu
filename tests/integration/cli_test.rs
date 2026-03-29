@@ -223,10 +223,36 @@ fn decrypt_errors_no_plaintext_at_rest() {
         .stderr(predicate::str::contains("not supported"));
 }
 
-// ============ encrypt (re-encrypt) test ============
+// ============ rekey (re-encrypt) tests ============
 
 #[test]
-fn encrypt_re_encrypts_secrets() {
+fn rekey_re_encrypts_secrets() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "prod/SECRET", "value"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "rekey"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Re-encrypted 1 secret"));
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "get", "prod/SECRET"])
+        .assert()
+        .success()
+        .stdout("value");
+}
+
+#[test]
+fn encrypt_deprecated_wrapper_still_works() {
     let (home, store) = setup();
     let s = store_flag(&store);
 
@@ -241,14 +267,8 @@ fn encrypt_re_encrypts_secrets() {
         .args(["--store", &s, "encrypt"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Re-encrypted 1 secret"));
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "get", "prod/SECRET"])
-        .assert()
-        .success()
-        .stdout("value");
+        .stdout(predicate::str::contains("Re-encrypted"))
+        .stderr(predicate::str::contains("deprecated"));
 }
 
 // ============ recipient tests ============
@@ -466,6 +486,8 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("search"))
         .stdout(predicate::str::contains("recipient"))
         .stdout(predicate::str::contains("group"))
+        .stdout(predicate::str::contains("rekey"))
+        .stdout(predicate::str::contains("sync"))
         .stdout(predicate::str::contains("git"));
 }
 
@@ -695,241 +717,204 @@ fn remote_add_invalid_slug_fails() {
         .stderr(predicate::str::contains("invalid"));
 }
 
+// ============ remote default/list/remove tests ============
+
+#[test]
+fn remote_list_shows_all() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    create_remote_store(&home, "acme/secrets");
+    create_remote_store(&home, "myorg/keys");
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("acme/secrets"))
+        .stdout(predicate::str::contains("myorg/keys"));
+}
+
+#[test]
+fn remote_list_empty() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no remotes found"));
+}
+
+#[test]
+fn remote_default_shows_none() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "default"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("none set"));
+}
+
+#[test]
+fn remote_default_sets_and_shows() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    // Set a default store slug.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "default", "acme/secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Default store set to"));
+    // Read it back — should echo the slug.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "default"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("acme/secrets"));
+}
+
+#[test]
+fn remote_remove_deletes_checkout() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let remote_path = create_remote_store(&home, "acme/vault");
+    assert!(remote_path.exists());
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "remove", "acme/vault"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed remote"));
+    assert!(!remote_path.exists());
+}
+
+#[test]
+fn remote_remove_nonexistent_fails() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "remove", "ghost/missing"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn remote_remove_clears_default() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    create_remote_store(&home, "acme/vault");
+    // Set acme/vault as the default.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "default", "acme/vault"])
+        .assert()
+        .success();
+    // Remove the store.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "remove", "acme/vault"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cleared default store"));
+    // Default should now be "none set".
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "default"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("none set"));
+}
+
 // ============ sync tests ============
 
-/// Build a remote data store that already has a secret at `secret_path`.
-fn setup_remote_with_secret(
-    home: &TempDir,
-    slug: &str,
-    secret_path: &str,
-    value: &str,
-) -> std::path::PathBuf {
-    let remote_store = create_remote_store(home, slug);
-    let rs = remote_store.to_string_lossy().to_string();
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "set", secret_path, value])
-        .assert()
-        .success();
-    remote_store
-}
-
 #[test]
-fn sync_bind_writes_remote_yaml() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    // The remote store directory must exist before binding.
-    create_remote_store(&home, "org/proj");
-
+fn sync_no_stores_shows_hint() {
+    // With no remote stores, sync prints a helpful message and exits 0.
+    // Note: no --store flag; sync resolves stores independently via list_remotes().
+    let (home, _store) = setup();
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "org/proj"])
+        .args(["sync"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Bound store to remote org/proj"));
-
-    // binding file is at store_root/remote.yaml
-    let remote_yaml = store.path().join("remote.yaml");
-    assert!(remote_yaml.exists(), "remote.yaml should be written");
-    let contents = std::fs::read_to_string(&remote_yaml).unwrap();
-    assert!(contents.contains("org/proj"));
+        .stdout(predicate::str::contains("no stores found"));
 }
 
 #[test]
-fn sync_bind_fails_for_unknown_remote() {
+fn sync_specific_store() {
+    // Syncing a named store slug succeeds and mentions it in output.
     let (home, store) = setup();
     let s = store_flag(&store);
-
+    create_remote_store(&home, "acme/vault");
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "ghost/missing"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("ghost/missing"));
-}
-
-#[test]
-fn sync_without_bind_fails_with_useful_error() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no remote binding"));
-}
-
-#[test]
-fn sync_mirrors_ciphertext_byte_for_byte() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    let remote_dir =
-        setup_remote_with_secret(&home, "acme/vault", "prod/DB_URL", "postgres://secret");
-
-    // Bind the project store to the remote and then sync.
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "acme/vault"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync"])
+        .args(["--store", &s, "sync", "acme/vault"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("1 secret(s)"));
-
-    // The mirrored .age file must be byte-for-byte identical to the source.
-    let remote_age = remote_dir.join(".himitsu/secrets/prod/DB_URL.age");
-    let local_age = store.path().join(".himitsu/secrets/prod/DB_URL.age");
-
-    assert!(
-        local_age.exists(),
-        ".age file should be mirrored to local store"
-    );
-    assert_eq!(
-        std::fs::read(&remote_age).unwrap(),
-        std::fs::read(&local_age).unwrap(),
-        "mirrored ciphertext must be byte-for-byte identical to source"
-    );
+        .stdout(predicate::str::contains("acme/vault"));
 }
 
 #[test]
-fn sync_mirrors_recipients() {
+fn sync_no_rekey_flag_skips_rekey() {
+    // With --no-rekey, output says "pulled" and does NOT say "rekeyed".
     let (home, store) = setup();
     let s = store_flag(&store);
-
-    let remote_dir = create_remote_store(&home, "acme/keys");
-    let rs = remote_dir.to_string_lossy().to_string();
-
-    // Add an extra recipient to the remote store.
+    create_remote_store(&home, "acme/vault");
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "recipient", "add", "device2", "--self"])
-        .assert()
-        .success();
-
-    // Bind and sync.
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "acme/keys"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync"])
+        .args(["--store", &s, "sync", "acme/vault", "--no-rekey"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("recipient file(s)"));
-
-    // device2.pub must appear in the local store after mirroring.
-    assert!(
-        store
-            .path()
-            .join(".himitsu/recipients/common/device2.pub")
-            .exists(),
-        "recipient public-key file must be mirrored"
-    );
+        .stdout(predicate::str::contains("pulled"))
+        .stdout(predicate::str::contains("rekeyed").not());
 }
 
 #[test]
-fn sync_env_scope_mirrors_only_requested_prefix() {
+fn sync_invalid_slug_fails() {
+    // A slug without an org/repo separator is rejected.
     let (home, store) = setup();
     let s = store_flag(&store);
-
-    let remote_dir = create_remote_store(&home, "acme/scoped");
-    let rs = remote_dir.to_string_lossy().to_string();
-
-    // Populate two path prefixes in the remote.
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "set", "prod/PROD_KEY", "pval"])
+        .args(["--store", &s, "sync", "notaslug"])
         .assert()
-        .success();
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "set", "staging/STAGING_KEY", "sval"])
-        .assert()
-        .success();
-
-    // Bind and sync ONLY the "prod" prefix.
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "acme/scoped"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "prod"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("1 secret(s)"));
-
-    // prod must be present; staging must be absent.
-    assert!(
-        store
-            .path()
-            .join(".himitsu/secrets/prod/PROD_KEY.age")
-            .exists(),
-        "prod secret should be mirrored"
-    );
-    assert!(
-        !store
-            .path()
-            .join(".himitsu/secrets/staging/STAGING_KEY.age")
-            .exists(),
-        "staging secret must NOT be mirrored when only 'prod' was requested"
-    );
-}
-
-#[test]
-fn sync_all_when_no_prefix_specified() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    let remote_dir = create_remote_store(&home, "acme/allenvs");
-    let rs = remote_dir.to_string_lossy().to_string();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "set", "prod/PK", "pv"])
-        .assert()
-        .success();
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &rs, "set", "staging/SK", "sv"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync", "--bind", "acme/allenvs"])
-        .assert()
-        .success();
-
-    // Sync without specifying a prefix — should mirror both.
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "sync"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("2 secret(s)"));
-
-    assert!(store.path().join(".himitsu/secrets/prod/PK.age").exists());
-    assert!(store
-        .path()
-        .join(".himitsu/secrets/staging/SK.age")
-        .exists());
+        .failure();
 }
 
 // ============ git tests ============
+
+/// Initialise a git repo inside an existing directory so it can be used as a
+/// store checkout in git-subcommand tests.
+fn init_git_repo(path: &std::path::Path) {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command failed");
+    };
+    git(&["init"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "init",
+        "--allow-empty",
+    ]);
+}
 
 #[test]
 fn git_help_shows_usage() {
@@ -938,140 +923,80 @@ fn git_help_shows_usage() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Run git commands inside the himitsu data directory",
+            "Run git commands inside a store checkout",
         ));
 }
 
 #[test]
-fn git_init_creates_repo() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    // Pipe "y" to accept the git-init prompt
+fn git_store_scoped_status() {
+    // --remote resolves to the store checkout; git status should succeed.
+    let (home, _store) = setup();
+    let remote = create_remote_store(&home, "acme/vault");
+    init_git_repo(&remote);
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "init"])
-        .write_stdin("y\n")
+        .args(["--remote", "acme/vault", "git", "status"])
         .assert()
         .success();
-
-    // data_dir (HIMITSU_HOME/share) gets the .git
-    assert!(home.path().join("share/.git").exists());
 }
 
 #[test]
-fn git_status_after_init() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
+fn git_defaults_to_status() {
+    // Running `himitsu git` with no sub-command defaults to `git status`.
+    let (home, _store) = setup();
+    let remote = create_remote_store(&home, "acme/vault");
+    init_git_repo(&remote);
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "init"])
-        .write_stdin("y\n")
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "status"])
+        .args(["--remote", "acme/vault", "git"])
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("Untracked files")
-                .or(predicate::str::contains("nothing to commit")),
+            predicate::str::contains("branch").or(predicate::str::contains("nothing to commit")),
         );
 }
 
 #[test]
-fn git_add_and_commit() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    // git init
+fn git_all_runs_in_each_store() {
+    // --all iterates all registered stores and prints a banner for each.
+    let (home, _store) = setup();
+    let r1 = create_remote_store(&home, "acme/vault");
+    let r2 = create_remote_store(&home, "myorg/keys");
+    init_git_repo(&r1);
+    init_git_repo(&r2);
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "init"])
-        .write_stdin("y\n")
-        .assert()
-        .success();
-
-    // git add -A
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "add", "-A"])
-        .assert()
-        .success();
-
-    // git commit
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "commit", "-m", "test commit"])
-        .assert()
-        .success();
-
-    // git log should show our commit
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "log", "--oneline"])
+        .args(["git", "--all", "status"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("test commit"));
+        .stdout(predicate::str::contains("=== acme/vault ==="))
+        .stdout(predicate::str::contains("=== myorg/keys ==="));
 }
 
 #[test]
-fn git_bare_defaults_to_status() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
+fn git_no_store_no_all_errors() {
+    // Without --remote, --store, or --all, git returns a clear error.
+    let (home, _store) = setup();
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "init"])
-        .write_stdin("y\n")
+        .args(["git", "status"])
         .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("branch").or(predicate::str::contains("Untracked")));
-}
-
-#[test]
-fn git_decline_init_exits_cleanly() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "status"])
-        .write_stdin("n\n")
-        .assert()
-        .success();
-
-    // .git should NOT exist inside share/
-    assert!(!home.path().join("share/.git").exists());
+        .failure();
 }
 
 #[test]
 fn git_passthrough_respects_flags() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
+    // Extra git flags (e.g. --oneline) are forwarded to git.
+    let (home, _store) = setup();
+    let remote = create_remote_store(&home, "acme/vault");
+    init_git_repo(&remote);
+    // `git log` on a repo with one commit should succeed and show the message.
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "init"])
-        .write_stdin("y\n")
+        .args(["--remote", "acme/vault", "git", "log", "--oneline"])
         .assert()
-        .success();
-
-    // `git --no-pager log` in an empty repo should fail (no commits)
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "git", "--no-pager", "log"])
-        .assert()
-        .failure();
+        .success()
+        .stdout(predicate::str::contains("init"));
 }
 
 #[test]
