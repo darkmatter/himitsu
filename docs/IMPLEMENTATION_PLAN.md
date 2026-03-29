@@ -612,9 +612,9 @@ cargo test --test sync_test       # Sync integration tests
 
 #### Sync
 
-- [ ] `sync` writes encrypted `.age` files to project directory
-- [ ] `sync` does not write plaintext anywhere
-- [ ] `sync` is idempotent (running twice produces same result)
+- [x] `sync` writes encrypted `.age` files to project directory
+- [x] `sync` does not write plaintext anywhere
+- [x] `sync` is idempotent (running twice produces same result)
 - [ ] `autosync_on: set` triggers sync after `himitsu set`
 - [ ] `autosync_on: push` triggers sync after `himitsu remote push`
 - [ ] Context isolation: `set` in project mode only writes to project's remote

@@ -1,49 +1,177 @@
+use std::path::{Path, PathBuf};
+
 use clap::Args;
+use serde::{Deserialize, Serialize};
 
 use super::Context;
 use crate::config;
-use crate::crypto::age;
-use crate::error::Result;
+use crate::error::{HimitsuError, Result};
 use crate::remote::store;
 
-/// Sync: re-encrypt all secrets for the updated recipient set.
+/// Sync: mirror encrypted files from a bound remote into the current project store.
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Target environment. If omitted, syncs all environments.
+    /// Target environment. If omitted, mirrors all environments.
     pub env: Option<String>,
+
+    /// Bind this project store to a remote for future syncs (e.g., `org/repo`).
+    #[arg(long)]
+    pub bind: Option<String>,
 }
 
-pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
-    let identity = age::read_identity(&config::key_path(&ctx.user_home))?;
-    let recipients = age::collect_all_recipients(&ctx.store)?;
-    if recipients.is_empty() {
-        return Err(crate::error::HimitsuError::Recipient(
-            "no recipients found".into(),
+/// Persisted binding stored at `<store>/remote.yaml`.
+#[derive(Debug, Serialize, Deserialize)]
+struct RemoteBinding {
+    remote: String,
+}
+
+fn binding_path(store: &Path) -> PathBuf {
+    store.join("remote.yaml")
+}
+
+fn save_binding(store: &Path, slug: &str) -> Result<()> {
+    let binding = RemoteBinding {
+        remote: slug.to_string(),
+    };
+    let yaml = serde_yaml::to_string(&binding)?;
+    std::fs::create_dir_all(store)?;
+    std::fs::write(binding_path(store), yaml)?;
+    Ok(())
+}
+
+fn load_binding(store: &Path) -> Result<String> {
+    let path = binding_path(store);
+    if !path.exists() {
+        return Err(HimitsuError::InvalidConfig(
+            "no remote binding found; run `himitsu sync --bind <org/repo>` first".into(),
         ));
     }
+    let contents = std::fs::read_to_string(&path)?;
+    let binding: RemoteBinding = serde_yaml::from_str(&contents)?;
+    if binding.remote.is_empty() {
+        return Err(HimitsuError::InvalidConfig(
+            "remote.yaml binding has an empty remote slug".into(),
+        ));
+    }
+    Ok(binding.remote)
+}
 
-    let envs = match args.env {
-        Some(env) => vec![env],
-        None => store::list_envs(&ctx.store)?,
-    };
-
+/// Recursively copy all files from `src_dir` into `dst_dir`, preserving structure.
+/// Returns the number of files copied.
+fn copy_tree(src_dir: &Path, dst_dir: &Path) -> Result<usize> {
+    if !src_dir.exists() {
+        return Ok(0);
+    }
     let mut count = 0;
-    for env in &envs {
-        let keys = store::list_secrets(&ctx.store, env)?;
-        for key in &keys {
-            let ciphertext = store::read_secret(&ctx.store, env, key)?;
-            let plaintext = age::decrypt(&ciphertext, &identity)?;
-            let new_ciphertext = age::encrypt(&plaintext, &recipients)?;
-            store::write_secret(&ctx.store, env, key, &new_ciphertext)?;
+    for entry in std::fs::read_dir(src_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src = entry.path();
+        let dst = dst_dir.join(entry.file_name());
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&dst)?;
+            count += copy_tree(&src, &dst)?;
+        } else if file_type.is_file() {
+            std::fs::create_dir_all(dst_dir)?;
+            std::fs::copy(&src, &dst)?;
             count += 1;
         }
     }
+    Ok(count)
+}
 
-    ctx.commit_and_push(&format!("himitsu: sync {count} secret(s)"));
+pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
+    // ── bind subcommand ──────────────────────────────────────────────────────
+    if let Some(slug) = &args.bind {
+        config::validate_remote_slug(slug)?;
+        // Verify the remote actually exists locally before persisting the binding.
+        config::remote_store_path(&ctx.user_home, slug)?;
+        save_binding(&ctx.store, slug)?;
+        println!("Bound store to remote {slug}");
+        return Ok(());
+    }
+
+    // ── mirror sync ──────────────────────────────────────────────────────────
+    let slug = load_binding(&ctx.store)?;
+    let remote_path = config::remote_store_path(&ctx.user_home, &slug)?;
+
+    // Best-effort git pull on the remote (does not fail sync if network is unavailable).
+    match crate::git::pull(&remote_path) {
+        Ok(_) => tracing::debug!("pulled remote {slug}"),
+        Err(e) => tracing::debug!("git pull skipped for {slug}: {e}"),
+    }
+
+    // Determine which environments to mirror.
+    let envs = match &args.env {
+        Some(env) => vec![env.clone()],
+        None => store::list_envs(&remote_path)?,
+    };
+
+    // Mirror encrypted secret files without decrypting or re-encrypting.
+    let mut secrets_count = 0usize;
+    for env in &envs {
+        let src_env_dir = remote_path.join("vars").join(env);
+        let dst_env_dir = ctx.store.join("vars").join(env);
+        secrets_count += copy_tree(&src_env_dir, &dst_env_dir)?;
+    }
+
+    // Mirror recipient public-key material.
+    let recipients_count = copy_tree(
+        &remote_path.join("recipients"),
+        &ctx.store.join("recipients"),
+    )?;
+
+    ctx.commit_and_push(&format!(
+        "himitsu: sync {secrets_count} secret(s) from {slug}"
+    ));
 
     println!(
-        "Synced {count} secret(s) for {} recipient(s)",
-        recipients.len()
+        "Synced {secrets_count} secret(s) and {recipients_count} recipient file(s) from {slug}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_and_load_binding_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_binding(tmp.path(), "my-org/my-repo").unwrap();
+        let slug = load_binding(tmp.path()).unwrap();
+        assert_eq!(slug, "my-org/my-repo");
+    }
+
+    #[test]
+    fn load_binding_errors_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = load_binding(tmp.path()).unwrap_err();
+        assert!(matches!(err, HimitsuError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn copy_tree_copies_files_recursively() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(src.path().join("sub")).unwrap();
+        std::fs::write(src.path().join("a.age"), b"data1").unwrap();
+        std::fs::write(src.path().join("sub/b.age"), b"data2").unwrap();
+
+        let count = copy_tree(src.path(), dst.path()).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(std::fs::read(dst.path().join("a.age")).unwrap(), b"data1");
+        assert_eq!(
+            std::fs::read(dst.path().join("sub/b.age")).unwrap(),
+            b"data2"
+        );
+    }
+
+    #[test]
+    fn copy_tree_returns_zero_for_missing_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let count = copy_tree(&tmp.path().join("nonexistent"), tmp.path()).unwrap();
+        assert_eq!(count, 0);
+    }
 }
