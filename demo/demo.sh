@@ -198,5 +198,49 @@ type_cmd "find \$HIMITSU_HOME -type f | sort"
 find "$DEMO_HOME" -type f | sed "s|$DEMO_HOME|\~/.himitsu|" | sort
 echo
 
+# ── Offline setup: local "upstream" store for remote/sync sections ────────────
+# Creates a self-contained git repo whose himitsu store is at its root —
+# the layout that `remote add` clones and `-r` / `sync` read from.
+UPSTREAM_DIR="$DEMO_HOME/demo-remote"
+mkdir -p "$UPSTREAM_DIR"
+git -C "$UPSTREAM_DIR" init -q 2>/dev/null
+git -C "$UPSTREAM_DIR" config user.email "demo@example.com"
+git -C "$UPSTREAM_DIR" config user.name "Demo"
+"$HIMITSU_BIN" -s "$UPSTREAM_DIR" init > /dev/null 2>&1
+"$HIMITSU_BIN" -s "$UPSTREAM_DIR" set prod SHARED_API_KEY "team-key-abc-789" > /dev/null 2>&1
+"$HIMITSU_BIN" -s "$UPSTREAM_DIR" set prod SHARED_DB_URL "postgres://db.internal/app" > /dev/null 2>&1
+git -C "$UPSTREAM_DIR" add -A 2>/dev/null
+git -C "$UPSTREAM_DIR" commit -m "himitsu: add team secrets" -q 2>/dev/null
+
+# ----------------------------------------------------------
+banner "17. Remote add — register a team secrets repository"
+
+note "Register a shared secrets repository as a named remote:"
+type_cmd "himitsu remote add acme/infra --url \$UPSTREAM_DIR"
+"$HIMITSU_BIN" -s "$DEMO_STORE" remote add acme/infra --url "$UPSTREAM_DIR" || true
+echo
+sleep 0.15
+
+# ----------------------------------------------------------
+banner "18. --remote (-r) — select a remote store inline"
+
+note "Inspect any registered remote store without switching projects:"
+h_bare -r acme/infra ls
+h_bare -r acme/infra ls prod
+h_bare -r acme/infra get prod SHARED_API_KEY
+
+# ----------------------------------------------------------
+banner "19. Sync — mirror encrypted files into the project store"
+
+note "Bind the current project store to the remote:"
+h sync --bind acme/infra
+
+note "Mirror all environments from the bound remote (no decryption):"
+h sync
+
+note "Synced secrets are now accessible in the local store:"
+h ls prod
+h get prod SHARED_API_KEY
+
 printf "\n${BOLD}${GREEN}Done. All operations completed successfully.${RESET}\n\n"
 sleep 0.3
