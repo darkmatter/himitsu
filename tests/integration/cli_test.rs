@@ -466,6 +466,475 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("git"));
 }
 
+// ============ --remote flag tests ============
+
+/// Create and initialise a remote data store at `<home>/data/<org>/<repo>`.
+///
+/// `remote_store_path()` only requires the directory to exist; by also running
+/// `himitsu init` we get a properly seeded store (vars/, recipients/, self.pub)
+/// that can be used with `set`/`get`.
+fn create_remote_store(home: &TempDir, slug: &str) -> std::path::PathBuf {
+    let (org, repo) = slug.split_once('/').unwrap();
+    let dest = home.path().join("data").join(org).join(repo);
+    std::fs::create_dir_all(&dest).unwrap();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &dest.to_string_lossy(), "init"])
+        .assert()
+        .success();
+    dest
+}
+
+#[test]
+fn remote_flag_resolves_to_data_dir() {
+    let (home, _project) = setup();
+    let slug = "acme/secrets";
+    let remote_store = create_remote_store(&home, slug);
+
+    // Write a secret directly into the remote store.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &remote_store.to_string_lossy(),
+            "set",
+            "prod",
+            "REMOTE_KEY",
+            "remote-value",
+        ])
+        .assert()
+        .success();
+
+    // Read it back via the short `-r` flag — must return the same value.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["-r", slug, "get", "prod", "REMOTE_KEY"])
+        .assert()
+        .success()
+        .stdout("remote-value");
+}
+
+#[test]
+fn remote_flag_long_form_resolves() {
+    let (home, _project) = setup();
+    let slug = "myorg/myrepo";
+    let remote_store = create_remote_store(&home, slug);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &remote_store.to_string_lossy(),
+            "set",
+            "dev",
+            "DB_PASS",
+            "hunter2",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", slug, "get", "dev", "DB_PASS"])
+        .assert()
+        .success()
+        .stdout("hunter2");
+}
+
+#[test]
+fn remote_flag_fails_for_unknown_slug() {
+    let (home, _project) = setup();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["-r", "ghost/missing", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ghost/missing"));
+}
+
+#[test]
+fn remote_flag_rejects_invalid_slug() {
+    let (home, _project) = setup();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["-r", "notaslug", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid"));
+}
+
+#[test]
+fn remote_flag_conflicts_with_store() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    // clap enforces mutual exclusion at parse time — must fail before dispatch.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "--remote", "org/repo", "ls"])
+        .assert()
+        .failure();
+}
+
+// ============ remote add tests ============
+
+/// Create a local git repository with one initial commit so it can be cloned.
+fn create_local_git_repo(path: &std::path::Path) {
+    std::fs::create_dir_all(path).unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            // Avoid prompts / host-key checks for non-network repos.
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command failed");
+    };
+
+    git(&["init"]);
+    std::fs::write(path.join("README"), b"remote store\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "init"]);
+}
+
+#[test]
+fn remote_add_clones_local_repo() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let source = tempfile::tempdir().unwrap();
+    create_local_git_repo(source.path());
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &s,
+            "remote",
+            "add",
+            "test-org/my-repo",
+            "--url",
+            &source.path().to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added remote 'test-org/my-repo'"));
+
+    // The remote should be cloned into the expected data directory.
+    assert!(home.path().join("data/test-org/my-repo").exists());
+}
+
+#[test]
+fn remote_add_registers_store_in_known_stores() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let source = tempfile::tempdir().unwrap();
+    create_local_git_repo(source.path());
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &s,
+            "remote",
+            "add",
+            "acme/repo",
+            "--url",
+            &source.path().to_string_lossy(),
+        ])
+        .assert()
+        .success();
+
+    // After adding, `remote_store_path` should resolve it successfully.
+    // Proxy test: using `-r acme/repo` with a harmless subcommand must not
+    // fail with "remote not found".
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["-r", "acme/repo", "ls"])
+        .assert()
+        // May succeed (empty store) or fail on a different error — just not
+        // RemoteNotFound.
+        .stderr(predicate::str::contains("remote not found").not());
+}
+
+#[test]
+fn remote_add_duplicate_fails() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let source = tempfile::tempdir().unwrap();
+    create_local_git_repo(source.path());
+    let url = source.path().to_string_lossy().to_string();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
+        .assert()
+        .success();
+
+    // Second add with the same slug must fail.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn remote_add_invalid_slug_fails() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "remote", "add", "notaslug"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid"));
+}
+
+// ============ sync tests ============
+
+/// Build a remote data store that already has a secret in `env` / `key`.
+/// Returns the data dir path (i.e., `<home>/data/<org>/<repo>`).
+fn setup_remote_with_secret(
+    home: &TempDir,
+    slug: &str,
+    env: &str,
+    key: &str,
+    value: &str,
+) -> std::path::PathBuf {
+    let remote_store = create_remote_store(home, slug);
+    let rs = remote_store.to_string_lossy().to_string();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "set", env, key, value])
+        .assert()
+        .success();
+    remote_store
+}
+
+#[test]
+fn sync_bind_writes_remote_yaml() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    // The remote store directory must exist before binding.
+    create_remote_store(&home, "org/proj");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "org/proj"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Bound store to remote org/proj"));
+
+    let remote_yaml = project.path().join(".himitsu/remote.yaml");
+    assert!(remote_yaml.exists(), "remote.yaml should be written");
+    let contents = std::fs::read_to_string(&remote_yaml).unwrap();
+    assert!(contents.contains("org/proj"));
+}
+
+#[test]
+fn sync_bind_fails_for_unknown_remote() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    // "ghost/missing" does not exist in <home>/data.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "ghost/missing"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ghost/missing"));
+}
+
+#[test]
+fn sync_without_bind_fails_with_useful_error() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no remote binding"));
+}
+
+#[test]
+fn sync_mirrors_ciphertext_byte_for_byte() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let remote_dir =
+        setup_remote_with_secret(&home, "acme/vault", "prod", "DB_URL", "postgres://secret");
+
+    // Bind the project store to the remote and then sync.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "acme/vault"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 secret(s)"));
+
+    // The mirrored .age file must be byte-for-byte identical to the source.
+    let remote_age = remote_dir.join("vars/prod/DB_URL.age");
+    let local_age = project.path().join(".himitsu/vars/prod/DB_URL.age");
+
+    assert!(
+        local_age.exists(),
+        ".age file should be mirrored to local store"
+    );
+    assert_eq!(
+        std::fs::read(&remote_age).unwrap(),
+        std::fs::read(&local_age).unwrap(),
+        "mirrored ciphertext must be byte-for-byte identical to source"
+    );
+}
+
+#[test]
+fn sync_mirrors_recipients() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let remote_dir = create_remote_store(&home, "acme/keys");
+    let rs = remote_dir.to_string_lossy().to_string();
+
+    // Add an extra recipient to the remote store.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "recipient", "add", "device2", "--self"])
+        .assert()
+        .success();
+
+    // Bind and sync.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "acme/keys"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recipient file(s)"));
+
+    // device2.pub must appear in the local store after mirroring.
+    assert!(
+        project
+            .path()
+            .join(".himitsu/recipients/common/device2.pub")
+            .exists(),
+        "recipient public-key file must be mirrored"
+    );
+}
+
+#[test]
+fn sync_env_scope_mirrors_only_requested_env() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let remote_dir = create_remote_store(&home, "acme/scoped");
+    let rs = remote_dir.to_string_lossy().to_string();
+
+    // Populate two environments in the remote.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "set", "prod", "PROD_KEY", "pval"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "set", "staging", "STAGING_KEY", "sval"])
+        .assert()
+        .success();
+
+    // Bind and sync ONLY the "prod" environment.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "acme/scoped"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 secret(s)"));
+
+    // prod must be present; staging must be absent.
+    assert!(
+        project
+            .path()
+            .join(".himitsu/vars/prod/PROD_KEY.age")
+            .exists(),
+        "prod secret should be mirrored"
+    );
+    assert!(
+        !project
+            .path()
+            .join(".himitsu/vars/staging/STAGING_KEY.age")
+            .exists(),
+        "staging secret must NOT be mirrored when only 'prod' was requested"
+    );
+}
+
+#[test]
+fn sync_all_envs_when_no_env_specified() {
+    let (home, project) = setup();
+    let s = store_flag(&project);
+
+    let remote_dir = create_remote_store(&home, "acme/allenvs");
+    let rs = remote_dir.to_string_lossy().to_string();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "set", "prod", "PK", "pv"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &rs, "set", "staging", "SK", "sv"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync", "--bind", "acme/allenvs"])
+        .assert()
+        .success();
+
+    // Sync without specifying an env — should mirror both environments.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 secret(s)"));
+
+    assert!(project.path().join(".himitsu/vars/prod/PK.age").exists());
+    assert!(project.path().join(".himitsu/vars/staging/SK.age").exists());
+}
+
 // ============ git tests ============
 
 #[test]
