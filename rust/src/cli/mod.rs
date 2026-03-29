@@ -9,6 +9,7 @@ pub mod inbox;
 pub mod init;
 pub mod ls;
 pub mod recipient;
+pub mod rekey;
 pub mod remote;
 pub mod schema;
 pub mod search;
@@ -137,6 +138,10 @@ pub enum Command {
     Ls(ls::LsArgs),
 
     /// Re-encrypt secrets for current recipients.
+    Rekey(rekey::RekeyArgs),
+
+    /// (Deprecated) Re-encrypt secrets. Use `rekey` instead.
+    #[command(hide = true)]
     Encrypt(encrypt::EncryptArgs),
 
     /// Decrypt secrets (not supported - secrets are never stored in plaintext).
@@ -234,7 +239,7 @@ impl Cli {
             Command::Set(_)
                 | Command::Get(_)
                 | Command::Encrypt(_)
-                | Command::Sync(_)
+                | Command::Rekey(_)
                 | Command::Recipient(_)
                 | Command::Group(_)
                 | Command::Schema(_)
@@ -263,6 +268,7 @@ impl Cli {
             Command::Set(args) => set::run(args, &ctx),
             Command::Get(args) => get::run(args, &ctx),
             Command::Ls(args) => ls::run(args, &ctx),
+            Command::Rekey(args) => rekey::run(args, &ctx),
             Command::Encrypt(args) => encrypt::run(args, &ctx),
             Command::Decrypt(args) => decrypt::run(args, &ctx),
             Command::Sync(args) => sync::run(args, &ctx),
