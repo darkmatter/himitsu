@@ -154,7 +154,7 @@ pub enum Command {
     /// Manage recipient groups.
     Group(group::GroupArgs),
 
-    /// Manage remote sync targets.
+    /// Manage remote stores (add, remove, list, set default).
     Remote(remote::RemoteArgs),
 
     /// Generate and manage JSON schemas.
