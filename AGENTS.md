@@ -1,129 +1,276 @@
-# Himitsu Agent Instructions (AGENTS.md)
+You are an experienced, pragmatic software engineering AI agent. Do not over-engineer a solution when a simple one is possible. Keep edits minimal. If you want an exception to ANY rule, you MUST stop and get permission first.
 
-Welcome! This file provides essential guidelines, commands, and project conventions for AI coding agents operating in the `himitsu` repository. `himitsu` is an age-based secret management tool with transport-agnostic sharing.
+# Himitsu — Agent Guide
 
----
+`himitsu` (秘密, "secret") is an **age-based secret management CLI** with transport-agnostic sharing. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key (`vars/<env>/<KEY>.age`) in git-backed remotes, and shared via signed envelopes over GitHub PR inboxes or Nostr — never as plaintext.
 
-## 1. Build, Lint, and Test Commands
-
-### Rust CLI (Root directory)
-The primary implementation is a Rust binary. Ensure you are in the project root when executing `cargo` commands.
-
-- **Build**:
-  - Debug: `cargo build`
-  - Release: `cargo build --release`
-- **Lint & Format**:
-  - Format Check: `cargo fmt --all -- --check`
-  - Format Fix: `cargo fmt --all`
-  - Clippy (Strict): `cargo clippy --workspace --all-targets -- -D warnings`
-- **Testing Suites**:
-  - Run all tests: `cargo test --workspace`
-  - Run unit tests only: `cargo test --lib`
-  - Run integration tests only: `cargo test --test '*'`
-- **Running Specific Tests**:
-  - Single test function: `cargo test <test_function_name> -- --nocapture`
-  - Specific integration file test: `cargo test --test <file_name> <test_function_name> -- --nocapture`
-  - *Example*: `cargo test --test cli_test test_init_command -- --nocapture`
-- **Snapshot Tests**: 
-  - Run snapshots: `cargo insta test`
-  - Review and accept changes: `cargo insta review`
-
-### Bun / TypeScript TUI (`/tui` directory)
-The TUI is a Bun-based TypeScript application. Change directory to `tui/` before running these commands.
-
-- **Install**: `bun install`
-- **Type Check**: `bun run check` (Executes `tsc --noEmit`)
-- **Run Dev**: `bun run dev`
+The project is undergoing a **full Rust rewrite** from a legacy shell implementation. See `docs/IMPLEMENTATION_PLAN.md` for the current phase status and open work.
 
 ---
 
-## 2. Code Style & Architecture Guidelines
+## Project Overview
 
-### Rust Conventions
-- **Imports**: Group imports by `std`, external crates, and internal modules. Separate these groups with empty lines.
-- **Formatting**: Strictly rely on `rustfmt`. Do not manually override formatting.
-- **Naming Conventions**: 
-  - `snake_case` for variables, functions, and modules.
-  - `PascalCase` for structs, traits, and enums.
-  - `SCREAMING_SNAKE_CASE` for constants and statics.
-- **Error Handling**: 
-  - Use the `thiserror` crate to define specific error variants.
-  - Do NOT use `anyhow` or `Box<dyn Error>` in core library code.
-  - Define custom errors in `rust/src/error.rs` as variants of `pub enum HimitsuError`.
-  - Use `Result<T, HimitsuError>` for all failable operations.
-  - Include relevant context in error messages (e.g., `#[error("config file not found: {0}")]`).
-- **Logging & Output**: 
-  - Use the `tracing` crate (`trace!`, `debug!`, `info!`, `warn!`, `error!`) for internal diagnostics and telemetry.
-  - Reserve `println!` and `eprintln!` strictly for CLI output intended for the user (e.g., structured output of a command).
-- **Security Mandate**: 
-  - **Zero Plaintext**: Never write unencrypted secrets to the filesystem. `himitsu` strictly relies on an `age`-encrypted at-rest model.
+| Area | Detail |
+|---|---|
+| **Language** | Rust (CLI binary), TypeScript/Bun (TUI) |
+| **Crypto** | `age` crate (x25519 encryption), Ed25519 (envelope signing) |
+| **Storage** | Local filesystem (`~/.himitsu/`), SQLite index (`rusqlite`) |
+| **Serialization** | `serde_json`, `serde_yaml`, `prost` (protobuf for config schema) |
+| **CLI framework** | `clap` v4 (derive macros) |
+| **Error handling** | `thiserror` |
+| **Logging** | `tracing` + `tracing-subscriber` |
+| **Dev environment** | Nix flake (`flake.nix`) |
+| **CI** | GitHub Actions (Ubuntu + macOS) |
+| **Issue tracking** | `bd` (beads) — see [Beads Issue Tracker](#beads-issue-tracker) |
 
-### TypeScript / TUI Conventions
-- **Type Safety**: Avoid `any`. Define strict interfaces for data structures.
-- **Module System**: Ensure the use of ES modules (`"type": "module"`).
-- **UI Logic**: Favor functional components and immutable state updates where applicable. 
+Key design invariants:
+- **Zero plaintext at rest** — secrets are always encrypted before hitting the filesystem.
+- **Transport is untrusted** — only envelope signatures and age encryption protect secrets; the transport layer (GitHub, Nostr, etc.) is never trusted.
+- **One file per secret** — `vars/<env>/<KEY>.age` keeps diffs readable and listing fast without any decryption.
 
 ---
 
-## 3. Mandatory Agent Workflows
+## Reference
 
-### Rule 1: Implementation Plan Tracking (Cursor Rules)
-We track feature completion strictly through `docs/IMPLEMENTATION_PLAN.md`.
-When you finish a task, you **MUST** update the plan:
-1. **Locate the Item**: Open `docs/IMPLEMENTATION_PLAN.md` and find the corresponding Goal, Deliverable, Acceptance Criteria, or Test case.
-2. **Mark as Done**: Change `- [ ]` to `- [x]`.
-3. **Phase Completion**: If this was the last item in a Phase, check off the phase header (e.g., `- [x] **Phase 1 complete**`).
+### Directory Layout
 
-### Rule 2: Integration Testing Pattern
-When writing new CLI integration tests in `tests/integration/`, strictly adhere to the `assert_cmd` and `tempfile` isolation pattern. Always mock `HOME` and execute within a temporary directory to avoid mutating the developer's actual machine or relying on external state.
+```
+himitsu/
+├── rust/src/
+│   ├── main.rs               # Entrypoint, CLI dispatch
+│   ├── error.rs              # HimitsuError enum (all error variants)
+│   ├── git.rs                # git CLI wrapper
+│   ├── cli/                  # One file per subcommand
+│   │   ├── mod.rs            # Cli struct + command dispatch
+│   │   ├── init.rs, set.rs, get.rs, ls.rs
+│   │   ├── encrypt.rs, decrypt.rs, sync.rs, search.rs
+│   │   ├── recipient.rs, group.rs, remote.rs, share.rs
+│   │   ├── inbox.rs, import.rs, schema.rs, codegen.rs
+│   │   └── git.rs
+│   ├── config/mod.rs         # Mode detection, config loading/validation
+│   ├── crypto/               # age encryption/decryption, Ed25519
+│   ├── remote/               # Remote resolution, secret file I/O, sync
+│   ├── index/mod.rs          # SQLite cross-remote search index
+│   ├── keyring/              # OS keychain adapters (macOS, etc.)
+│   └── proto/mod.rs          # Protobuf-generated config schema models
+├── tests/integration/
+│   └── cli_test.rs           # All integration tests (assert_cmd pattern)
+├── proto/                    # .proto source files (compiled by build.rs)
+├── tui/                      # Bun/TypeScript terminal UI (@opentui/core)
+├── docs/
+│   ├── ARCHITECTURE.md       # Full system design
+│   ├── IMPLEMENTATION_PLAN.md # Phase-by-phase execution plan (update this!)
+│   ├── SHARING.md            # Envelope / transport protocol spec
+│   ├── BACKENDS.md, SERVER_API.md, USE_CASES.md
+├── action/entrypoint.sh      # GitHub Actions entrypoint
+├── build.rs                  # Proto compilation (prost-build)
+├── flake.nix                 # Nix dev environment + package
+└── Cargo.toml                # Single-binary workspace
+```
+
+### Key Modules
+
+| Module | Responsibility |
+|---|---|
+| `cli/` | Command parsing and UX; one file per subcommand |
+| `config/` | Project-mode vs user-mode detection; config schema |
+| `crypto/` | age encrypt/decrypt; Ed25519 envelope signing |
+| `remote/` | Remote discovery, secret file I/O, sync destinations |
+| `index/` | SQLite secret index for cross-remote `search` |
+| `keyring/` | OS keychain adapters for local age key storage |
+| `proto/` | Protobuf models (generated from `proto/*.proto`) |
+| `error.rs` | `HimitsuError` — all error variants live here |
+
+### Runtime Paths
+
+```
+~/.himitsu/
+  config.yaml                # User config (default remote, etc.)
+  keys/age.txt               # age private key
+  data/<org>/<repo>/         # Remote clones
+    vars/<env>/<KEY>.age     # Encrypted secret files
+    recipients/<group>/*.pub # Recipient age pubkeys
+    himitsu.yaml             # Remote policy config
+    data.json                # Group/env metadata
+  state/index.db             # Cross-remote search index (SQLite)
+  locks/sources.lock.json    # Pinned remote identity fingerprints
+```
+
+---
+
+## Essential Commands
+
+### Rust CLI (run from project root)
+
+```bash
+cargo build                              # Debug build
+cargo build --release                    # Release build
+cargo fmt --all                          # Format code
+cargo fmt --all -- --check               # Check formatting (CI gate)
+cargo clippy --workspace --all-targets -- -D warnings  # Lint (CI gate)
+cargo test --workspace                   # All tests
+cargo test --lib                         # Unit tests only
+cargo test --test '*'                    # Integration tests only
+cargo test --test cli_test <fn_name> -- --nocapture  # Single integration test
+cargo insta test                         # Run snapshot tests
+cargo insta review                       # Review/accept snapshot changes
+```
+
+### Bun / TypeScript TUI (`tui/` directory)
+
+```bash
+cd tui
+bun install      # Install dependencies
+bun run check    # Type-check (tsc --noEmit)
+bun run dev      # Run TUI
+```
+
+### Nix
+
+```bash
+nix develop          # Enter dev shell
+nix build            # Build the package
+nix flake check      # Verify full Nix package (run after Nix/dep changes)
+```
+
+---
+
+## Patterns
+
+### Integration Test Isolation
+
+All integration tests live in `tests/integration/cli_test.rs` and use `assert_cmd` + `tempfile`. The env var `HIMITSU_HOME` (not `HOME`) isolates the himitsu key store; `--store` isolates the project secret store. **Do not** rely on the developer's real home directory.
 
 ```rust
 use assert_cmd::Command;
+use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn himitsu() -> Command {
     Command::cargo_bin("himitsu").unwrap()
 }
 
-#[test]
-fn test_new_feature_isolation() {
+/// Canonical setup helper — mirrors the one in cli_test.rs
+fn setup() -> (TempDir, TempDir) {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-
-    // Isolated execution
     himitsu()
-        .env("HOME", home.path())
-        .current_dir(project.path())
-        .args(["mycmd", "--flag"])
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &project.path().join(".himitsu").to_string_lossy(),
+            "init",
+        ])
+        .assert()
+        .success();
+    (home, project)
+}
+
+#[test]
+fn test_new_feature() {
+    let (home, project) = setup();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &project.path().join(".himitsu").to_string_lossy(), "mycmd", "--flag"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("expected output"));
+        .stdout(predicate::str::contains("expected output"));
 }
 ```
 
-### Rule 3: File Modifications & Dependencies
-- Write idiomatic Rust code and rely on compiler warnings (`cargo check`).
-- Ensure `Cargo.lock` is updated automatically when modifying `Cargo.toml`.
-- If modifying the TUI, ensure `bun.lock` is consistent by running `bun install`.
-- Limit external dependencies. Rely on established crates like `serde`, `clap`, `thiserror`, `tracing`, and `rusqlite`.
+### Error Handling
 
-### Rule 4: Nix and Environment
-- The repository provides a `flake.nix` for declarative environments. When working on dependencies, ensure they can still build in the isolated Nix sandbox.
-- Use `nix build` or `nix flake check` to verify the complete package if making significant infrastructure changes.
+Add all new error variants to `HimitsuError` in `rust/src/error.rs`:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum HimitsuError {
+    #[error("config not found: {0}")]
+    ConfigNotFound(String),
+    // ...
+}
+```
+
+Return `Result<T, HimitsuError>` from all failable functions. Never use `anyhow` or `Box<dyn Error>` in library/core code.
+
+### Implementing a New Subcommand
+
+1. Create `rust/src/cli/<name>.rs` with a `pub struct <Name>Args` (clap derive) and `pub fn run(args: <Name>Args) -> Result<(), HimitsuError>`.
+2. Register it in `rust/src/cli/mod.rs` under the `Commands` enum.
+3. Dispatch it in `main.rs`.
+4. Add integration tests in `tests/integration/cli_test.rs` using the setup pattern above.
+5. Check off the matching item in `docs/IMPLEMENTATION_PLAN.md`.
+
+### Implementation Plan Tracking
+
+When completing any planned work:
+1. Open `docs/IMPLEMENTATION_PLAN.md`.
+2. Change `- [ ]` → `- [x]` for the matching item.
+3. If it was the last item in a phase, check the phase header too.
 
 ---
 
-## 4. Subsystem Locations
+## Anti-patterns
 
-- **CLI Subcommands**: `rust/src/cli/*.rs`
-- **Crypto / Encryption**: `rust/src/crypto/`
-- **Config & Discovery**: `rust/src/config/`
-- **Keyring Adapters**: `rust/src/keyring/`
-- **Local SQLite Index**: `rust/src/index/`
-- **Integration Tests**: `tests/integration/`
-- **Legacy Shell / Bats Tests**: `tests/bats/`
-- **GitHub Actions**: `action/`
-- **Terminal UI**: `tui/`
+- **Do NOT write plaintext secrets to disk.** `bulk decrypt` is intentionally unsupported. Use `himitsu get <env> <key>` to read individual values.
+- **Do NOT use `HOME` in tests.** Use `HIMITSU_HOME` to isolate himitsu's key store in integration tests (see pattern above).
+- **Do NOT use `anyhow` or `Box<dyn Error>` in library code.** All errors must be typed `HimitsuError` variants.
+- **Do NOT manually format code.** Let `rustfmt` handle it; never add `#[rustfmt::skip]` without explicit permission.
+- **Do NOT add external dependencies without discussion.** Prefer established crates (`serde`, `clap`, `thiserror`, `tracing`, `rusqlite`); keep the dependency surface minimal.
+- **Do NOT add markdown TODO lists.** Use `bd` for all task tracking.
+
+---
+
+## Code Style
+
+### Rust
+
+- Formatting: `rustfmt` (enforced in CI — zero tolerance for format violations).
+- Naming: `snake_case` functions/variables/modules, `PascalCase` types/traits/enums, `SCREAMING_SNAKE_CASE` constants.
+- Imports: group `std` → external crates → internal modules, separated by blank lines.
+- Logging: `tracing` macros for internal diagnostics; `println!`/`eprintln!` only for user-facing CLI output.
+
+### TypeScript (TUI)
+
+- Strict types — no `any`. Define interfaces for all data shapes.
+- ES modules only (`"type": "module"` in `package.json`).
+- Favor immutable state updates.
+
+---
+
+## Commit and Pull Request Guidelines
+
+### Pre-commit Checklist
+
+```bash
+cargo fmt --all -- --check             # Must pass
+cargo clippy --workspace --all-targets -- -D warnings  # Must pass
+cargo test --workspace                 # Must pass
+cd tui && bun run check                # If TUI was changed
+```
+
+CI enforces all three Rust gates on every push to `main` and every PR.
+
+### Commit Message Convention
+
+Use `type: short description` (≤72 chars), e.g.:
+
+```
+feat: add recipient rm subcommand
+fix: handle missing config.yaml gracefully
+test: add integration tests for group lifecycle
+chore: update clap to 4.5
+docs: update implementation plan phase 1 status
+```
+
+Types: `feat`, `fix`, `test`, `chore`, `docs`, `refactor`, `perf`.
+
+### Pull Request Requirements
+
+- All CI checks green (fmt, clippy, tests on Ubuntu + macOS).
+- Include a brief description of what changed and why.
+- Reference the relevant `bd` issue ID if one exists (e.g., `closes bd-42`).
+- Update `docs/IMPLEMENTATION_PLAN.md` checkboxes if the PR completes planned work.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
