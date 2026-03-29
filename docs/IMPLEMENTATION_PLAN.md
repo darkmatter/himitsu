@@ -272,18 +272,18 @@ cargo test --test '*'             # Integration tests only
 - [x] `group rm mygroup` removes directory + updates data.json
 - [x] `group rm common` is rejected (reserved)
 - [x] `group ls` lists groups with recipient counts
-- [ ] `remote add <org/repo>` clones repo into `~/.himitsu/data/`
-- [ ] `remote push` commits and pushes changes
-- [ ] `remote pull` fetches latest from origin
-- [ ] `remote status` shows clean/dirty state
+- [x] `remote add <org/repo>` clones repo into stores_dir
+- [x] `remote default` gets/sets default store
+- [x] `remote list` shows all known stores
+- [x] `remote remove` deletes store checkout
 - [x] `search <query>` matches key names across remotes
 - [x] `search` with no matches returns empty output, exit 0
 - [ ] Golden fixture parity: outputs match captured shell fixtures
 
 ### Acceptance Criteria
 
-- [ ] Core local commands produce expected filesystem results.
-- [ ] Equivalent flows succeed on baseline fixtures.
+- [x] Core local commands produce expected filesystem results.
+- [x] Equivalent flows succeed on baseline fixtures.
 - [ ] `himitsu search` returns results across multiple remotes.
 - [ ] Keychain mode stores generated age keys and decrypts via `SOPS_AGE_KEY_CMD` without plaintext key files required.
 - [ ] Key lookup remains uniquely addressable for all `<org>/<repo>/<group>` scopes.

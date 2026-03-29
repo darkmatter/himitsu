@@ -60,7 +60,7 @@ himitsu -r myorg/secrets ls prod     # lists: API_KEY, DB_PASSWORD
 himitsu search DB
 
 # 8. Push changes
-himitsu -r myorg/secrets remote push
+himitsu --remote myorg/secrets git push
 ```
 
 ## Directory Layout
@@ -130,7 +130,7 @@ Decrypt and print a secret value.
 
 List environments, or list keys within an environment.
 
-### `himitsu encrypt [env]`
+### `himitsu rekey [path]`
 
 Re-encrypt all secrets for the current recipient set. Run this after adding or removing recipients.
 
@@ -162,20 +162,27 @@ himitsu -r myorg/secrets group ls
 himitsu -r myorg/secrets group rm temp    # 'common' is reserved
 ```
 
-### `himitsu remote add|push|pull|status`
+### `himitsu remote add|default|list|remove`
 
 ```bash
 himitsu remote add myorg/secrets              # Clone existing
-himitsu remote add --github --org myorg --name secrets  # Create + clone
+himitsu remote add myorg/secrets --url git@github.com:myorg/secrets.git
 
-himitsu -r myorg/secrets remote push
-himitsu -r myorg/secrets remote pull
-himitsu -r myorg/secrets remote status
+himitsu remote list                           # Show all registered stores
+himitsu remote default myorg/secrets          # Set default store
+himitsu remote default                        # Show current default
+himitsu remote remove myorg/secrets           # Delete store checkout
 ```
 
-### `himitsu sync [env]`
+### `himitsu sync [store]`
 
-Re-encrypt all secrets for the updated recipient set and sync to project destinations.
+Pull all stores (or a specific one) from git remotes and re-encrypt any drifted secrets.
+
+```bash
+himitsu sync                    # Pull and rekey all stores
+himitsu sync myorg/secrets      # Pull and rekey one store
+himitsu sync --no-rekey         # Pull only, skip re-encryption
+```
 
 ### Flake Outputs
 
