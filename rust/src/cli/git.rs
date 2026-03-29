@@ -24,10 +24,10 @@ pub struct GitArgs {
 }
 
 pub fn run(args: GitArgs, ctx: &Context) -> Result<()> {
-    let home = &ctx.user_home;
+    let home = &ctx.data_dir;
 
     // ── 1. Is himitsu initialized at all? ────────────────────────
-    if !home.join("keys").exists() {
+    if !home.join("key").exists() {
         return prompt_init(ctx);
     }
 

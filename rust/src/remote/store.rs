@@ -1,64 +1,82 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{HimitsuError, Result};
 
-/// Write an encrypted secret to `vars/<env>/<key>.age`.
-pub fn write_secret(remote_path: &Path, env: &str, key: &str, ciphertext: &[u8]) -> Result<()> {
-    let dir = remote_path.join("vars").join(env);
-    std::fs::create_dir_all(&dir)?;
-    let file_path = dir.join(format!("{key}.age"));
-    std::fs::write(&file_path, ciphertext)?;
+// ── Store-internal layout ──────────────────────────────────────────────────
+//
+//   store/.himitsu/secrets/<path>.age
+//   store/.himitsu/recipients/<group>/*.pub
+//   store/.himitsu/config.yaml
+
+/// Path to the secrets directory inside a store.
+pub fn secrets_dir(store: &Path) -> PathBuf {
+    store.join(".himitsu").join("secrets")
+}
+
+/// Path to the recipients directory inside a store.
+pub fn recipients_dir(store: &Path) -> PathBuf {
+    store.join(".himitsu").join("recipients")
+}
+
+/// Path to the store's own config file.
+pub fn store_config_path(store: &Path) -> PathBuf {
+    store.join(".himitsu").join("config.yaml")
+}
+
+// ── Secret I/O ─────────────────────────────────────────────────────────────
+
+/// Write an encrypted secret to `.himitsu/secrets/<path>.age`.
+pub fn write_secret(store: &Path, secret_path: &str, ciphertext: &[u8]) -> Result<()> {
+    let file = secrets_dir(store).join(format!("{secret_path}.age"));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file, ciphertext)?;
     Ok(())
 }
 
-/// Read an encrypted secret from `vars/<env>/<key>.age`.
-pub fn read_secret(remote_path: &Path, env: &str, key: &str) -> Result<Vec<u8>> {
-    let file_path = remote_path
-        .join("vars")
-        .join(env)
-        .join(format!("{key}.age"));
-    if !file_path.exists() {
-        return Err(HimitsuError::SecretNotFound {
-            env: env.into(),
-            key: key.into(),
-        });
+/// Read an encrypted secret from `.himitsu/secrets/<path>.age`.
+pub fn read_secret(store: &Path, secret_path: &str) -> Result<Vec<u8>> {
+    let file = secrets_dir(store).join(format!("{secret_path}.age"));
+    if !file.exists() {
+        return Err(HimitsuError::SecretNotFound(secret_path.to_string()));
     }
-    Ok(std::fs::read(&file_path)?)
+    Ok(std::fs::read(&file)?)
 }
 
-/// List all environments (directories under `vars/`).
-pub fn list_envs(remote_path: &Path) -> Result<Vec<String>> {
-    let vars_dir = remote_path.join("vars");
-    let mut envs = vec![];
-    if !vars_dir.exists() {
-        return Ok(envs);
+/// List all secret paths in the store, optionally filtered by a path prefix.
+/// Returns paths relative to `secrets_dir` without the `.age` extension.
+pub fn list_secrets(store: &Path, prefix: Option<&str>) -> Result<Vec<String>> {
+    let base = secrets_dir(store);
+    let mut paths = vec![];
+    if !base.exists() {
+        return Ok(paths);
     }
-    for entry in std::fs::read_dir(&vars_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            envs.push(entry.file_name().to_string_lossy().to_string());
-        }
+    collect_paths_recursive(&base, "", &mut paths)?;
+    paths.sort();
+
+    if let Some(pfx) = prefix {
+        let pfx_slash = format!("{pfx}/");
+        paths.retain(|p| p == pfx || p.starts_with(&pfx_slash));
     }
-    envs.sort();
-    Ok(envs)
+
+    Ok(paths)
 }
 
-/// List all secret key names in an environment.
-/// Returns key names without the `.age` extension.
-pub fn list_secrets(remote_path: &Path, env: &str) -> Result<Vec<String>> {
-    let env_dir = remote_path.join("vars").join(env);
-    let mut keys = vec![];
-    if !env_dir.exists() {
-        return Ok(keys);
+/// Delete a secret from `.himitsu/secrets/<path>.age`.
+pub fn delete_secret(store: &Path, secret_path: &str) -> Result<()> {
+    let file = secrets_dir(store).join(format!("{secret_path}.age"));
+    if !file.exists() {
+        return Err(HimitsuError::SecretNotFound(secret_path.to_string()));
     }
-    collect_secrets_recursive(&env_dir, "", &mut keys)?;
-    keys.sort();
-    Ok(keys)
+    std::fs::remove_file(&file)?;
+    Ok(())
 }
 
-/// Recursively collect secret names from a directory.
-/// Supports nested subdirectories (e.g. `integrations/STRIPE_KEY`).
-fn collect_secrets_recursive(dir: &Path, prefix: &str, keys: &mut Vec<String>) -> Result<()> {
+// ── Internal helpers ────────────────────────────────────────────────────────
+
+/// Recursively collect relative paths to `.age` files, stripping the extension.
+fn collect_paths_recursive(dir: &Path, prefix: &str, paths: &mut Vec<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let ft = entry.file_type()?;
@@ -69,15 +87,15 @@ fn collect_secrets_recursive(dir: &Path, prefix: &str, keys: &mut Vec<String>) -
             } else {
                 format!("{prefix}/{name}")
             };
-            collect_secrets_recursive(&entry.path(), &new_prefix, keys)?;
+            collect_paths_recursive(&entry.path(), &new_prefix, paths)?;
         } else if ft.is_file() && name.ends_with(".age") {
             let key_name = name.strip_suffix(".age").unwrap();
-            let full_name = if prefix.is_empty() {
+            let full = if prefix.is_empty() {
                 key_name.to_string()
             } else {
                 format!("{prefix}/{key_name}")
             };
-            keys.push(full_name);
+            paths.push(full);
         }
     }
     Ok(())
@@ -91,47 +109,65 @@ mod tests {
     fn write_and_read_secret() {
         let tmp = tempfile::tempdir().unwrap();
         let data = b"encrypted data";
-        write_secret(tmp.path(), "prod", "API_KEY", data).unwrap();
-        let read_back = read_secret(tmp.path(), "prod", "API_KEY").unwrap();
+        write_secret(tmp.path(), "prod/API_KEY", data).unwrap();
+        let read_back = read_secret(tmp.path(), "prod/API_KEY").unwrap();
         assert_eq!(read_back, data);
     }
 
     #[test]
     fn read_nonexistent_secret_fails() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = read_secret(tmp.path(), "prod", "MISSING");
+        let result = read_secret(tmp.path(), "prod/MISSING");
         assert!(result.is_err());
     }
 
     #[test]
-    fn list_envs_returns_sorted() {
+    fn list_secrets_returns_all_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("vars/prod")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("vars/dev")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("vars/common")).unwrap();
-        let envs = list_envs(tmp.path()).unwrap();
-        assert_eq!(envs, vec!["common", "dev", "prod"]);
+        let base = secrets_dir(tmp.path());
+        std::fs::create_dir_all(base.join("prod")).unwrap();
+        std::fs::write(base.join("prod/API_KEY.age"), b"enc").unwrap();
+        std::fs::write(base.join("prod/DB_PASS.age"), b"enc").unwrap();
+        std::fs::create_dir_all(base.join("dev")).unwrap();
+        std::fs::write(base.join("dev/API_KEY.age"), b"enc").unwrap();
+        let paths = list_secrets(tmp.path(), None).unwrap();
+        assert_eq!(paths, vec!["dev/API_KEY", "prod/API_KEY", "prod/DB_PASS"]);
     }
 
     #[test]
-    fn list_secrets_returns_key_names() {
+    fn list_secrets_filters_by_prefix() {
         let tmp = tempfile::tempdir().unwrap();
-        let prod = tmp.path().join("vars/prod");
-        std::fs::create_dir_all(&prod).unwrap();
-        std::fs::write(prod.join("API_KEY.age"), b"enc").unwrap();
-        std::fs::write(prod.join("DB_PASS.age"), b"enc").unwrap();
-        let keys = list_secrets(tmp.path(), "prod").unwrap();
-        assert_eq!(keys, vec!["API_KEY", "DB_PASS"]);
+        let base = secrets_dir(tmp.path());
+        std::fs::create_dir_all(base.join("prod")).unwrap();
+        std::fs::write(base.join("prod/API_KEY.age"), b"enc").unwrap();
+        std::fs::create_dir_all(base.join("dev")).unwrap();
+        std::fs::write(base.join("dev/OTHER.age"), b"enc").unwrap();
+        let paths = list_secrets(tmp.path(), Some("prod")).unwrap();
+        assert_eq!(paths, vec!["prod/API_KEY"]);
     }
 
     #[test]
     fn list_secrets_handles_nested_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let nested = tmp.path().join("vars/prod/integrations");
+        let base = secrets_dir(tmp.path());
+        let nested = base.join("prod/integrations");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("STRIPE_KEY.age"), b"enc").unwrap();
-        std::fs::write(tmp.path().join("vars/prod/DB_PASS.age"), b"enc").unwrap();
-        let keys = list_secrets(tmp.path(), "prod").unwrap();
-        assert_eq!(keys, vec!["DB_PASS", "integrations/STRIPE_KEY"]);
+        std::fs::write(base.join("prod/DB_PASS.age"), b"enc").unwrap();
+
+        // create prod first
+        std::fs::create_dir_all(base.join("prod")).unwrap();
+
+        let paths = list_secrets(tmp.path(), Some("prod")).unwrap();
+        assert_eq!(paths, vec!["prod/DB_PASS", "prod/integrations/STRIPE_KEY"]);
+    }
+
+    #[test]
+    fn delete_secret_removes_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_secret(tmp.path(), "test/KEY", b"data").unwrap();
+        assert!(read_secret(tmp.path(), "test/KEY").is_ok());
+        delete_secret(tmp.path(), "test/KEY").unwrap();
+        assert!(read_secret(tmp.path(), "test/KEY").is_err());
     }
 }

@@ -1,14 +1,15 @@
+use std::path::PathBuf;
+
 use clap::Args;
 
 use super::Context;
-use crate::config;
 use crate::error::Result;
 use crate::index::SecretIndex;
 
 /// Search secrets across all known projects.
 #[derive(Debug, Args)]
 pub struct SearchArgs {
-    /// Search query to match against key names.
+    /// Search query to match against secret paths.
     pub query: String,
 
     /// Refresh the search index before querying.
@@ -17,46 +18,66 @@ pub struct SearchArgs {
 }
 
 pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
-    let index_path = config::index_path(&ctx.user_home);
+    let index_path = ctx.index_path();
     let idx = SecretIndex::open(&index_path)?;
 
     if args.refresh {
-        refresh_index(&idx, &ctx.user_home)?;
+        refresh_index(&idx, ctx)?;
     }
 
     let results = idx.search(&args.query, None)?;
 
-    if results.is_empty() {
-        return Ok(());
-    }
-
     for result in &results {
-        println!("{}\t{}\t{}", result.remote_id, result.env, result.key_name);
+        println!("{}\t{}", result.remote_id, result.secret_path);
     }
 
     Ok(())
 }
 
-/// Refresh the search index by scanning all known stores.
-fn refresh_index(idx: &SecretIndex, user_home: &std::path::Path) -> Result<()> {
-    let stores = config::load_known_stores(user_home);
-    for store_str in &stores {
-        let store_path = std::path::PathBuf::from(store_str);
+/// Refresh the search index by rescanning all registered remotes plus stores_dir.
+fn refresh_index(idx: &SecretIndex, ctx: &Context) -> Result<()> {
+    // Re-index all remotes already registered in the SQLite index
+    let remote_ids = idx.list_remotes()?;
+    for remote_id in &remote_ids {
+        let store_path = PathBuf::from(remote_id);
         if !store_path.exists() {
             continue;
         }
+        idx.clear_remote(remote_id)?;
+        let paths = crate::remote::store::list_secrets(&store_path, None)?;
+        for path in &paths {
+            idx.upsert(remote_id, path)?;
+        }
+    }
 
-        idx.register_remote(store_str, None)?;
-        idx.clear_remote(store_str)?;
+    // Also scan stores_dir for any new stores not yet in the index
+    let stores_dir = ctx.stores_dir();
+    if stores_dir.exists() {
+        for org_entry in std::fs::read_dir(&stores_dir)? {
+            let org_entry = org_entry?;
+            if !org_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let org = org_entry.file_name().to_string_lossy().to_string();
+            for repo_entry in std::fs::read_dir(org_entry.path())? {
+                let repo_entry = repo_entry?;
+                if !repo_entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let repo = repo_entry.file_name().to_string_lossy().to_string();
+                let slug = format!("{org}/{repo}");
+                let store_path = repo_entry.path();
 
-        let envs = crate::remote::store::list_envs(&store_path)?;
-        for env in &envs {
-            let keys = crate::remote::store::list_secrets(&store_path, env)?;
-            for key in &keys {
-                let path = format!("vars/{env}/{key}.age");
-                idx.upsert(store_str, env, &path, key)?;
+                if !remote_ids.contains(&slug) {
+                    idx.register_remote(&slug, None)?;
+                    let paths = crate::remote::store::list_secrets(&store_path, None)?;
+                    for path in &paths {
+                        idx.upsert(&slug, path)?;
+                    }
+                }
             }
         }
     }
+
     Ok(())
 }

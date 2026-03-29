@@ -25,44 +25,75 @@ use crate::error::Result;
 
 /// Resolved paths for the current invocation.
 pub struct Context {
-    /// User-level home: `~/.himitsu/` (keys, config, search index).
-    pub user_home: PathBuf,
-    /// Project store: `$GIT_ROOT/.himitsu/` or `~/.himitsu/` for personal use.
+    /// XDG data directory: `~/.local/share/himitsu/` (keys, config).
+    pub data_dir: PathBuf,
+    /// XDG state directory: `~/.local/state/himitsu/` (db, stores).
+    pub state_dir: PathBuf,
+    /// Resolved store checkout path (may be empty if no store needed).
     pub store: PathBuf,
 }
 
 impl Context {
-    /// Find the git root for the current store.
-    /// Store is typically `$GIT_ROOT/.himitsu/`, so parent is the git root.
+    /// Path to the age private key file.
+    pub fn key_path(&self) -> PathBuf {
+        self.data_dir.join("key")
+    }
+
+    /// Path to the age public key file.
+    #[allow(dead_code)]
+    pub fn pubkey_path(&self) -> PathBuf {
+        self.data_dir.join("key.pub")
+    }
+
+    /// Path to the search index database.
+    pub fn index_path(&self) -> PathBuf {
+        self.state_dir.join("himitsu.db")
+    }
+
+    /// Directory containing managed store checkouts.
+    pub fn stores_dir(&self) -> PathBuf {
+        self.state_dir.join("stores")
+    }
+
+    /// Extract an identifier for the store (slug or full path).
+    pub fn store_id(&self) -> Option<String> {
+        if self.store.as_os_str().is_empty() {
+            return None;
+        }
+        // Try to get slug relative to stores_dir
+        if let Ok(rel) = self.store.strip_prefix(self.stores_dir()) {
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        Some(self.store.to_string_lossy().to_string())
+    }
+
+    /// Find the git root: in the new model the store itself is the git root.
     pub fn git_root(&self) -> Option<PathBuf> {
-        let parent = self.store.parent()?;
-        if parent.join(".git").exists() {
-            return Some(parent.to_path_buf());
+        if self.store.as_os_str().is_empty() {
+            return None;
+        }
+        if self.store.join(".git").exists() {
+            return Some(self.store.clone());
         }
         crate::config::find_git_root(&self.store)
     }
 
-    /// Commit changed files in `.himitsu/` and push to origin.
+    /// Commit `.himitsu/` changes inside the store and push to origin.
     /// Best-effort: does not fail if no git repo or no remote configured.
     pub fn commit_and_push(&self, message: &str) {
         let Some(git_root) = self.git_root() else {
             return;
         };
-        // Stage all .himitsu/ changes
-        if let Ok(rel) = self.store.strip_prefix(&git_root) {
-            let rel_str = rel.to_string_lossy();
-            let _ = crate::git::run(&["add", &rel_str], &git_root);
-        } else {
-            let _ = crate::git::run(&["add", ".himitsu"], &git_root);
-        }
+        let _ = crate::git::run(&["add", ".himitsu"], &git_root);
 
         if crate::git::run(&["diff", "--cached", "--quiet"], &git_root).is_err() {
-            // There are staged changes
             let _ = crate::git::run(&["commit", "-m", message], &git_root);
             debug!("committed: {message}");
         }
 
-        // Push -- best effort
         match crate::git::push(&git_root) {
             Ok(_) => debug!("pushed to remote"),
             Err(e) => debug!("push skipped: {e}"),
@@ -74,11 +105,11 @@ impl Context {
 #[derive(Debug, Parser)]
 #[command(name = "himitsu", version, about, long_about = None)]
 pub struct Cli {
-    /// Override the store path (default: $GIT_ROOT/.himitsu/ or ~/.himitsu/).
+    /// Override the store path directly (for testing or advanced use).
     #[arg(short = 's', long, global = true)]
     pub store: Option<String>,
 
-    /// Select a remote store by org/repo slug (resolves to ~/.himitsu/data/<org>/<repo>).
+    /// Select a remote store by org/repo slug (resolves via stores_dir).
     /// Mutually exclusive with --store.
     #[arg(short = 'r', long, global = true, conflicts_with = "store")]
     pub remote: Option<String>,
@@ -93,7 +124,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Initialize himitsu in the current project (or globally).
+    /// Initialize himitsu (create keys, config, and optionally a store).
     Init(init::InitArgs),
 
     /// Set a secret value.
@@ -102,7 +133,7 @@ pub enum Command {
     /// Get a secret value.
     Get(get::GetArgs),
 
-    /// List environments or secrets.
+    /// List secrets in the store (or all stores if none resolved).
     Ls(ls::LsArgs),
 
     /// Re-encrypt secrets for current recipients.
@@ -132,13 +163,10 @@ pub enum Command {
     /// Generate typed config code from secrets.
     Codegen(codegen::CodegenArgs),
 
-    /// Run git commands inside the himitsu directory (~/.himitsu).
+    /// Run git commands inside the himitsu data directory.
     Git(git::GitArgs),
 
     // ── Hidden commands (not yet implemented) ─────────────────────
-    // These parse and dispatch normally but are omitted from `--help`
-    // because they are stubs.  They will be promoted to visible once
-    // the backing implementation lands.
     /// Share secrets with external recipients.
     #[command(hide = true)]
     Share(share::ShareArgs),
@@ -154,57 +182,81 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
-        let user_home = crate::config::user_home();
+        let data_dir = crate::config::data_dir();
+        let state_dir = crate::config::state_dir();
 
-        // Resolve --remote slug into a concrete store override path.
-        // --remote and --store are mutually exclusive (enforced by clap).
-        let store_override: Option<String> = match &self.remote {
-            Some(slug) => Some(
-                crate::config::remote_store_path(&user_home, slug)?
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-            None => self.store.clone(),
-        };
+        // ── Smart-init check ──────────────────────────────────────────────
+        // For all non-init, non-git commands: if himitsu is not initialized,
+        // offer to run init first.
+        let is_init = matches!(self.command, Command::Init(_));
+        let is_git = matches!(self.command, Command::Git(_));
 
-        let needs_store = !matches!(self.command, Command::Init(_) | Command::Git(_));
-
-        let store = if matches!(self.command, Command::Init(_)) {
-            crate::config::store_path_or_default(&store_override)
-        } else if needs_store {
-            match crate::config::store_path(&store_override) {
-                Ok(s) => s,
-                Err(crate::error::HimitsuError::NotInitialized) => {
-                    // Smart init: prompt the user instead of hard-erroring.
-                    eprintln!("You have not initialized your secrets directory (~/.himitsu).");
-                    eprint!("Would you like to do so now? [y/N] ");
-                    std::io::Write::flush(&mut std::io::stderr())?;
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    let yes = {
-                        let t = input.trim();
-                        t.eq_ignore_ascii_case("y") || t.eq_ignore_ascii_case("yes")
-                    };
-                    if yes {
-                        eprintln!();
-                        let ctx = Context {
-                            user_home: user_home.clone(),
-                            store: crate::config::store_path_or_default(&store_override),
-                        };
-                        init::run(init::InitArgs { json: false }, &ctx)?;
-                        eprintln!();
-                        crate::config::store_path(&store_override)?
-                    } else {
-                        return Ok(());
-                    }
-                }
-                Err(e) => return Err(e),
+        if !is_init && !is_git && !data_dir.join("key").exists() {
+            eprintln!("You have not initialized himitsu.");
+            eprint!("Would you like to do so now? [y/N] ");
+            std::io::Write::flush(&mut std::io::stderr())?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let yes = {
+                let t = input.trim();
+                t.eq_ignore_ascii_case("y") || t.eq_ignore_ascii_case("yes")
+            };
+            if yes {
+                eprintln!();
+                let store_path = self.store.as_deref().map(PathBuf::from).unwrap_or_default();
+                let ctx = Context {
+                    data_dir: data_dir.clone(),
+                    state_dir: state_dir.clone(),
+                    store: store_path,
+                };
+                init::run(init::InitArgs { json: false }, &ctx)?;
+                eprintln!();
+            } else {
+                return Ok(());
             }
+        }
+
+        // ── Resolve store ─────────────────────────────────────────────────
+        let store_override: Option<PathBuf> = if let Some(slug) = &self.remote {
+            let (org, repo) = crate::config::validate_remote_slug(slug)?;
+            let path = crate::config::store_checkout(org, repo);
+            if !path.exists() {
+                return Err(crate::error::HimitsuError::RemoteNotFound(slug.clone()));
+            }
+            Some(path)
         } else {
-            crate::config::store_path_or_default(&store_override)
+            self.store.as_ref().map(PathBuf::from)
         };
 
-        let ctx = Context { user_home, store };
+        // Commands that require a resolved store
+        let needs_store = matches!(
+            self.command,
+            Command::Set(_)
+                | Command::Get(_)
+                | Command::Encrypt(_)
+                | Command::Sync(_)
+                | Command::Recipient(_)
+                | Command::Group(_)
+                | Command::Schema(_)
+                | Command::Codegen(_)
+                | Command::Share(_)
+                | Command::Import(_)
+        );
+
+        let store = if let Some(ref p) = store_override {
+            p.clone()
+        } else if needs_store {
+            crate::config::resolve_store(None)?
+        } else {
+            // Init, Ls, Search, Remote, Git: store is optional
+            PathBuf::new()
+        };
+
+        let ctx = Context {
+            data_dir,
+            state_dir,
+            store,
+        };
 
         match self.command {
             Command::Init(args) => init::run(args, &ctx),

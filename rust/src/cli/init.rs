@@ -4,11 +4,10 @@ use clap::Args;
 
 use super::Context;
 use crate::config;
-use crate::config::Config;
 use crate::crypto::age;
 use crate::error::Result;
 
-/// Initialize himitsu in the current project (or globally).
+/// Initialize himitsu (create keys, config, and optionally a store).
 #[derive(Debug, Args)]
 pub struct InitArgs {
     /// Output result as JSON (for TUI consumption).
@@ -17,18 +16,17 @@ pub struct InitArgs {
 }
 
 pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
-    let user_home = &ctx.user_home;
-    let store = &ctx.store;
-    let in_git_repo = config::find_git_root(&std::env::current_dir()?).is_some();
+    let data_dir = &ctx.data_dir;
+    let state_dir = &ctx.state_dir;
 
-    // ── 1. Ensure user-level home exists (keys, config, index) ──
-    let home_existed = user_home.join("keys/age.txt").exists();
+    // ── 1. Ensure data_dir exists (keys, config) ──────────────────────────
+    let key_existed = data_dir.join("key").exists();
 
-    for dir in &["keys", "state", "cache"] {
-        std::fs::create_dir_all(user_home.join(dir))?;
-    }
+    std::fs::create_dir_all(data_dir)?;
 
-    let key_path = config::key_path(user_home);
+    let key_path = data_dir.join("key");
+    let pubkey_path = data_dir.join("key.pub");
+
     let pubkey = if !key_path.exists() {
         let (secret, public) = age::keygen();
         std::fs::write(
@@ -38,64 +36,83 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
                 timestamp()
             ),
         )?;
+        std::fs::write(&pubkey_path, format!("{public}\n"))?;
         public
     } else {
-        extract_public_key(&std::fs::read_to_string(&key_path)?).unwrap_or_default()
+        // Extract public key from existing key file
+        let contents = std::fs::read_to_string(&key_path)?;
+        extract_public_key(&contents).unwrap_or_default()
     };
 
-    let config_path = user_home.join(".himitsu.yaml");
+    let config_path = data_dir.join("config.yaml");
     if !config_path.exists() {
-        Config::write_default(&config_path)?;
+        crate::config::Config::write_default(&config_path)?;
     }
 
-    // ── 2. Ensure project store exists ──
-    let store_existed = store.join("vars").exists();
+    // ── 2. Ensure state_dir exists (stores subdir) ────────────────────────
+    std::fs::create_dir_all(state_dir.join("stores"))?;
 
-    for dir in &["vars", "recipients/common"] {
-        std::fs::create_dir_all(store.join(dir))?;
+    // ── 3. Optionally initialize a store ──────────────────────────────────
+    let store = &ctx.store;
+    let store_existed = if store.as_os_str().is_empty() {
+        true // no store requested
+    } else {
+        store.join(".himitsu").join("secrets").exists()
+    };
+
+    if !store.as_os_str().is_empty() && !store_existed {
+        // Create store layout: .himitsu/{secrets/, recipients/common/}
+        std::fs::create_dir_all(crate::remote::store::secrets_dir(store))?;
+        let common_dir = crate::remote::store::recipients_dir(store).join("common");
+        std::fs::create_dir_all(&common_dir)?;
+
+        // Add self as recipient
+        let self_pub = common_dir.join("self.pub");
+        if !self_pub.exists() && !pubkey.is_empty() {
+            std::fs::write(&self_pub, format!("{pubkey}\n"))?;
+        }
+    } else if !store.as_os_str().is_empty() && store_existed {
+        // Store already exists — ensure self.pub is present
+        let self_pub = crate::remote::store::recipients_dir(store)
+            .join("common")
+            .join("self.pub");
+        if !self_pub.exists() && !pubkey.is_empty() {
+            std::fs::create_dir_all(self_pub.parent().unwrap())?;
+            std::fs::write(&self_pub, format!("{pubkey}\n"))?;
+        }
     }
 
-    let data_json = store.join("data.json");
-    if !data_json.exists() {
-        std::fs::write(&data_json, "{\"groups\":[\"common\"]}\n")?;
-    }
-
-    // Add self as recipient if none exist
-    let self_pub = store.join("recipients/common/self.pub");
-    if !self_pub.exists() {
-        std::fs::write(&self_pub, format!("{pubkey}\n"))?;
-    }
-
-    // ── 3. Register this store in the global index ──
-    let _ = config::register_store(user_home, store);
-
-    // ── 4. Detect git context for suggestions ──
+    // ── 4. Detect git context for suggestions ─────────────────────────────
+    let in_git_repo = config::find_git_root(&std::env::current_dir()?).is_some();
     let git_root = std::env::current_dir()
         .ok()
         .and_then(|cwd| config::find_git_root(&cwd));
     let suggested_remote = git_root.as_ref().and_then(detect_origin_remote);
 
-    // ── 5. Output ──
+    // ── 5. Output ──────────────────────────────────────────────────────────
     if args.json {
         let json = serde_json::json!({
-            "user_home": user_home.to_string_lossy(),
+            "data_dir": data_dir.to_string_lossy(),
+            "state_dir": state_dir.to_string_lossy(),
             "store": store.to_string_lossy(),
             "pubkey": pubkey,
-            "home_existed": home_existed,
+            "key_existed": key_existed,
             "store_existed": store_existed,
             "in_git_repo": in_git_repo,
             "suggested_remote": suggested_remote,
         });
         println!("{}", serde_json::to_string_pretty(&json)?);
-    } else if store_existed && home_existed {
-        println!("Store: {}", store.display());
+    } else if key_existed && store_existed {
+        if !store.as_os_str().is_empty() {
+            println!("Store: {}", store.display());
+        }
         println!("Key:   {pubkey}");
     } else {
-        if !home_existed {
-            println!("Created keyring at {}", user_home.display());
+        if !key_existed {
+            println!("Created keyring at {}", data_dir.display());
             println!("Age key: {pubkey}");
         }
-        if !store_existed {
+        if !store_existed && !store.as_os_str().is_empty() {
             println!("Initialized store at {}", store.display());
             if let Some(ref suggested) = suggested_remote {
                 println!("Detected git origin: {suggested}");

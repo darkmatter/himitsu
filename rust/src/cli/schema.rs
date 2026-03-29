@@ -253,7 +253,8 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
 
         let ctx = Context {
-            user_home: tmp.path().to_path_buf(),
+            data_dir: tmp.path().to_path_buf(),
+            state_dir: tmp.path().join("state"),
             store: store.clone(),
         };
 

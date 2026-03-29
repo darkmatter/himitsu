@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 
 use super::Context;
-use crate::config;
 use crate::crypto::age;
 use crate::error::{HimitsuError, Result};
+use crate::remote::store as rstore;
 
 /// Manage recipients.
 #[derive(Debug, Args)]
@@ -53,10 +53,10 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
             group,
         } => {
             let pubkey = if self_ {
-                let key_path = config::key_path(&ctx.user_home);
+                let key_path = ctx.key_path();
                 let contents = std::fs::read_to_string(&key_path)?;
                 extract_public_key(&contents).ok_or_else(|| {
-                    HimitsuError::Recipient("cannot extract public key from age.txt".into())
+                    HimitsuError::Recipient("cannot extract public key from key file".into())
                 })?
             } else if let Some(key) = age_key {
                 age::parse_recipient(&key)?;
@@ -68,7 +68,7 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
             };
 
             let group_name = group.as_deref().unwrap_or("common");
-            let group_dir = ctx.store.join("recipients").join(group_name);
+            let group_dir = rstore::recipients_dir(&ctx.store).join(group_name);
             std::fs::create_dir_all(&group_dir)?;
 
             let pub_file = group_dir.join(format!("{name}.pub"));
@@ -78,7 +78,7 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
         }
 
         RecipientCommand::Rm { name, group } => {
-            let recipients_dir = ctx.store.join("recipients");
+            let recipients_dir = rstore::recipients_dir(&ctx.store);
             let removed = if let Some(group_name) = &group {
                 let pub_file = recipients_dir.join(group_name).join(format!("{name}.pub"));
                 if pub_file.exists() {
@@ -115,7 +115,7 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
         }
 
         RecipientCommand::Ls { group } => {
-            let recipients_dir = ctx.store.join("recipients");
+            let recipients_dir = rstore::recipients_dir(&ctx.store);
             if !recipients_dir.exists() {
                 return Ok(());
             }

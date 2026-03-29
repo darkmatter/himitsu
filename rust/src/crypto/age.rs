@@ -114,9 +114,9 @@ pub fn read_recipients_from_dir(dir: &Path) -> Result<Vec<Recipient>> {
     Ok(recipients)
 }
 
-/// Collect all recipients across all groups in a remote's recipients/ directory.
-pub fn collect_all_recipients(remote_path: &Path) -> Result<Vec<Recipient>> {
-    let recipients_dir = remote_path.join("recipients");
+/// Collect all recipients across all groups in a store's `.himitsu/recipients/` directory.
+pub fn collect_all_recipients(store_path: &Path) -> Result<Vec<Recipient>> {
+    let recipients_dir = crate::remote::store::recipients_dir(store_path);
     let mut all = vec![];
     if !recipients_dir.exists() {
         return Ok(all);

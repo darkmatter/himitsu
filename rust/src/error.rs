@@ -15,14 +15,20 @@ pub enum HimitsuError {
     #[error("decryption failed: {0}")]
     DecryptionFailed(String),
 
-    #[error("secret not found: {key} in environment {env}")]
-    SecretNotFound { env: String, key: String },
+    #[error("secret not found: {0}")]
+    SecretNotFound(String),
 
     #[error("remote not found: {0}")]
     RemoteNotFound(String),
 
     #[error("remote error: {0}")]
     Remote(String),
+
+    #[error("store not found: {0}")]
+    StoreNotFound(String),
+
+    #[error("ambiguous store — multiple stores found, use --remote to specify one: {0:?}")]
+    AmbiguousStore(Vec<String>),
 
     #[error("git error: {0}")]
     Git(String),
@@ -67,14 +73,8 @@ mod tests {
 
     #[test]
     fn error_display_messages() {
-        let err = HimitsuError::SecretNotFound {
-            env: "prod".into(),
-            key: "API_KEY".into(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "secret not found: API_KEY in environment prod"
-        );
+        let err = HimitsuError::SecretNotFound("prod/API_KEY".into());
+        assert_eq!(err.to_string(), "secret not found: prod/API_KEY");
 
         let err = HimitsuError::ConfigNotFound(PathBuf::from("/tmp/missing.yaml"));
         assert_eq!(err.to_string(), "config file not found: /tmp/missing.yaml");

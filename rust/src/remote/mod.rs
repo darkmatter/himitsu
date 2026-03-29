@@ -1,17 +1,17 @@
 pub mod store;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{HimitsuError, Result};
 
-/// List all known remotes (org/repo) by scanning `~/.himitsu/data/`.
-pub fn list_remotes(himitsu_home: &Path) -> Result<Vec<String>> {
-    let data_dir = himitsu_home.join("data");
+/// List all known remotes (org/repo) by scanning `stores_dir()`.
+pub fn list_remotes() -> Result<Vec<String>> {
+    let stores = crate::config::stores_dir();
     let mut remotes = vec![];
-    if !data_dir.exists() {
+    if !stores.exists() {
         return Ok(remotes);
     }
-    for org_entry in std::fs::read_dir(&data_dir)? {
+    for org_entry in std::fs::read_dir(&stores)? {
         let org_entry = org_entry?;
         if !org_entry.file_type()?.is_dir() {
             continue;
@@ -38,14 +38,4 @@ pub fn ensure_remote_exists(remote_path: &Path) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Get the path to the remote's vars directory.
-pub fn vars_dir(remote_path: &Path) -> PathBuf {
-    remote_path.join("vars")
-}
-
-/// Get the path to the remote's recipients directory.
-pub fn recipients_dir(remote_path: &Path) -> PathBuf {
-    remote_path.join("recipients")
 }
