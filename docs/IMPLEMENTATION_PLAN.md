@@ -12,7 +12,7 @@ This document defines an execution plan for the vNext architecture:
 
 ## Phase 0 - Freeze and Baseline
 
-- [ ] **Phase 0 complete**
+- [x] **Phase 0 complete**
 
 ### Goals
 
@@ -58,10 +58,10 @@ bats tests/bats/              # Run all existing shell tests
 ```
 
 - [x] `init` creates expected directory tree and files
-- [ ] `set` / `get` roundtrip returns correct value without writing plaintext-at-rest files
+- [x] `set` / `get` roundtrip returns correct value without writing plaintext-at-rest files
 - [x] `recipient add --self` writes correct key file
 - [x] `group add` / `group rm` updates data.json
-- [ ] encryption flows are lossless while preserving no-plaintext-at-rest guarantees
+- [x] encryption flows are lossless while preserving no-plaintext-at-rest guarantees
 - [x] `ls` output format captured as golden fixture
 
 ### Acceptance Criteria
@@ -79,12 +79,12 @@ bats tests/bats/              # Run all existing shell tests
 
 ## Phase 1 - Rust Project Scaffold
 
-- [ ] **Phase 1 complete**
+- [x] **Phase 1 complete**
 
 ### Goals
 
-- [ ] Create Rust crate and executable `himitsu`.
-- [ ] Implement command parsing and logging framework.
+- [x] Create Rust crate and executable `himitsu`.
+- [x] Implement command parsing and logging framework.
 
 ### Modules / files
 
@@ -123,17 +123,17 @@ cargo clippy -- -D warnings       # Lint
 cargo fmt -- --check              # Format check
 ```
 
-- [ ] `himitsu --help` prints full command tree with all subcommands
-- [ ] `himitsu --version` prints version string
-- [ ] `himitsu <subcommand> --help` works for every subcommand stub
-- [ ] Binary builds on macOS (aarch64-apple-darwin)
-- [ ] Binary builds on Linux (x86_64-unknown-linux-gnu)
+- [x] `himitsu --help` prints full command tree with all subcommands
+- [x] `himitsu --version` prints version string
+- [x] `himitsu <subcommand> --help` works for every subcommand stub
+- [x] Binary builds on macOS (aarch64-apple-darwin)
+- [x] Binary builds on Linux (x86_64-unknown-linux-gnu)
 - [ ] `nix build` produces both shell and Rust binaries
 
 ### Acceptance Criteria
 
-- [ ] `himitsu --help` works with planned command tree.
-- [ ] Project builds on macOS and Linux.
+- [x] `himitsu --help` works with planned command tree.
+- [x] Project builds on macOS and Linux.
 
 ### Risks
 
@@ -227,57 +227,57 @@ cargo test --test '*'             # Integration tests only
 - [x] `config::Config::parse` loads `policies` with `path_pattern`, `include`, `exclude`
 - [x] `config::Config::parse` loads `imports` (`type`, `ref`, `path`)
 - [x] `config::Config::parse` loads optional `codegen` (`lang`, `path`)
-- [ ] `crypto::age::keygen` produces valid x25519 keypair
-- [ ] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
-- [ ] `crypto::age::encrypt` with multiple recipients succeeds
-- [ ] `crypto::age::decrypt` with wrong key fails with clear error
-- [ ] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
-- [ ] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
-- [ ] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
-- [ ] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
+- [x] `crypto::age::keygen` produces valid x25519 keypair
+- [x] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
+- [x] `crypto::age::encrypt` with multiple recipients succeeds
+- [x] `crypto::age::decrypt` with wrong key fails with clear error
+- [x] `keyring::scope::account_for` normalizes `org/repo/group` and yields deterministic account ids
+- [x] `keyring::scope::account_for` avoids collisions across similar org/repo/group combos
+- [x] `keyring::mapping::scope_to_fingerprint` stores and reads pointer values correctly
+- [x] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
 - [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
-- [ ] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
-- [ ] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
-- [ ] `remote::store::read_secret` reads and decrypts `.age` file
-- [ ] `remote::store::list_secrets` returns all keys for an env
-- [ ] `remote::store::list_secrets` handles nested subdirectories
-- [ ] `git::run` executes git commands and captures output
-- [ ] `git::run` returns error for non-zero exit codes
-- [ ] `index::SecretIndex::upsert` inserts new entry
-- [ ] `index::SecretIndex::upsert` updates existing entry (same remote+path)
-- [ ] `index::SecretIndex::search` matches partial key names
-- [ ] `index::SecretIndex::search` returns results across multiple remotes
+- [x] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
+- [x] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
+- [x] `remote::store::read_secret` reads and decrypts `.age` file
+- [x] `remote::store::list_secrets` returns all keys for an env
+- [x] `remote::store::list_secrets` handles nested subdirectories
+- [x] `git::run` executes git commands and captures output
+- [x] `git::run` returns error for non-zero exit codes
+- [x] `index::SecretIndex::upsert` inserts new entry
+- [x] `index::SecretIndex::upsert` updates existing entry (same remote+path)
+- [x] `index::SecretIndex::search` matches partial key names
+- [x] `index::SecretIndex::search` returns results across multiple remotes
 
 #### Integration tests (`tests/integration/`)
 
 - [x] `init` creates `~/.himitsu/` with keys/, `.himitsu.yaml`, state/
-- [ ] `init` is idempotent (running twice doesn't error or overwrite keys)
+- [x] `init` is idempotent (running twice doesn't error or overwrite keys)
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`
 - [ ] `SOPS_AGE_KEY_CMD` falls back to file-based key when keychain item is missing
-- [ ] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
-- [ ] `get prod API_KEY` returns `"secret"` after set
-- [ ] `set` then `get` with multiline values preserves newlines
-- [ ] `set` then `get` with special characters (quotes, backslashes, unicode)
-- [ ] `ls` with no args lists all envs
-- [ ] `ls prod` lists keys in prod env
-- [ ] `encrypt` re-encrypts all secrets for current recipients
-- [ ] `decrypt` is not implemented / errors (no plaintext at rest)
-- [ ] `recipient add --self --group team` writes pubkey file to recipients/team/
-- [ ] `recipient add` with explicit `--age-key` writes correct .pub file
-- [ ] `recipient rm` removes the key file
-- [ ] `recipient ls` shows all recipients, optionally filtered by group
-- [ ] `group add mygroup` creates directory + updates data.json
-- [ ] `group rm mygroup` removes directory + updates data.json
-- [ ] `group rm common` is rejected (reserved)
-- [ ] `group ls` lists groups with recipient counts
+- [x] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
+- [x] `get prod API_KEY` returns `"secret"` after set
+- [x] `set` then `get` with multiline values preserves newlines
+- [x] `set` then `get` with special characters (quotes, backslashes, unicode)
+- [x] `ls` with no args lists all envs
+- [x] `ls prod` lists keys in prod env
+- [x] `encrypt` re-encrypts all secrets for current recipients
+- [x] `decrypt` is not implemented / errors (no plaintext at rest)
+- [x] `recipient add --self --group team` writes pubkey file to recipients/team/
+- [x] `recipient add` with explicit `--age-key` writes correct .pub file
+- [x] `recipient rm` removes the key file
+- [x] `recipient ls` shows all recipients, optionally filtered by group
+- [x] `group add mygroup` creates directory + updates data.json
+- [x] `group rm mygroup` removes directory + updates data.json
+- [x] `group rm common` is rejected (reserved)
+- [x] `group ls` lists groups with recipient counts
 - [ ] `remote add <org/repo>` clones repo into `~/.himitsu/data/`
 - [ ] `remote push` commits and pushes changes
 - [ ] `remote pull` fetches latest from origin
 - [ ] `remote status` shows clean/dirty state
-- [ ] `search <query>` matches key names across remotes
-- [ ] `search` with no matches returns empty output, exit 0
+- [x] `search <query>` matches key names across remotes
+- [x] `search` with no matches returns empty output, exit 0
 - [ ] Golden fixture parity: outputs match captured shell fixtures
 
 ### Acceptance Criteria
@@ -873,8 +873,8 @@ fn set_get_roundtrip() {
 
 ## Milestone Checklist
 
-- [ ] M0: Docs frozen, golden fixtures captured (Phase 0)
-- [ ] M1: Rust scaffold builds, `--help` works (Phase 1)
+- [x] M0: Docs frozen, golden fixtures captured (Phase 0)
+- [x] M1: Rust scaffold builds, `--help` works (Phase 1)
 - [ ] M2: Local secret parity: init/set/get/ls/encrypt/decrypt/sync/remote/search (Phase 2)
 - [ ] M3: Recipient policy engine with include/exclude (Phase 3)
 - [ ] M4: GitHub PR inbox send/receive end-to-end (Phase 4)
