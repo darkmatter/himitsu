@@ -78,6 +78,11 @@ pub struct Cli {
     #[arg(short = 's', long, global = true)]
     pub store: Option<String>,
 
+    /// Select a remote store by org/repo slug (resolves to ~/.himitsu/data/<org>/<repo>).
+    /// Mutually exclusive with --store.
+    #[arg(short = 'r', long, global = true, conflicts_with = "store")]
+    pub remote: Option<String>,
+
     /// Increase log verbosity (-v for debug, -vv for trace).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -151,12 +156,23 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         let user_home = crate::config::user_home();
 
+        // Resolve --remote slug into a concrete store override path.
+        // --remote and --store are mutually exclusive (enforced by clap).
+        let store_override: Option<String> = match &self.remote {
+            Some(slug) => Some(
+                crate::config::remote_store_path(&user_home, slug)?
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            None => self.store.clone(),
+        };
+
         let needs_store = !matches!(self.command, Command::Init(_) | Command::Git(_));
 
         let store = if matches!(self.command, Command::Init(_)) {
-            crate::config::store_path_or_default(&self.store)
+            crate::config::store_path_or_default(&store_override)
         } else if needs_store {
-            match crate::config::store_path(&self.store) {
+            match crate::config::store_path(&store_override) {
                 Ok(s) => s,
                 Err(crate::error::HimitsuError::NotInitialized) => {
                     // Smart init: prompt the user instead of hard-erroring.
@@ -173,11 +189,11 @@ impl Cli {
                         eprintln!();
                         let ctx = Context {
                             user_home: user_home.clone(),
-                            store: crate::config::store_path_or_default(&self.store),
+                            store: crate::config::store_path_or_default(&store_override),
                         };
                         init::run(init::InitArgs { json: false }, &ctx)?;
                         eprintln!();
-                        crate::config::store_path(&self.store)?
+                        crate::config::store_path(&store_override)?
                     } else {
                         return Ok(());
                     }
@@ -185,7 +201,7 @@ impl Cli {
                 Err(e) => return Err(e),
             }
         } else {
-            crate::config::store_path_or_default(&self.store)
+            crate::config::store_path_or_default(&store_override)
         };
 
         let ctx = Context { user_home, store };

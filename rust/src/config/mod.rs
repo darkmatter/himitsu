@@ -143,6 +143,37 @@ pub fn store_path_or_default(store_override: &Option<String>) -> PathBuf {
     user_home()
 }
 
+/// Validate a remote slug (e.g., `"org/repo"`).
+///
+/// A valid slug has exactly one `/`, no empty segments, and neither segment is
+/// `.` or `..`.  Returns `(org, repo)` on success.
+pub fn validate_remote_slug(slug: &str) -> Result<(&str, &str)> {
+    let parts: Vec<&str> = slug.split('/').collect();
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
+        return Err(HimitsuError::InvalidConfig(format!(
+            "invalid remote slug '{slug}': expected 'org/repo'"
+        )));
+    }
+    Ok((parts[0], parts[1]))
+}
+
+/// Resolve a remote slug (`org/repo`) to its local data path.
+///
+/// Returns `~/.himitsu/data/<org>/<repo>` (or the `HIMITSU_HOME` equivalent)
+/// if that directory exists, otherwise `RemoteNotFound`.
+pub fn remote_store_path(user_home: &Path, slug: &str) -> Result<PathBuf> {
+    validate_remote_slug(slug)?;
+    let path = user_home.join("data").join(slug);
+    if !path.exists() {
+        return Err(HimitsuError::RemoteNotFound(slug.to_string()));
+    }
+    Ok(path)
+}
+
 /// Walk from `start` upward to find the nearest `.git` directory.
 pub fn find_git_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
@@ -221,6 +252,47 @@ mod tests {
             tmp.path().join(".himitsu").to_string_lossy().to_string(),
         ));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_remote_slug_accepts_valid() {
+        let (org, repo) = validate_remote_slug("my-org/my-repo").unwrap();
+        assert_eq!(org, "my-org");
+        assert_eq!(repo, "my-repo");
+    }
+
+    #[test]
+    fn validate_remote_slug_rejects_bad_slugs() {
+        // No slash
+        assert!(validate_remote_slug("notaslug").is_err());
+        // Too many slashes
+        assert!(validate_remote_slug("a/b/c").is_err());
+        // Empty org segment
+        assert!(validate_remote_slug("/oops").is_err());
+        // Empty repo segment
+        assert!(validate_remote_slug("org/").is_err());
+        // Path traversal in org
+        assert!(validate_remote_slug("../repo").is_err());
+        // Path traversal in repo
+        assert!(validate_remote_slug("org/..").is_err());
+        // Dot in org
+        assert!(validate_remote_slug("./repo").is_err());
+    }
+
+    #[test]
+    fn remote_store_path_resolves_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("data/org/repo");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let path = remote_store_path(tmp.path(), "org/repo").unwrap();
+        assert_eq!(path, remote_dir);
+    }
+
+    #[test]
+    fn remote_store_path_errors_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = remote_store_path(tmp.path(), "ghost/missing").unwrap_err();
+        assert!(matches!(err, HimitsuError::RemoteNotFound(_)));
     }
 
     #[test]
