@@ -2,6 +2,7 @@ use clap::{Args, Subcommand};
 
 use super::Context;
 use crate::error::{HimitsuError, Result};
+use crate::remote::store as rstore;
 
 /// Manage recipient groups.
 #[derive(Debug, Args)]
@@ -21,18 +22,11 @@ pub enum GroupCommand {
 }
 
 pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
-    let recipients_dir = ctx.store.join("recipients");
-    let data_json_path = ctx.store.join("data.json");
+    let recipients_dir = rstore::recipients_dir(&ctx.store);
 
     match args.command {
         GroupCommand::Add { name } => {
             std::fs::create_dir_all(recipients_dir.join(&name))?;
-            update_data_json(&data_json_path, |groups| {
-                if !groups.contains(&name) {
-                    groups.push(name.clone());
-                    groups.sort();
-                }
-            })?;
             ctx.commit_and_push(&format!("himitsu: add group {name}"));
             println!("Created group '{name}'");
         }
@@ -50,9 +44,6 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
                 )));
             }
             std::fs::remove_dir_all(&group_dir)?;
-            update_data_json(&data_json_path, |groups| {
-                groups.retain(|g| g != &name);
-            })?;
             ctx.commit_and_push(&format!("himitsu: remove group {name}"));
             println!("Removed group '{name}'");
         }
@@ -81,31 +72,5 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-fn update_data_json(path: &std::path::Path, mutate: impl FnOnce(&mut Vec<String>)) -> Result<()> {
-    let mut data: serde_json::Value = if path.exists() {
-        let contents = std::fs::read_to_string(path)?;
-        serde_json::from_str(&contents)?
-    } else {
-        serde_json::json!({ "groups": [] })
-    };
-
-    let groups = data
-        .get_mut("groups")
-        .and_then(|v| v.as_array_mut())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        });
-
-    let mut group_list = groups.unwrap_or_default();
-    mutate(&mut group_list);
-
-    data["groups"] = serde_json::json!(group_list);
-    let json = serde_json::to_string_pretty(&data)?;
-    std::fs::write(path, format!("{json}\n"))?;
     Ok(())
 }

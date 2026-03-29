@@ -8,13 +8,13 @@ use crate::config;
 use crate::error::{HimitsuError, Result};
 use crate::remote::store;
 
-/// Sync: mirror encrypted files from a bound remote into the current project store.
+/// Sync: mirror encrypted files from a bound remote into the current store.
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Target environment. If omitted, mirrors all environments.
+    /// Path prefix to sync. If omitted, syncs all secrets.
     pub env: Option<String>,
 
-    /// Bind this project store to a remote for future syncs (e.g., `org/repo`).
+    /// Bind this store to a remote for future syncs (e.g., `org/repo`).
     #[arg(long)]
     pub bind: Option<String>,
 }
@@ -85,7 +85,7 @@ pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
     if let Some(slug) = &args.bind {
         config::validate_remote_slug(slug)?;
         // Verify the remote actually exists locally before persisting the binding.
-        config::remote_store_path(&ctx.user_home, slug)?;
+        config::remote_store_path(slug)?;
         save_binding(&ctx.store, slug)?;
         println!("Bound store to remote {slug}");
         return Ok(());
@@ -93,32 +93,30 @@ pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
 
     // ── mirror sync ──────────────────────────────────────────────────────────
     let slug = load_binding(&ctx.store)?;
-    let remote_path = config::remote_store_path(&ctx.user_home, &slug)?;
+    let remote_path = config::remote_store_path(&slug)?;
 
-    // Best-effort git pull on the remote (does not fail sync if network is unavailable).
+    // Best-effort git pull on the remote.
     match crate::git::pull(&remote_path) {
         Ok(_) => tracing::debug!("pulled remote {slug}"),
         Err(e) => tracing::debug!("git pull skipped for {slug}: {e}"),
     }
 
-    // Determine which environments to mirror.
-    let envs = match &args.env {
-        Some(env) => vec![env.clone()],
-        None => store::list_envs(&remote_path)?,
-    };
+    // Mirror secrets (optionally filtered by path prefix).
+    let src_secrets = store::secrets_dir(&remote_path);
+    let dst_secrets = store::secrets_dir(&ctx.store);
 
-    // Mirror encrypted secret files without decrypting or re-encrypting.
-    let mut secrets_count = 0usize;
-    for env in &envs {
-        let src_env_dir = remote_path.join("vars").join(env);
-        let dst_env_dir = ctx.store.join("vars").join(env);
-        secrets_count += copy_tree(&src_env_dir, &dst_env_dir)?;
-    }
+    let secrets_count = if let Some(ref prefix) = args.env {
+        let src = src_secrets.join(prefix);
+        let dst = dst_secrets.join(prefix);
+        copy_tree(&src, &dst)?
+    } else {
+        copy_tree(&src_secrets, &dst_secrets)?
+    };
 
     // Mirror recipient public-key material.
     let recipients_count = copy_tree(
-        &remote_path.join("recipients"),
-        &ctx.store.join("recipients"),
+        &store::recipients_dir(&remote_path),
+        &store::recipients_dir(&ctx.store),
     )?;
 
     ctx.commit_and_push(&format!(

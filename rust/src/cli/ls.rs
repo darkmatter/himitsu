@@ -4,34 +4,44 @@ use super::Context;
 use crate::error::Result;
 use crate::remote::store;
 
-/// List environments or secrets within an environment.
+/// List secrets in the store (optionally filtered by path prefix).
 #[derive(Debug, Args)]
 pub struct LsArgs {
-    /// Environment to list secrets for. If omitted, lists all environments.
-    pub env: Option<String>,
+    /// Optional path prefix to filter secrets (e.g. "prod" shows all under prod/).
+    pub path: Option<String>,
 }
 
 pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
-    match args.env {
-        Some(env) => {
-            let keys = store::list_secrets(&ctx.store, &env)?;
-            if keys.is_empty() {
-                eprintln!("No secrets in environment '{env}'");
-            } else {
-                for key in &keys {
-                    println!("{key}");
-                }
+    if ctx.store.as_os_str().is_empty() {
+        // No store resolved — list all known stores
+        let stores_dir = ctx.stores_dir();
+        if !stores_dir.exists() {
+            eprintln!("No stores configured. Use `himitsu remote add <org/repo>` to add one.");
+            return Ok(());
+        }
+        let remotes = crate::remote::list_remotes()?;
+        if remotes.is_empty() {
+            eprintln!("No stores configured. Use `himitsu remote add <org/repo>` to add one.");
+        } else {
+            for r in &remotes {
+                println!("{r}");
             }
         }
-        None => {
-            let envs = store::list_envs(&ctx.store)?;
-            if envs.is_empty() {
-                eprintln!("No environments found");
-            } else {
-                for env in &envs {
-                    println!("{env}");
-                }
-            }
+        return Ok(());
+    }
+
+    let prefix = args.path.as_deref();
+    let paths = store::list_secrets(&ctx.store, prefix)?;
+
+    if paths.is_empty() {
+        let msg = match prefix {
+            Some(p) => format!("No secrets under '{p}'"),
+            None => "No secrets found".to_string(),
+        };
+        eprintln!("{msg}");
+    } else {
+        for p in &paths {
+            println!("{p}");
         }
     }
     Ok(())

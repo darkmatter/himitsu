@@ -1,7 +1,6 @@
 use clap::Args;
 
 use super::Context;
-use crate::config;
 use crate::crypto::age;
 use crate::error::Result;
 use crate::remote::store;
@@ -9,15 +8,13 @@ use crate::remote::store;
 /// Get a secret value.
 #[derive(Debug, Args)]
 pub struct GetArgs {
-    /// Target environment (e.g. prod, dev).
-    pub env: String,
-    /// Secret key name.
-    pub key: String,
+    /// Secret path (e.g. "prod/API_KEY").
+    pub path: String,
 }
 
 pub fn run(args: GetArgs, ctx: &Context) -> Result<()> {
-    let ciphertext = store::read_secret(&ctx.store, &args.env, &args.key)?;
-    let identity = age::read_identity(&config::key_path(&ctx.user_home))?;
+    let ciphertext = store::read_secret(&ctx.store, &args.path)?;
+    let identity = age::read_identity(&ctx.key_path())?;
     let plaintext = age::decrypt(&ciphertext, &identity)?;
     print!("{}", String::from_utf8_lossy(&plaintext));
     Ok(())

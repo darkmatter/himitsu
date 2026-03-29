@@ -10,9 +10,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub remote_id: String,
-    pub env: String,
-    pub key_name: String,
-    pub path: String,
+    pub secret_path: String,
 }
 
 /// SQLite-backed secret index for cross-remote search.
@@ -49,20 +47,18 @@ impl SecretIndex {
     }
 
     /// Insert or update a secret entry.
-    pub fn upsert(&self, remote_id: &str, env: &str, path: &str, key_name: &str) -> Result<()> {
+    pub fn upsert(&self, remote_id: &str, secret_path: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO secrets (remote_id, env, path, key_name, updated_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'))
-             ON CONFLICT(remote_id, path) DO UPDATE SET
-               env = excluded.env,
-               key_name = excluded.key_name,
+            "INSERT INTO secrets (remote_id, secret_path, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(remote_id, secret_path) DO UPDATE SET
                updated_at = excluded.updated_at",
-            rusqlite::params![remote_id, env, path, key_name],
+            rusqlite::params![remote_id, secret_path],
         )?;
         Ok(())
     }
 
-    /// Search for secrets matching a query (partial key name match).
+    /// Search for secrets matching a query (partial path match).
     /// If remote_filter is Some, only search within that remote.
     pub fn search(&self, query: &str, remote_filter: Option<&str>) -> Result<Vec<SearchResult>> {
         let pattern = format!("%{query}%");
@@ -70,16 +66,14 @@ impl SecretIndex {
 
         if let Some(remote_id) = remote_filter {
             let mut stmt = self.conn.prepare(
-                "SELECT remote_id, env, key_name, path FROM secrets
-                 WHERE key_name LIKE ?1 AND remote_id = ?2
-                 ORDER BY remote_id, env, key_name",
+                "SELECT remote_id, secret_path FROM secrets
+                 WHERE secret_path LIKE ?1 AND remote_id = ?2
+                 ORDER BY remote_id, secret_path",
             )?;
             let rows = stmt.query_map(rusqlite::params![pattern, remote_id], |row| {
                 Ok(SearchResult {
                     remote_id: row.get(0)?,
-                    env: row.get(1)?,
-                    key_name: row.get(2)?,
-                    path: row.get(3)?,
+                    secret_path: row.get(1)?,
                 })
             })?;
             for row in rows {
@@ -87,16 +81,14 @@ impl SecretIndex {
             }
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT remote_id, env, key_name, path FROM secrets
-                 WHERE key_name LIKE ?1
-                 ORDER BY remote_id, env, key_name",
+                "SELECT remote_id, secret_path FROM secrets
+                 WHERE secret_path LIKE ?1
+                 ORDER BY remote_id, secret_path",
             )?;
             let rows = stmt.query_map(rusqlite::params![pattern], |row| {
                 Ok(SearchResult {
                     remote_id: row.get(0)?,
-                    env: row.get(1)?,
-                    key_name: row.get(2)?,
-                    path: row.get(3)?,
+                    secret_path: row.get(1)?,
                 })
             })?;
             for row in rows {
@@ -115,6 +107,17 @@ impl SecretIndex {
         )?;
         Ok(())
     }
+
+    /// List all registered remote IDs.
+    pub fn list_remotes(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM remotes ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut remotes = vec![];
+        for row in rows {
+            remotes.push(row?);
+        }
+        Ok(remotes)
+    }
 }
 
 #[cfg(test)]
@@ -125,40 +128,29 @@ mod tests {
     fn upsert_inserts_new_entry() {
         let idx = SecretIndex::open_memory().unwrap();
         idx.register_remote("org/repo", None).unwrap();
-        idx.upsert("org/repo", "prod", "vars/prod/API_KEY.age", "API_KEY")
-            .unwrap();
+        idx.upsert("org/repo", "prod/API_KEY").unwrap();
         let results = idx.search("API_KEY", None).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].key_name, "API_KEY");
+        assert_eq!(results[0].secret_path, "prod/API_KEY");
     }
 
     #[test]
     fn upsert_updates_existing() {
         let idx = SecretIndex::open_memory().unwrap();
         idx.register_remote("org/repo", None).unwrap();
-        idx.upsert("org/repo", "prod", "vars/prod/API_KEY.age", "API_KEY")
-            .unwrap();
-        idx.upsert("org/repo", "prod", "vars/prod/API_KEY.age", "API_KEY")
-            .unwrap();
+        idx.upsert("org/repo", "prod/API_KEY").unwrap();
+        idx.upsert("org/repo", "prod/API_KEY").unwrap();
         let results = idx.search("API_KEY", None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
     #[test]
-    fn search_matches_partial_key_names() {
+    fn search_matches_partial_paths() {
         let idx = SecretIndex::open_memory().unwrap();
         idx.register_remote("org/repo", None).unwrap();
-        idx.upsert("org/repo", "prod", "vars/prod/STRIPE_KEY.age", "STRIPE_KEY")
-            .unwrap();
-        idx.upsert(
-            "org/repo",
-            "prod",
-            "vars/prod/STRIPE_SECRET.age",
-            "STRIPE_SECRET",
-        )
-        .unwrap();
-        idx.upsert("org/repo", "prod", "vars/prod/DB_PASS.age", "DB_PASS")
-            .unwrap();
+        idx.upsert("org/repo", "prod/STRIPE_KEY").unwrap();
+        idx.upsert("org/repo", "prod/STRIPE_SECRET").unwrap();
+        idx.upsert("org/repo", "prod/DB_PASS").unwrap();
         let results = idx.search("STRIPE", None).unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -168,10 +160,8 @@ mod tests {
         let idx = SecretIndex::open_memory().unwrap();
         idx.register_remote("org/repo1", None).unwrap();
         idx.register_remote("org/repo2", None).unwrap();
-        idx.upsert("org/repo1", "prod", "vars/prod/API_KEY.age", "API_KEY")
-            .unwrap();
-        idx.upsert("org/repo2", "dev", "vars/dev/API_KEY.age", "API_KEY")
-            .unwrap();
+        idx.upsert("org/repo1", "prod/API_KEY").unwrap();
+        idx.upsert("org/repo2", "dev/API_KEY").unwrap();
         let results = idx.search("API_KEY", None).unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -181,12 +171,20 @@ mod tests {
         let idx = SecretIndex::open_memory().unwrap();
         idx.register_remote("org/repo1", None).unwrap();
         idx.register_remote("org/repo2", None).unwrap();
-        idx.upsert("org/repo1", "prod", "vars/prod/KEY.age", "KEY")
-            .unwrap();
-        idx.upsert("org/repo2", "prod", "vars/prod/KEY.age", "KEY")
-            .unwrap();
+        idx.upsert("org/repo1", "prod/KEY").unwrap();
+        idx.upsert("org/repo2", "prod/KEY").unwrap();
         let results = idx.search("KEY", Some("org/repo1")).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].remote_id, "org/repo1");
+    }
+
+    #[test]
+    fn list_remotes_returns_registered() {
+        let idx = SecretIndex::open_memory().unwrap();
+        idx.register_remote("org/repo1", None).unwrap();
+        idx.register_remote("org/repo2", Some("https://example.com"))
+            .unwrap();
+        let remotes = idx.list_remotes().unwrap();
+        assert_eq!(remotes, vec!["org/repo1", "org/repo2"]);
     }
 }

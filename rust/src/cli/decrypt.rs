@@ -12,7 +12,7 @@ pub struct DecryptArgs {
 
 pub fn run(_args: DecryptArgs, _ctx: &Context) -> Result<()> {
     Err(HimitsuError::NotSupported(
-        "bulk decrypt is not supported; secrets are never stored in plaintext. Use `himitsu get <env> <key>` to read individual values."
+        "bulk decrypt is not supported; secrets are never stored in plaintext. Use `himitsu get <path>` to read individual values."
             .into(),
     ))
 }

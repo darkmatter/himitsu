@@ -99,6 +99,19 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 // Config resolution
 // ---------------------------------------------------------------------------
 
+/// Local project config for codegen (kept separate from the global Config).
+#[derive(Debug, serde::Deserialize, Default)]
+struct ProjectConfig {
+    #[serde(default)]
+    codegen: Option<LocalCodegenConfig>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LocalCodegenConfig {
+    lang: String,
+    path: String,
+}
+
 /// Resolve the target language and output path.
 ///
 /// CLI flags take precedence. If not provided, fall back to the project's
@@ -107,8 +120,9 @@ fn resolve_config(args: &CodegenArgs, ctx: &Context) -> Result<(CodegenLang, Opt
     // Try loading project config from the git root.
     let project_codegen = ctx.git_root().and_then(|root| {
         let cfg_path = root.join(".himitsu.yaml");
-        crate::config::Config::load(&cfg_path)
+        std::fs::read_to_string(&cfg_path)
             .ok()
+            .and_then(|s| serde_yaml::from_str::<ProjectConfig>(&s).ok())
             .and_then(|c| c.codegen)
     });
 
@@ -151,38 +165,34 @@ fn resolve_config(args: &CodegenArgs, ctx: &Context) -> Result<(CodegenLang, Opt
 // Store scanning
 // ---------------------------------------------------------------------------
 
-/// Scan the store's `vars/` directory to discover environments and key names.
+/// Scan the store's `.himitsu/secrets/` directory to discover environments and key names.
 fn scan_store(store: &Path) -> Result<SecretInventory> {
-    let vars_dir = store.join("vars");
     let mut inventory = SecretInventory {
         environments: BTreeSet::new(),
         keys_by_env: BTreeMap::new(),
         all_keys: BTreeSet::new(),
     };
 
-    if !vars_dir.exists() {
-        debug!("no vars/ directory in store at {}", store.display());
+    let paths = crate::remote::store::list_secrets(store, None)?;
+    if paths.is_empty() {
+        debug!("no secrets in store at {}", store.display());
         return Ok(inventory);
     }
 
-    for entry in std::fs::read_dir(&vars_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
+    for path in &paths {
+        // Parse "env/key" or "key" from secret path
+        if let Some((env, key)) = path.split_once('/') {
+            inventory.environments.insert(env.to_string());
+            inventory
+                .keys_by_env
+                .entry(env.to_string())
+                .or_default()
+                .insert(key.to_string());
+            inventory.all_keys.insert(key.to_string());
+        } else {
+            // Top-level key with no env prefix
+            inventory.all_keys.insert(path.to_string());
         }
-        let env_name = entry.file_name().to_string_lossy().to_string();
-        inventory.environments.insert(env_name.clone());
-
-        let mut keys = BTreeSet::new();
-        for file in std::fs::read_dir(entry.path())? {
-            let file = file?;
-            let fname = file.file_name().to_string_lossy().to_string();
-            if let Some(key) = fname.strip_suffix(".age") {
-                keys.insert(key.to_string());
-                inventory.all_keys.insert(key.to_string());
-            }
-        }
-        inventory.keys_by_env.insert(env_name, keys);
     }
 
     Ok(inventory)
@@ -591,10 +601,11 @@ mod tests {
 
     // -- Scanning tests --
 
+    /// Helper: populate `<tmp>/.himitsu/secrets/<env>/<key>.age`.
     fn make_store(tmp: &Path, envs: &[(&str, &[&str])]) {
-        let vars = tmp.join("vars");
+        let secrets = crate::remote::store::secrets_dir(tmp);
         for (env, keys) in envs {
-            let env_dir = vars.join(env);
+            let env_dir = secrets.join(env);
             std::fs::create_dir_all(&env_dir).unwrap();
             for key in *keys {
                 std::fs::write(env_dir.join(format!("{key}.age")), b"cipher").unwrap();
@@ -784,13 +795,15 @@ mod tests {
     #[test]
     fn run_with_stdout_flag_and_explicit_lang() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = tmp.path().join(".himitsu");
-        let vars = store.join("vars/prod");
-        std::fs::create_dir_all(&vars).unwrap();
-        std::fs::write(vars.join("MY_SECRET.age"), b"ciphertext").unwrap();
+        let store = tmp.path().to_path_buf();
+        // New layout: .himitsu/secrets/prod/MY_SECRET.age
+        let secrets = crate::remote::store::secrets_dir(&store).join("prod");
+        std::fs::create_dir_all(&secrets).unwrap();
+        std::fs::write(secrets.join("MY_SECRET.age"), b"ciphertext").unwrap();
 
         let ctx = Context {
-            user_home: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("share"),
+            state_dir: tmp.path().join("state"),
             store,
         };
 
@@ -810,11 +823,12 @@ mod tests {
     #[test]
     fn run_fails_on_empty_store() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = tmp.path().join(".himitsu");
+        let store = tmp.path().to_path_buf();
         std::fs::create_dir_all(&store).unwrap();
 
         let ctx = Context {
-            user_home: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("share"),
+            state_dir: tmp.path().join("state"),
             store,
         };
 
@@ -833,13 +847,14 @@ mod tests {
     #[test]
     fn run_fails_on_unknown_language() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = tmp.path().join(".himitsu");
-        let vars = store.join("vars/prod");
-        std::fs::create_dir_all(&vars).unwrap();
-        std::fs::write(vars.join("X.age"), b"cipher").unwrap();
+        let store = tmp.path().to_path_buf();
+        let secrets = crate::remote::store::secrets_dir(&store).join("prod");
+        std::fs::create_dir_all(&secrets).unwrap();
+        std::fs::write(secrets.join("X.age"), b"cipher").unwrap();
 
         let ctx = Context {
-            user_home: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("share"),
+            state_dir: tmp.path().join("state"),
             store,
         };
 
@@ -858,15 +873,16 @@ mod tests {
     #[test]
     fn run_writes_output_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = tmp.path().join(".himitsu");
-        let vars = store.join("vars/prod");
-        std::fs::create_dir_all(&vars).unwrap();
-        std::fs::write(vars.join("TOKEN.age"), b"cipher").unwrap();
+        let store = tmp.path().to_path_buf();
+        let secrets = crate::remote::store::secrets_dir(&store).join("prod");
+        std::fs::create_dir_all(&secrets).unwrap();
+        std::fs::write(secrets.join("TOKEN.age"), b"cipher").unwrap();
 
         let output = tmp.path().join("generated/secrets.ts");
 
         let ctx = Context {
-            user_home: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("share"),
+            state_dir: tmp.path().join("state"),
             store,
         };
 

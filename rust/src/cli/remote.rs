@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{Args, Subcommand};
 
 use super::Context;
@@ -16,16 +14,16 @@ pub struct RemoteArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
-    /// Push local changes to the project's git remote.
+    /// Push local changes to the store's git remote.
     Push,
 
-    /// Pull latest changes from the project's git remote.
+    /// Pull latest changes from the store's git remote.
     Pull,
 
     /// Show the git status of the store.
     Status,
 
-    /// Clone a remote repository into ~/.himitsu/data/<org>/<repo> and register it.
+    /// Clone a remote repository into stores_dir/<org>/<repo> and register it.
     Add {
         /// Remote slug in the form <org>/<repo>.
         slug: String,
@@ -37,10 +35,13 @@ pub enum RemoteCommand {
 }
 
 /// Resolve the git working directory from the store context.
-///
-/// The project store is `$GIT_ROOT/.himitsu/`, so git operations run
-/// against the parent directory (the actual git repo root).
-fn resolve_git_dir(ctx: &Context) -> Result<PathBuf> {
+/// In the new model, the store IS the git root.
+fn resolve_git_dir(ctx: &Context) -> Result<std::path::PathBuf> {
+    if ctx.store.as_os_str().is_empty() {
+        return Err(HimitsuError::Git(
+            "no store configured; use --store or --remote".into(),
+        ));
+    }
     if ctx.store.join(".git").exists() {
         Ok(ctx.store.clone())
     } else {
@@ -79,7 +80,7 @@ pub fn run(args: RemoteArgs, ctx: &Context) -> Result<()> {
         RemoteCommand::Add { slug, url } => {
             let (org, repo) = config::validate_remote_slug(&slug)?;
 
-            let dest = ctx.user_home.join("data").join(org).join(repo);
+            let dest = config::stores_dir().join(org).join(repo);
 
             if dest.exists() {
                 return Err(HimitsuError::Remote(format!(
@@ -92,7 +93,6 @@ pub fn run(args: RemoteArgs, ctx: &Context) -> Result<()> {
 
             println!("Cloning {clone_url} → {}", dest.display());
             git::clone(&clone_url, &dest)?;
-            config::register_store(&ctx.user_home, &dest)?;
             println!("Added remote '{slug}'");
         }
     }
