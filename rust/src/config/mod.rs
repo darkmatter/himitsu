@@ -30,6 +30,16 @@ impl Config {
         std::fs::write(path, yaml)?;
         Ok(())
     }
+
+    /// Save this config to the given path (creating parent dirs).
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let yaml = serde_yaml::to_string(self)?;
+        std::fs::write(path, yaml)?;
+        Ok(())
+    }
 }
 
 // ── XDG-style path helpers ─────────────────────────────────────────────────
