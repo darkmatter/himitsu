@@ -168,7 +168,7 @@ pub enum Command {
     /// Generate typed config code from secrets.
     Codegen(codegen::CodegenArgs),
 
-    /// Run git commands inside the himitsu data directory.
+    /// Run git commands inside a store checkout (or all stores with --all).
     Git(git::GitArgs),
 
     // ── Hidden commands (not yet implemented) ─────────────────────
