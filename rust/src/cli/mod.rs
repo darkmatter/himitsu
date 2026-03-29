@@ -147,7 +147,7 @@ pub enum Command {
     /// Decrypt secrets (not supported - secrets are never stored in plaintext).
     Decrypt(decrypt::DecryptArgs),
 
-    /// Sync secrets with a remote store.
+    /// Sync stores: pull from git remote and optionally rekey drifted secrets.
     Sync(sync::SyncArgs),
 
     /// Search secrets across all known projects.
