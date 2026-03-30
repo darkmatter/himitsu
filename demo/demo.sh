@@ -180,7 +180,7 @@ git -C "$UPSTREAM_DIR" config user.name "Demo"
 "$HIMITSU_BIN" -s "$UPSTREAM_DIR" set prod/SHARED_API_KEY "team-key-abc-789" > /dev/null 2>&1
 "$HIMITSU_BIN" -s "$UPSTREAM_DIR" set prod/SHARED_DB_URL "postgres://db.internal/app" > /dev/null 2>&1
 git -C "$UPSTREAM_DIR" add -A 2>/dev/null
-git -C "$UPSTREAM_DIR" commit -m "himitsu: add team secrets" -q 2>/dev/null
+git -C "$UPSTREAM_DIR" commit -m "himitsu: add team secrets" -q 2>/dev/null || true
 
 # ----------------------------------------------------------
 banner "13. Remote add — register a team secrets repository"
