@@ -13,6 +13,12 @@ pub struct InitArgs {
     /// Output result as JSON (for TUI consumption).
     #[arg(long, hide = true)]
     pub json: bool,
+
+    /// Register an initial store by slug (e.g. `org/repo`) and set it as the
+    /// default. The store is created at `stores_dir/<org>/<repo>` if it does
+    /// not already exist.
+    #[arg(long)]
+    pub name: Option<String>,
 }
 
 pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
@@ -52,7 +58,7 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
     // ── 2. Ensure state_dir exists (stores subdir) ────────────────────────
     std::fs::create_dir_all(state_dir.join("stores"))?;
 
-    // ── 3. Optionally initialize a store ──────────────────────────────────
+    // ── 3. Optionally initialize a path-based store (--store flag) ────────
     let store = &ctx.store;
     let store_existed = if store.as_os_str().is_empty() {
         true // no store requested
@@ -82,14 +88,40 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
         }
     }
 
-    // ── 4. Detect git context for suggestions ─────────────────────────────
+    // ── 4. Handle --name: register a named remote store and set as default ─
+    let name_registered = if let Some(ref slug) = args.name {
+        let (org, repo) = config::validate_remote_slug(slug)?;
+        let dest = config::store_checkout(org, repo);
+        if !dest.exists() {
+            // Create a fresh local store at stores_dir/<org>/<repo>
+            std::fs::create_dir_all(crate::remote::store::secrets_dir(&dest))?;
+            let common_dir = crate::remote::store::recipients_dir(&dest).join("common");
+            std::fs::create_dir_all(&common_dir)?;
+            if !pubkey.is_empty() {
+                std::fs::write(common_dir.join("self.pub"), format!("{pubkey}\n"))?;
+            }
+        }
+        // Set (or update) default_store in global config
+        let mut cfg = config::Config::load(&config_path)?;
+        cfg.default_store = Some(slug.clone());
+        cfg.save(&config_path)?;
+        true
+    } else {
+        false
+    };
+
+    // ── 5. Detect git context for suggestions ─────────────────────────────
     let in_git_repo = config::find_git_root(&std::env::current_dir()?).is_some();
     let git_root = std::env::current_dir()
         .ok()
         .and_then(|cwd| config::find_git_root(&cwd));
     let suggested_remote = git_root.as_ref().and_then(detect_origin_remote);
 
-    // ── 5. Output ──────────────────────────────────────────────────────────
+    // ── 6. Output ──────────────────────────────────────────────────────────
+    // Determine whether anything new was actually created this invocation.
+    let anything_created =
+        !key_existed || (!store_existed && !store.as_os_str().is_empty()) || name_registered;
+
     if args.json {
         let json = serde_json::json!({
             "data_dir": data_dir.to_string_lossy(),
@@ -102,21 +134,45 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
             "suggested_remote": suggested_remote,
         });
         println!("{}", serde_json::to_string_pretty(&json)?);
-    } else if key_existed && store_existed {
-        if !store.as_os_str().is_empty() {
-            println!("Store: {}", store.display());
+    } else if !anything_created {
+        // Already fully initialized — show summary.
+        println!("Already initialized.");
+        println!("  Public key: {pubkey}");
+        // Show registered remote stores (if any).
+        let remotes = crate::remote::list_remotes().unwrap_or_default();
+        if !remotes.is_empty() {
+            let cfg = config::Config::load(&config_path)?;
+            let default_slug = cfg.default_store.as_deref().unwrap_or("");
+            for r in &remotes {
+                if r == default_slug {
+                    println!("  Stores: {r} (default)");
+                } else {
+                    println!("  Stores: {r}");
+                }
+            }
         }
-        println!("Key:   {pubkey}");
     } else {
+        // Wizard summary: show what was created.
         if !key_existed {
-            println!("Created keyring at {}", data_dir.display());
-            println!("Age key: {pubkey}");
+            println!("✓ Created age keypair");
+            println!("  Public key: {pubkey}");
         }
         if !store_existed && !store.as_os_str().is_empty() {
-            println!("Initialized store at {}", store.display());
+            println!("✓ Initialized store at {}", store.display());
             if let Some(ref suggested) = suggested_remote {
-                println!("Detected git origin: {suggested}");
+                println!("  Detected git origin: {suggested}");
             }
+        }
+        if name_registered {
+            let slug = args.name.as_deref().unwrap_or("");
+            println!("✓ Registered store {slug} (default)");
+        }
+        println!("✓ Created state directory");
+
+        // Prompt to add a remote store if none was set up.
+        if store.as_os_str().is_empty() && !name_registered {
+            println!();
+            println!("Run `himitsu remote add <org/repo>` to add a secret store.");
         }
     }
 

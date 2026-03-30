@@ -190,45 +190,35 @@ impl Cli {
         let data_dir = crate::config::data_dir();
         let state_dir = crate::config::state_dir();
 
-        // ── Smart-init check ──────────────────────────────────────────────
+        // ── First-use auto-initialization ────────────────────────────────
         // For all non-init, non-git commands: if himitsu is not initialized,
-        // offer to run init first.
+        // automatically run init (no prompt needed — the user clearly wants
+        // to use himitsu).
         let is_init = matches!(self.command, Command::Init(_));
         let is_git = matches!(self.command, Command::Git(_));
 
         if !is_init && !is_git && !data_dir.join("key").exists() {
-            eprintln!("You have not initialized himitsu.");
-            eprint!("Would you like to do so now? [y/N] ");
-            std::io::Write::flush(&mut std::io::stderr())?;
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            let yes = {
-                let t = input.trim();
-                t.eq_ignore_ascii_case("y") || t.eq_ignore_ascii_case("yes")
+            eprintln!("First run — initializing himitsu...");
+            let ctx = Context {
+                data_dir: data_dir.clone(),
+                state_dir: state_dir.clone(),
+                store: PathBuf::new(),
             };
-            if yes {
-                eprintln!();
-                let store_path = self.store.as_deref().map(PathBuf::from).unwrap_or_default();
-                let ctx = Context {
-                    data_dir: data_dir.clone(),
-                    state_dir: state_dir.clone(),
-                    store: store_path,
-                };
-                init::run(init::InitArgs { json: false }, &ctx)?;
-                eprintln!();
-            } else {
-                return Ok(());
-            }
+            init::run(
+                init::InitArgs {
+                    json: false,
+                    name: None,
+                },
+                &ctx,
+            )?;
+            eprintln!();
         }
 
         // ── Resolve store ─────────────────────────────────────────────────
         let store_override: Option<PathBuf> = if let Some(slug) = &self.remote {
-            let (org, repo) = crate::config::validate_remote_slug(slug)?;
-            let path = crate::config::store_checkout(org, repo);
-            if !path.exists() {
-                return Err(crate::error::HimitsuError::RemoteNotFound(slug.clone()));
-            }
-            Some(path)
+            // ensure_store validates the slug and lazy-clones if the checkout
+            // doesn't exist locally yet.
+            Some(crate::config::ensure_store(slug)?)
         } else {
             self.store.as_ref().map(PathBuf::from)
         };

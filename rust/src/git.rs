@@ -46,6 +46,33 @@ pub fn clone(url: &str, dest: &Path) -> Result<String> {
     }
 }
 
+/// Clone a repository in non-interactive mode (no SSH prompts, no terminal
+/// password dialogs). Used for lazy cloning where a fast failure is preferred
+/// over blocking indefinitely.
+pub fn clone_noninteractive(url: &str, dest: &Path) -> Result<String> {
+    let dest_str = dest.to_string_lossy();
+    let parent = dest.parent().unwrap_or(dest);
+    std::fs::create_dir_all(parent)?;
+
+    let output = Command::new("git")
+        .args(["clone", url, &dest_str])
+        // Disable interactive prompts so the call fails fast instead of hanging.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "echo")
+        .output()
+        .map_err(|e| HimitsuError::Git(format!("failed to execute git clone: {e}")))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(HimitsuError::Git(format!(
+            "git clone failed: {}",
+            stderr.trim()
+        )))
+    }
+}
+
 /// Stage all changes and commit with the given message.
 pub fn commit(cwd: &Path, message: &str) -> Result<String> {
     run(&["add", "-A"], cwd)?;

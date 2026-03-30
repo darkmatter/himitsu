@@ -27,7 +27,10 @@ pub enum HimitsuError {
     #[error("store not found: {0}")]
     StoreNotFound(String),
 
-    #[error("ambiguous store — multiple stores found, use --remote to specify one: {0:?}")]
+    #[error(
+        "ambiguous store — multiple stores found: {0:?}\n  \
+         Use --remote <org/repo> or run `himitsu remote default <org/repo>` to set a default."
+    )]
     AmbiguousStore(Vec<String>),
 
     #[error("git error: {0}")]
