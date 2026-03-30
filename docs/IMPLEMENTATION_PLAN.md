@@ -2,8 +2,8 @@
 
 This document defines an execution plan for the vNext architecture:
 
-- centralized store (`~/.himitsu`)
-- `age`-only secret model (`vars/<env>/<KEY>.age`)
+- XDG-based store layout (`~/.local/share/himitsu/`, `~/.local/state/himitsu/`)
+- `age`-only secret model (`.himitsu/secrets/<env>/<KEY>.age`)
 - transport-agnostic sharing protocol
 - GitHub PR inbox + Nostr send/receive
 - full Rust rewrite of current shell implementation
@@ -167,7 +167,7 @@ rust/src/
 │   └── macos.rs                  # macOS Keychain adapter via `security` CLI
 ├── remote/
 │   ├── mod.rs                    # Remote discovery, resolution, list known remotes
-│   └── store.rs                  # Secret file I/O: read/write vars/<env>/<KEY>.age
+│   └── store.rs                  # Secret file I/O: read/write .himitsu/secrets/<env>/<KEY>.age
 ├── git.rs                        # Git CLI wrapper: clone, commit, push, pull, status
 ├── crypto/
 │   ├── mod.rs                    # Trait defs: Encryptor, Decryptor
@@ -237,7 +237,7 @@ cargo test --test '*'             # Integration tests only
 - [x] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
 - [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
 - [x] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
-- [x] `remote::store::write_secret` creates `vars/<env>/<KEY>.age`
+- [x] `remote::store::write_secret` creates `.himitsu/secrets/<env>/<KEY>.age`
 - [x] `remote::store::read_secret` reads and decrypts `.age` file
 - [x] `remote::store::list_secrets` returns all keys for an env
 - [x] `remote::store::list_secrets` handles nested subdirectories
@@ -675,7 +675,7 @@ cargo test --test sync_test       # Sync integration tests
 - [ ] `sync` writes encrypted files to project without plaintext.
 - [ ] Autosync triggers correctly based on configured event.
 - [x] Codegen produces valid typed output for each supported language.
-- [ ] SOPS import decrypts and re-encrypts all keys into `vars/<env>/<KEY>.age`.
+- [ ] SOPS import decrypts and re-encrypts all keys into `.himitsu/secrets/<env>/<KEY>.age`.
 - [ ] 1Password import fetches and encrypts items into remote's format.
 
 ### Risks

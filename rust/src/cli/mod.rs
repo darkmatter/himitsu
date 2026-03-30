@@ -153,6 +153,7 @@ pub enum Command {
     Encrypt(encrypt::EncryptArgs),
 
     /// Not supported — secrets are never stored in plaintext. Use 'get <path>' to read individual values.
+    #[command(hide = true)]
     Decrypt(decrypt::DecryptArgs),
 
     /// Sync stores: pull from git remote and optionally rekey drifted secrets.

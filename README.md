@@ -2,16 +2,16 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`vars/<env>/<KEY>.age`) in git-backed remotes, with group-based recipient control and cross-remote search.
+Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`.himitsu/secrets/<env>/<KEY>.age`) in git-backed stores, with group-based recipient control and cross-remote search.
 
 ## Features
 
 - **Age-only encryption** -- secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys. No KMS, no GPG.
-- **One file per secret** -- `vars/<env>/<KEY>.age` keeps diffs simple and listing fast.
+- **One file per secret** -- `.himitsu/secrets/<env>/<KEY>.age` keeps diffs simple and listing fast.
 - **Group-based recipients** -- organize keys into groups (team, admins, devices) with per-path policies.
 - **Cross-remote search** -- `himitsu search` finds secrets across all your remotes.
 - **Transport-agnostic sharing** -- share secrets via GitHub PR inbox or Nostr (planned).
-- **SOPS generate** -- produce encrypted output files from project config (`himitsu generate`). Typed code generation (`codegen`) is available as a hidden power-user command.
+- **SOPS generate** -- produce encrypted output files from project config (`himitsu generate`).
 
 ## Install
 
