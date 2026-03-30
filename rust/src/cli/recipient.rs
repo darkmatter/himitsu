@@ -83,7 +83,9 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
             };
 
             let group_name = group.as_deref().unwrap_or("common");
-            let group_dir = rstore::recipients_dir(&ctx.store).join(group_name);
+            let group_dir =
+                rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref())
+                    .join(group_name);
             std::fs::create_dir_all(&group_dir)?;
 
             let pub_file = group_dir.join(format!("{name}.pub"));
@@ -93,7 +95,8 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
         }
 
         RecipientCommand::Rm { name, group } => {
-            let recipients_dir = rstore::recipients_dir(&ctx.store);
+            let recipients_dir =
+                rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
             let removed = if let Some(group_name) = &group {
                 let pub_file = recipients_dir.join(group_name).join(format!("{name}.pub"));
                 if pub_file.exists() {
@@ -130,7 +133,8 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
         }
 
         RecipientCommand::Show { name, group } => {
-            let recipients_dir = rstore::recipients_dir(&ctx.store);
+            let recipients_dir =
+                rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
             if !recipients_dir.exists() {
                 return Err(HimitsuError::Recipient(format!(
                     "recipient '{name}' not found"
@@ -165,7 +169,8 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
         }
 
         RecipientCommand::Ls { group } => {
-            let recipients_dir = rstore::recipients_dir(&ctx.store);
+            let recipients_dir =
+                rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
             if !recipients_dir.exists() {
                 return Ok(());
             }

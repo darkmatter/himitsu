@@ -1608,3 +1608,263 @@ fn generate_all_envs_stdout() {
         .stdout(predicate::str::contains("P_KEY"))
         .stdout(predicate::str::contains("prodval"));
 }
+
+// ============ provider-prefixed path tests ============
+
+/// Set up a named store at `stores_dir/org/repo` using `himitsu init --name`.
+/// Returns the home TempDir with keys and config.
+fn setup_named_store(home: &TempDir, slug: &str) {
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init", "--name", slug])
+        .assert()
+        .success();
+}
+
+#[test]
+fn get_with_qualified_provider_prefix() {
+    let home = TempDir::new().unwrap();
+
+    // Register a named store and set it as default.
+    setup_named_store(&home, "acme/secrets");
+
+    // Store a secret in the named store via --remote.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--remote",
+            "acme/secrets",
+            "set",
+            "prod/API_KEY",
+            "mysecret123",
+        ])
+        .assert()
+        .success();
+
+    // Retrieve via provider-prefixed qualified ref (no --remote needed).
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["get", "github:acme/secrets/prod/API_KEY"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mysecret123"));
+}
+
+#[test]
+fn set_with_qualified_provider_prefix() {
+    let home = TempDir::new().unwrap();
+
+    setup_named_store(&home, "acme/secrets");
+
+    // Store via provider-prefixed qualified ref.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["set", "github:acme/secrets/staging/DB_PASS", "dbpass456"])
+        .assert()
+        .success();
+
+    // Verify by reading back with --remote.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", "acme/secrets", "get", "staging/DB_PASS"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dbpass456"));
+}
+
+#[test]
+fn ls_with_qualified_provider_prefix_lists_store_secrets() {
+    let home = TempDir::new().unwrap();
+
+    setup_named_store(&home, "acme/secrets");
+
+    // Populate a few secrets.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", "acme/secrets", "set", "prod/API_KEY", "v1"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", "acme/secrets", "set", "dev/API_KEY", "v2"])
+        .assert()
+        .success();
+
+    // `ls github:acme/secrets` → list all secrets in that store.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["ls", "github:acme/secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prod/API_KEY"))
+        .stdout(predicate::str::contains("dev/API_KEY"));
+}
+
+#[test]
+fn ls_with_qualified_prefix_filters_secrets() {
+    let home = TempDir::new().unwrap();
+
+    setup_named_store(&home, "acme/secrets");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", "acme/secrets", "set", "prod/API_KEY", "v1"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--remote", "acme/secrets", "set", "dev/API_KEY", "v2"])
+        .assert()
+        .success();
+
+    // `ls github:acme/secrets/prod` → only prod/* secrets.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["ls", "github:acme/secrets/prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prod/API_KEY"))
+        .stdout(predicate::str::contains("dev/API_KEY").not());
+}
+
+#[test]
+fn get_qualified_unknown_store_returns_error() {
+    let home = TempDir::new().unwrap();
+    // Init home (keys only, no named store).
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init"])
+        .assert()
+        .success();
+
+    // Requesting a store that doesn't exist should error.
+    // We need at least one store registered so resolve_store doesn't fail
+    // before we reach the command handler. Register a dummy store.
+    setup_named_store(&home, "dummy/store");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["get", "github:no/such/prod/KEY"])
+        .assert()
+        .failure();
+}
+
+// ============ store.recipients_path tests ============
+
+#[test]
+fn set_and_get_with_custom_recipients_path() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    // Move the default recipients directory to a custom location.
+    let default_recipients = store.path().join(".himitsu/recipients");
+    let custom_dir = store.path().join("custom/recipients");
+    std::fs::create_dir_all(custom_dir.parent().unwrap()).unwrap();
+    std::fs::rename(&default_recipients, &custom_dir).unwrap();
+
+    // Write a store-internal config pointing to the custom path.
+    let store_config = store.path().join(".himitsu/config.yaml");
+    std::fs::write(&store_config, "recipients_path: custom/recipients\n").unwrap();
+
+    // `set` should find recipients in the custom directory.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "prod/TOKEN", "value123"])
+        .assert()
+        .success();
+
+    // `get` should decrypt the secret successfully.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "get", "prod/TOKEN"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("value123"));
+}
+
+#[test]
+fn rekey_with_custom_recipients_path() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    // First set a secret using the default path.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "dev/SECRET", "rekey_me"])
+        .assert()
+        .success();
+
+    // Move recipients to a custom path.
+    let default_recipients = store.path().join(".himitsu/recipients");
+    let custom_dir = store.path().join("alt/recips");
+    std::fs::create_dir_all(custom_dir.parent().unwrap()).unwrap();
+    std::fs::rename(&default_recipients, &custom_dir).unwrap();
+
+    let store_config = store.path().join(".himitsu/config.yaml");
+    std::fs::write(&store_config, "recipients_path: alt/recips\n").unwrap();
+
+    // `rekey` should work with the custom recipients path.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "rekey"])
+        .assert()
+        .success();
+
+    // `get` should still decrypt correctly after rekey.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "get", "dev/SECRET"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rekey_me"));
+}
+
+#[test]
+fn recipient_add_with_custom_recipients_path() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    // Move recipients to a custom path.
+    let default_recipients = store.path().join(".himitsu/recipients");
+    let custom_dir = store.path().join("my/recipients");
+    std::fs::create_dir_all(custom_dir.parent().unwrap()).unwrap();
+    std::fs::rename(&default_recipients, &custom_dir).unwrap();
+
+    let store_config = store.path().join(".himitsu/config.yaml");
+    std::fs::write(&store_config, "recipients_path: my/recipients\n").unwrap();
+
+    // Add a recipient — should land in the custom directory.
+    let (_, pub_key) = {
+        let key_file = home.path().join("share/key");
+        let contents = std::fs::read_to_string(&key_file).unwrap();
+        let pubkey = contents
+            .lines()
+            .find(|l| l.starts_with("# public key: "))
+            .unwrap()
+            .strip_prefix("# public key: ")
+            .unwrap()
+            .trim()
+            .to_string();
+        ("", pubkey)
+    };
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &s,
+            "recipient",
+            "add",
+            "extra-key",
+            "--age-key",
+            &pub_key,
+        ])
+        .assert()
+        .success();
+
+    // The new key file should be under the custom path.
+    assert!(store
+        .path()
+        .join("my/recipients/common/extra-key.pub")
+        .exists());
+}

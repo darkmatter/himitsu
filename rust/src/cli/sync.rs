@@ -49,6 +49,7 @@ pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
                 data_dir: ctx.data_dir.clone(),
                 state_dir: ctx.state_dir.clone(),
                 store: store_path.clone(),
+                recipients_path: None,
             };
             match rekey::rekey_store(&store_ctx, None) {
                 Ok(n) => n,

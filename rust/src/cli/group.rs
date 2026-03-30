@@ -22,7 +22,8 @@ pub enum GroupCommand {
 }
 
 pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
-    let recipients_dir = rstore::recipients_dir(&ctx.store);
+    let recipients_dir =
+        rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
 
     match args.command {
         GroupCommand::Add { name } => {

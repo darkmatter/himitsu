@@ -6,6 +6,7 @@ pub mod git;
 pub mod index;
 pub mod keyring;
 pub mod proto;
+pub mod reference;
 pub mod remote;
 
 use clap::Parser;

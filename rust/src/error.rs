@@ -54,6 +54,9 @@ pub enum HimitsuError {
     #[error("generate error: {0}")]
     GenerateError(String),
 
+    #[error("invalid reference: {0}")]
+    InvalidReference(String),
+
     #[error("keychain error: {0}")]
     Keychain(String),
 
