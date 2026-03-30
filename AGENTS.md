@@ -2,7 +2,7 @@ You are an experienced, pragmatic software engineering AI agent. Do not over-eng
 
 # Himitsu — Agent Guide
 
-`himitsu` (秘密, "secret") is an **age-based secret management CLI** with transport-agnostic sharing. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key (`vars/<env>/<KEY>.age`) in git-backed remotes, and shared via signed envelopes over GitHub PR inboxes or Nostr — never as plaintext.
+`himitsu` (秘密, "secret") is an **age-based secret management CLI** with transport-agnostic sharing. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key (`.himitsu/secrets/<env>/<KEY>.age`) in git-backed stores, and shared via signed envelopes over GitHub PR inboxes or Nostr — never as plaintext.
 
 The project is undergoing a **full Rust rewrite** from a legacy shell implementation. See `docs/IMPLEMENTATION_PLAN.md` for the current phase status and open work.
 
@@ -26,7 +26,7 @@ The project is undergoing a **full Rust rewrite** from a legacy shell implementa
 Key design invariants:
 - **Zero plaintext at rest** — secrets are always encrypted before hitting the filesystem.
 - **Transport is untrusted** — only envelope signatures and age encryption protect secrets; the transport layer (GitHub, Nostr, etc.) is never trusted.
-- **One file per secret** — `vars/<env>/<KEY>.age` keeps diffs readable and listing fast without any decryption.
+- **One file per secret** — `.himitsu/secrets/<env>/<KEY>.age` keeps diffs readable and listing fast without any decryption.
 
 ---
 
@@ -84,16 +84,19 @@ himitsu/
 ### Runtime Paths
 
 ```
-~/.himitsu/
-  config.yaml                # User config (default remote, etc.)
-  keys/age.txt               # age private key
-  data/<org>/<repo>/         # Remote clones
-    vars/<env>/<KEY>.age     # Encrypted secret files
-    recipients/<group>/*.pub # Recipient age pubkeys
-    himitsu.yaml             # Remote policy config
-    data.json                # Group/env metadata
-  state/index.db             # Cross-remote search index (SQLite)
-  locks/sources.lock.json    # Pinned remote identity fingerprints
+~/.local/share/himitsu/      # XDG data dir
+  key                        # age private key
+  key.pub                    # age public key
+
+~/.local/state/himitsu/      # XDG state dir
+  himitsu.db                 # Cross-remote search index (SQLite)
+  stores/<org>/<repo>/       # Store checkouts
+    .himitsu/
+      secrets/<env>/<KEY>.age  # Encrypted secret files
+      recipients/<group>/*.pub # Recipient age pubkeys
+      config.yaml              # Store config (recipients_path override, etc.)
+    himitsu.yaml               # Remote policy config
+    data.json                  # Group/env metadata
 ```
 
 ---
