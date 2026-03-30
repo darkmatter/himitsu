@@ -1,6 +1,7 @@
 pub mod codegen;
 pub mod decrypt;
 pub mod encrypt;
+pub mod generate;
 pub mod get;
 pub mod git;
 pub mod group;
@@ -165,6 +166,9 @@ pub enum Command {
     /// Generate and manage JSON schemas.
     Schema(schema::SchemaArgs),
 
+    /// Generate SOPS-encrypted output files from env definitions in project config.
+    Generate(generate::GenerateArgs),
+
     /// Generate typed config code from secrets.
     Codegen(codegen::CodegenArgs),
 
@@ -233,6 +237,7 @@ impl Cli {
                 | Command::Recipient(_)
                 | Command::Group(_)
                 | Command::Schema(_)
+                | Command::Generate(_)
                 | Command::Codegen(_)
                 | Command::Share(_)
                 | Command::Import(_)
@@ -267,6 +272,7 @@ impl Cli {
             Command::Group(args) => group::run(args, &ctx),
             Command::Remote(args) => remote::run(args, &ctx),
             Command::Schema(args) => schema::run(args, &ctx),
+            Command::Generate(args) => generate::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Share(args) => share::run(args, &ctx),
