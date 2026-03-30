@@ -252,6 +252,13 @@ cargo test --test '*'             # Integration tests only
 
 - [x] `init` creates `~/.himitsu/` with keys/, `.himitsu.yaml`, state/
 - [x] `init` is idempotent (running twice doesn't error or overwrite keys)
+- [x] `init` wizard output shows checkmarks and public key on first run
+- [x] `init` shows "Already initialized." with public key on subsequent runs
+- [x] `init --name <org/repo>` registers a named store and sets it as default
+- [x] First-use auto-initialization (no prompt — runs silently on first command)
+- [x] Lazy store cloning via `ensure_store`: `--remote <slug>` triggers clone if not present
+- [x] Project-level config (`himitsu.yaml`) discovery by walking CWD upward
+- [x] `resolve_store` canonical ordering: remote_override → project config → global config → implicit single → error
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`

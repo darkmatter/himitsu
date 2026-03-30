@@ -999,38 +999,285 @@ fn git_passthrough_respects_flags() {
         .stdout(predicate::str::contains("init"));
 }
 
+// ============ auto-init (first-use) tests ============
+
 #[test]
-fn smart_init_prompt_on_missing_home() {
+fn auto_init_on_first_command() {
+    // Running any non-init command without a key file should automatically
+    // initialize — no prompt, no stdin.
     let home = TempDir::new().unwrap();
-    let fake_home = home.path().join("nonexistent");
+    let fake_home = home.path().join("fresh");
     let cwd = TempDir::new().unwrap();
 
-    // Running any command with a missing home should prompt, not crash.
-    // Decline with "n" — should exit cleanly.
     himitsu()
         .env("HIMITSU_HOME", &fake_home)
         .current_dir(cwd.path())
         .args(["ls"])
-        .write_stdin("n\n")
+        .assert()
+        .success();
+
+    // Verify init happened — key file should exist now.
+    assert!(fake_home.join("share/key").exists());
+}
+
+#[test]
+fn auto_init_prints_notice_to_stderr() {
+    let home = TempDir::new().unwrap();
+    let fake_home = home.path().join("brand_new");
+    let cwd = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_HOME", &fake_home)
+        .current_dir(cwd.path())
+        .args(["ls"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("First run"));
+}
+
+#[test]
+fn auto_init_then_command_continues() {
+    // After auto-init, the original command (ls) should still execute.
+    let home = TempDir::new().unwrap();
+    let fake_home = home.path().join("new");
+    let cwd = TempDir::new().unwrap();
+
+    // ls with no stores: returns 0 and prints nothing (empty).
+    himitsu()
+        .env("HIMITSU_HOME", &fake_home)
+        .current_dir(cwd.path())
+        .args(["ls"])
+        .assert()
+        .success();
+}
+
+// ============ init wizard output tests ============
+
+#[test]
+fn init_shows_wizard_output_on_first_run() {
+    let home = TempDir::new().unwrap();
+
+    // First-ever init: wizard summary.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Created age keypair"))
+        .stdout(predicate::str::contains("Public key: age1"))
+        .stdout(predicate::str::contains("✓ Created state directory"));
+}
+
+#[test]
+fn init_idempotent_shows_already_initialized() {
+    let (home, store) = setup();
+
+    // Second run: already-initialized message.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &store_flag(&store), "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already initialized."))
+        .stdout(predicate::str::contains("Public key: age1"));
+}
+
+#[test]
+fn init_with_name_registers_store_as_default() {
+    let home = TempDir::new().unwrap();
+    let slug = "myorg/myproject";
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init", "--name", slug])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ Registered store myorg/myproject (default)",
+        ));
+
+    // The store directory should exist under stores_dir.
+    assert!(home.path().join("state/stores/myorg/myproject").exists());
+
+    // The global config should have default_store set.
+    let cfg_text = std::fs::read_to_string(home.path().join("share/config.yaml")).unwrap();
+    assert!(cfg_text.contains("myorg/myproject"));
+}
+
+// ============ lazy-clone error tests ============
+
+#[test]
+fn lazy_clone_failure_shows_helpful_tip() {
+    // When a slug is given via --remote and the store doesn't exist locally,
+    // himitsu attempts a lazy git clone. For a non-existent repo the clone
+    // fails, and the error should contain a helpful tip.
+    let (home, _store) = setup();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["-r", "ghost/nonexistent", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ghost/nonexistent"))
+        .stderr(predicate::str::contains("Tip"));
+}
+
+// ============ default-store resolution tests ============
+
+#[test]
+fn resolve_store_via_global_config_default() {
+    // When only one default_store is set in global config, resolve_store
+    // should pick it up without --remote.
+    let (home, _store) = setup();
+    let slug = "acme/cfg";
+    create_remote_store(&home, slug);
+
+    // Set the default store in global config.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["remote", "default", slug])
+        .assert()
+        .success();
+
+    // Now `ls` should succeed without any --remote or --store flag.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["ls"])
         .assert()
         .success();
 }
 
 #[test]
-fn smart_init_prompt_accepts_and_continues() {
-    let home = TempDir::new().unwrap();
-    let fake_home = home.path().join("fresh");
-    let cwd = TempDir::new().unwrap();
+fn resolve_store_via_project_config() {
+    // Place a himitsu.yaml with default_store in a temp project directory.
+    let (home, _store) = setup();
+    let slug = "myorg/projected";
+    create_remote_store(&home, slug);
 
-    // Accept the prompt with "y" — should init then run `ls`
+    let project_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{slug}\"\n"),
+    )
+    .unwrap();
+
+    // Running `ls` from the project directory should resolve via the project config.
     himitsu()
-        .env("HIMITSU_HOME", &fake_home)
-        .current_dir(cwd.path())
+        .env("HIMITSU_HOME", home.path())
+        .current_dir(project_dir.path())
         .args(["ls"])
-        .write_stdin("y\n")
+        .assert()
+        .success();
+}
+
+#[test]
+fn resolve_store_remote_flag_overrides_project_config() {
+    // --remote must always win over both project and global config.
+    let (home, _store) = setup();
+    let project_slug = "myorg/projected";
+    let override_slug = "myorg/override";
+    create_remote_store(&home, project_slug);
+    create_remote_store(&home, override_slug);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{project_slug}\"\n"),
+    )
+    .unwrap();
+
+    // With --remote, the override store should be used (not the project config one).
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .current_dir(project_dir.path())
+        .args(["-r", override_slug, "ls"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn resolve_store_project_config_over_global_config() {
+    // A project-level himitsu.yaml default_store takes precedence over the
+    // global config default_store (but --remote still wins).
+    let (home, _store) = setup();
+    let global_slug = "myorg/global";
+    let project_slug = "myorg/local";
+    create_remote_store(&home, global_slug);
+    create_remote_store(&home, project_slug);
+
+    // Set global default.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["remote", "default", global_slug])
         .assert()
         .success();
 
-    // Verify init actually happened — key file is at data_dir/key
-    assert!(fake_home.join("share/key").exists());
+    // Write a secret to the project store so we can tell which one was used.
+    let project_path = home.path().join("state/stores/myorg/local");
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &project_path.to_string_lossy(),
+            "set",
+            "prod/MARKER",
+            "from-project",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{project_slug}\"\n"),
+    )
+    .unwrap();
+
+    // Should read the secret from the project store, not the global one.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .current_dir(project_dir.path())
+        .args(["get", "prod/MARKER"])
+        .assert()
+        .success()
+        .stdout("from-project");
+}
+
+#[test]
+fn resolve_store_single_implicit() {
+    // With exactly one store registered and no default set, that store should
+    // be selected automatically for commands that require a store.
+    let (home, _store) = setup();
+    create_remote_store(&home, "sole/store");
+
+    // `rekey` is in `needs_store` and is safe to run (no-ops on an empty store).
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["rekey"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn resolve_store_ambiguous_error_is_actionable() {
+    // Multiple stores and no default → commands that require a store must fail
+    // with an error that names the stores and suggests --remote / `remote default`.
+    let (home, _store) = setup();
+    create_remote_store(&home, "acme/prod");
+    create_remote_store(&home, "acme/staging");
+
+    // `get` is in `needs_store`, so it calls resolve_store and hits the
+    // ambiguous-store error when no default is configured.
+    let output = himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["get", "prod/SOME_KEY"])
+        .assert()
+        .failure();
+
+    // Error message should name the stores and give actionable guidance.
+    output
+        .stderr(predicate::str::contains("acme/prod").or(predicate::str::contains("acme/staging")))
+        .stderr(
+            predicate::str::contains("--remote").or(predicate::str::contains("remote default")),
+        );
 }

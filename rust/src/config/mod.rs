@@ -12,6 +12,18 @@ pub struct Config {
     pub default_store: Option<String>,
 }
 
+/// Per-project config discovered by walking up from the current directory.
+///
+/// Searched at (in order): `himitsu.yaml`, `.config/himitsu.yaml`,
+/// `.himitsu/config.yaml` in the current directory and each parent up to the
+/// home directory (max 20 levels).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectConfig {
+    /// Default remote store slug for this project (e.g. `"acme/secrets"`).
+    #[serde(default)]
+    pub default_store: Option<String>,
+}
+
 impl Config {
     /// Load config from a YAML file. Returns `Default` if the file is missing.
     pub fn load(path: &Path) -> Result<Self> {
@@ -97,6 +109,45 @@ pub fn store_checkout(org: &str, repo: &str) -> PathBuf {
     stores_dir().join(org).join(repo)
 }
 
+// ── Project config discovery ────────────────────────────────────────────────
+
+/// Walk upward from the current directory looking for a project-level config
+/// file. Returns the first path found, or `None`.
+///
+/// Candidate names per directory (checked in order):
+/// 1. `himitsu.yaml`
+/// 2. `.config/himitsu.yaml`
+/// 3. `.himitsu/config.yaml`
+///
+/// The walk stops at the user's home directory or after 20 levels.
+pub fn find_project_config() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let home_dir = dirs::home_dir();
+    let candidates = [
+        "himitsu.yaml",
+        ".config/himitsu.yaml",
+        ".himitsu/config.yaml",
+    ];
+
+    let mut dir = cwd.clone();
+    for _ in 0..=20 {
+        for candidate in &candidates {
+            let path = dir.join(candidate);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        // Stop at the home directory
+        if home_dir.as_deref() == Some(dir.as_path()) {
+            return None;
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+    None
+}
+
 // ── Store resolution ────────────────────────────────────────────────────────
 
 /// Validate a remote slug (e.g., `"org/repo"`).
@@ -128,24 +179,63 @@ pub fn remote_store_path(slug: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Resolve a remote slug to its local store checkout path, performing a lazy
+/// clone from GitHub if the checkout doesn't exist yet.
+///
+/// - If the store already exists locally: returns its path immediately.
+/// - If it doesn't exist: attempts `git clone git@github.com:<org>/<repo>.git`
+///   and returns the resulting path on success.
+/// - On clone failure: returns an error with the attempted URL and a hint to
+///   use `himitsu remote add --url` for custom URLs.
+pub fn ensure_store(slug: &str) -> Result<PathBuf> {
+    let (org, repo) = validate_remote_slug(slug)?;
+    let path = store_checkout(org, repo);
+    if path.exists() {
+        return Ok(path);
+    }
+    // Attempt lazy clone from the default GitHub SSH URL.
+    let url = format!("git@github.com:{org}/{repo}.git");
+    eprintln!("Cloning {slug} → {}", path.display());
+    crate::git::clone_noninteractive(&url, &path).map_err(|e| {
+        HimitsuError::Remote(format!(
+            "failed to clone {slug} from {url}: {e}\n  \
+             Tip: use `himitsu remote add {slug} --url <url>` to specify a custom URL."
+        ))
+    })?;
+    Ok(path)
+}
+
 /// Resolve which store to use when no explicit `--store`/`--remote` is given.
 ///
 /// Resolution order:
-/// 1. Config `default_store` slug → `store_checkout(org, repo)`.
-/// 2. Single store in `stores_dir()` → use it.
-/// 3. Error with actionable message.
+/// 1. `remote_override` slug (from `--remote` flag) → `ensure_store(slug)`.
+/// 2. Project config `default_store` (found by walking up from CWD) → `ensure_store(slug)`.
+/// 3. Global config `default_store` → `ensure_store(slug)`.
+/// 4. Single store in `stores_dir()` → use it implicitly.
+/// 5. Actionable error on ambiguity or absence.
 pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
     if let Some(slug) = remote_override {
-        return remote_store_path(slug);
+        return ensure_store(slug);
     }
 
-    // Try config default_store
+    // Try project config default_store (walk up from CWD)
+    if let Some(project_config_path) = find_project_config() {
+        if let Ok(contents) = std::fs::read_to_string(&project_config_path) {
+            if let Ok(project_cfg) = serde_yaml::from_str::<ProjectConfig>(&contents) {
+                if let Some(slug) = &project_cfg.default_store {
+                    return ensure_store(slug);
+                }
+            }
+        }
+    }
+
+    // Try global config default_store
     let cfg = Config::load(&config_path())?;
     if let Some(slug) = &cfg.default_store {
-        return remote_store_path(slug);
+        return ensure_store(slug);
     }
 
-    // Enumerate stores
+    // Enumerate stores (implicit single-store fallback — no lazy clone here)
     let dir = stores_dir();
     let mut found: Vec<PathBuf> = vec![];
     if dir.exists() {
@@ -169,9 +259,14 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
         )),
         1 => Ok(found.into_iter().next().unwrap()),
         _ => {
+            // Build human-readable slugs (relative to stores_dir)
             let slugs: Vec<String> = found
                 .iter()
-                .map(|p| p.to_string_lossy().to_string())
+                .filter_map(|p| {
+                    p.strip_prefix(stores_dir())
+                        .ok()
+                        .map(|r| r.to_string_lossy().replace('\\', "/").to_string())
+                })
                 .collect();
             Err(HimitsuError::AmbiguousStore(slugs))
         }
