@@ -2,12 +2,12 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`.himitsu/secrets/<env>/<KEY>.age`) in git-backed stores, with group-based recipient control and cross-remote search.
+Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`.himitsu/secrets/<path>.age`) in git-backed stores, with group-based recipient control and cross-remote search.
 
 ## Features
 
 - **Age-only encryption** -- secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys. No KMS, no GPG.
-- **One file per secret** -- `.himitsu/secrets/<env>/<KEY>.age` keeps diffs simple and listing fast.
+- **One file per secret** -- `.himitsu/secrets/<path>.age` keeps diffs simple and listing fast.
 - **Group-based recipients** -- organize keys into groups (team, admins, devices) with per-path policies.
 - **Cross-remote search** -- `himitsu search` finds secrets across all your remotes.
 - **Transport-agnostic sharing** -- share secrets via GitHub PR inbox or Nostr (planned).
@@ -35,7 +35,7 @@ cargo build --release
 ## Quick Start
 
 ```bash
-# 1. Initialize himitsu (creates ~/.himitsu/ with age keys and config)
+# 1. Initialize himitsu (creates XDG data/state dirs with age keys and config)
 himitsu init
 
 # 2. Create a remote to store secrets
@@ -65,39 +65,38 @@ himitsu --remote myorg/secrets git push
 
 ## Directory Layout
 
-### Global state (`~/.himitsu/`)
+### Global state (XDG dirs)
 
 ```
-~/.himitsu/
+~/.local/share/himitsu/    # XDG data dir (keys, config)
+  key                      # age private key
+  key.pub                  # age public key
   config.yaml              # User config (default remote, etc.)
-  keys/
-    age.txt                # Your age private key
-  data/
-    <org>/<repo>/          # Remote clones
-  state/
-    index.db               # Cross-remote search index
-  cache/
-  locks/
+
+~/.local/state/himitsu/    # XDG state dir (db, stores)
+  himitsu.db               # Cross-remote search index
+  stores/
+    <org>/<repo>/          # Remote store checkouts
 ```
 
-### Remote layout (`~/.himitsu/data/<org>/<repo>/`)
+### Store layout (`stores/<org>/<repo>/`)
 
 ```
 himitsu.yaml               # Remote config (policies, identity sources)
 data.json                  # Group/env metadata
-vars/
-  common/
-    API_BASE_URL.age
-  dev/
-    DB_PASSWORD.age
-  prod/
-    DB_PASSWORD.age
-recipients/
-  team/
-    alice.pub              # age public key
-    bob.pub
-  admins/
-    root.pub
+.himitsu/
+  secrets/
+    prod/
+      API_KEY.age          # Encrypted secret: .himitsu/secrets/<path>.age
+      DB_PASSWORD.age
+    dev/
+      DB_PASSWORD.age
+  recipients/
+    team/
+      alice.pub            # age public key
+      bob.pub
+    admins/
+      root.pub
 ```
 
 ### Project binding (`himitsu.yaml`)
@@ -133,7 +132,7 @@ When `himitsu.yaml` exists, himitsu uses `default_store` automatically (no `-r` 
 
 ### `himitsu init`
 
-Create `~/.himitsu/` with age keypair, config, and directory structure.
+Create XDG data/state directories with age keypair and config.
 
 ### `himitsu set <path> <value>`
 

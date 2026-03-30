@@ -3,7 +3,7 @@
 This document defines an execution plan for the vNext architecture:
 
 - XDG-based store layout (`~/.local/share/himitsu/`, `~/.local/state/himitsu/`)
-- `age`-only secret model (`.himitsu/secrets/<env>/<KEY>.age`)
+- `age`-only secret model (`.himitsu/secrets/<path>.age`)
 - transport-agnostic sharing protocol
 - GitHub PR inbox + Nostr send/receive
 - full Rust rewrite of current shell implementation
@@ -159,7 +159,7 @@ cargo fmt -- --check              # Format check
 rust/src/
 ├── config/
 │   ├── mod.rs                    # detect_mode() → ProjectMode | UserMode
-│   ├── global.rs                 # GlobalConfig: parse ~/.himitsu/config.yaml
+│   ├── global.rs                 # GlobalConfig: parse XDG data dir config.yaml
 │   ├── project.rs                # ProjectConfig: parse <repo>/.himitsu.yaml
 │   └── remote.rs                 # RemoteConfig: parse remote himitsu.yaml
 ├── keyring/
@@ -167,7 +167,7 @@ rust/src/
 │   └── macos.rs                  # macOS Keychain adapter via `security` CLI
 ├── remote/
 │   ├── mod.rs                    # Remote discovery, resolution, list known remotes
-│   └── store.rs                  # Secret file I/O: read/write .himitsu/secrets/<env>/<KEY>.age
+│   └── store.rs                  # Secret file I/O: read/write .himitsu/secrets/<path>.age
 ├── git.rs                        # Git CLI wrapper: clone, commit, push, pull, status
 ├── crypto/
 │   ├── mod.rs                    # Trait defs: Encryptor, Decryptor
@@ -237,7 +237,7 @@ cargo test --test '*'             # Integration tests only
 - [x] `keyring::mapping::scope_to_fingerprint` updates cleanly on key rotation
 - [ ] `keyring::macos::store_private_key` and `load_private_key` roundtrip via mocked `security` CLI
 - [x] `crypto::age::resolve_private_key` prefers keychain when enabled and falls back to file key
-- [x] `remote::store::write_secret` creates `.himitsu/secrets/<env>/<KEY>.age`
+- [x] `remote::store::write_secret` creates `.himitsu/secrets/<path>.age`
 - [x] `remote::store::read_secret` reads and decrypts `.age` file
 - [x] `remote::store::list_secrets` returns all keys for an env
 - [x] `remote::store::list_secrets` handles nested subdirectories
@@ -250,7 +250,7 @@ cargo test --test '*'             # Integration tests only
 
 #### Integration tests (`tests/integration/`)
 
-- [x] `init` creates `~/.himitsu/` with keys/, `.himitsu.yaml`, state/
+- [x] `init` creates XDG data/state dirs with keys, config.yaml
 - [x] `init` is idempotent (running twice doesn't error or overwrite keys)
 - [x] `init` wizard output shows checkmarks and public key on first run
 - [x] `init` shows "Already initialized." with public key on subsequent runs
@@ -534,7 +534,7 @@ cargo test identity               # All resolver tests
 - [ ] `EnsResolver::resolve` reads `himitsu_public_key` text record
 - [ ] `EnsResolver::resolve` reads `himitsu_inbox` text record
 - [ ] `NostrResolver::resolve` normalizes npub to hex pubkey
-- [ ] Cache layer stores resolved profiles in `~/.himitsu/cache/remote-identities/`
+- [ ] Cache layer stores resolved profiles in XDG state dir (`cache/remote-identities/`)
 - [ ] Cache hit returns stored profile without network call
 - [ ] Cache miss triggers network fetch and stores result
 - [ ] Lockfile pinning: resolver verifies fingerprints against `sources.lock.json`
@@ -675,7 +675,7 @@ cargo test --test sync_test       # Sync integration tests
 - [ ] `sync` writes encrypted files to project without plaintext.
 - [ ] Autosync triggers correctly based on configured event.
 - [x] Codegen produces valid typed output for each supported language.
-- [ ] SOPS import decrypts and re-encrypts all keys into `.himitsu/secrets/<env>/<KEY>.age`.
+- [ ] SOPS import decrypts and re-encrypts all keys into `.himitsu/secrets/<path>.age`.
 - [ ] 1Password import fetches and encrypts items into remote's format.
 
 ### Risks

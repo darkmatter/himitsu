@@ -2,7 +2,7 @@ You are an experienced, pragmatic software engineering AI agent. Do not over-eng
 
 # Himitsu — Agent Guide
 
-`himitsu` (秘密, "secret") is an **age-based secret management CLI** with transport-agnostic sharing. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key (`.himitsu/secrets/<env>/<KEY>.age`) in git-backed stores, and shared via signed envelopes over GitHub PR inboxes or Nostr — never as plaintext.
+`himitsu` (秘密, "secret") is an **age-based secret management CLI** with transport-agnostic sharing. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key (`.himitsu/secrets/<path>.age`) in git-backed stores, and shared via signed envelopes over GitHub PR inboxes or Nostr — never as plaintext.
 
 The project is undergoing a **full Rust rewrite** from a legacy shell implementation. See `docs/IMPLEMENTATION_PLAN.md` for the current phase status and open work.
 
@@ -14,7 +14,7 @@ The project is undergoing a **full Rust rewrite** from a legacy shell implementa
 |---|---|
 | **Language** | Rust (CLI binary), TypeScript/Bun (TUI) |
 | **Crypto** | `age` crate (x25519 encryption), Ed25519 (envelope signing) |
-| **Storage** | Local filesystem (`~/.himitsu/`), SQLite index (`rusqlite`) |
+| **Storage** | Local filesystem (XDG: `~/.local/share/himitsu/`, `~/.local/state/himitsu/`), SQLite index (`rusqlite`) |
 | **Serialization** | `serde_json`, `serde_yaml`, `prost` (protobuf for config schema) |
 | **CLI framework** | `clap` v4 (derive macros) |
 | **Error handling** | `thiserror` |
@@ -26,7 +26,7 @@ The project is undergoing a **full Rust rewrite** from a legacy shell implementa
 Key design invariants:
 - **Zero plaintext at rest** — secrets are always encrypted before hitting the filesystem.
 - **Transport is untrusted** — only envelope signatures and age encryption protect secrets; the transport layer (GitHub, Nostr, etc.) is never trusted.
-- **One file per secret** — `.himitsu/secrets/<env>/<KEY>.age` keeps diffs readable and listing fast without any decryption.
+- **One file per secret** — `.himitsu/secrets/<path>.age` keeps diffs readable and listing fast without any decryption.
 
 ---
 
@@ -92,7 +92,7 @@ himitsu/
   himitsu.db                 # Cross-remote search index (SQLite)
   stores/<org>/<repo>/       # Store checkouts
     .himitsu/
-      secrets/<env>/<KEY>.age  # Encrypted secret files
+      secrets/<path>.age       # Encrypted secret files
       recipients/<group>/*.pub # Recipient age pubkeys
       config.yaml              # Store config (recipients_path override, etc.)
     himitsu.yaml               # Remote policy config
@@ -215,7 +215,7 @@ When completing any planned work:
 
 ## Anti-patterns
 
-- **Do NOT write plaintext secrets to disk.** `bulk decrypt` is intentionally unsupported. Use `himitsu get <env> <key>` to read individual values.
+- **Do NOT write plaintext secrets to disk.** `bulk decrypt` is intentionally unsupported. Use `himitsu get <path>` to read individual values.
 - **Do NOT use `HOME` in tests.** Use `HIMITSU_HOME` to isolate himitsu's key store in integration tests (see pattern above).
 - **Do NOT use `anyhow` or `Box<dyn Error>` in library code.** All errors must be typed `HimitsuError` variants.
 - **Do NOT manually format code.** Let `rustfmt` handle it; never add `#[rustfmt::skip]` without explicit permission.
