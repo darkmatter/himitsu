@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,105 @@ pub struct ProjectConfig {
     /// Default remote store slug for this project (e.g. `"acme/secrets"`).
     #[serde(default)]
     pub default_store: Option<String>,
+
+    /// Environment definitions: env name → list of entry specs.
+    #[serde(default)]
+    pub envs: BTreeMap<String, Vec<EnvEntry>>,
+
+    /// Generate output settings.
+    #[serde(default)]
+    pub generate: Option<GenerateConfig>,
+
+    /// Store-level overrides.
+    #[serde(default)]
+    pub store: Option<StoreConfig>,
+}
+
+/// A single entry in an env's secret list.
+///
+/// YAML shapes:
+/// - `"dev/API_KEY"` → `Single("dev/API_KEY")` — key name = last path component
+/// - `"dev/*"` → `Glob("dev")` — all secrets under prefix
+/// - `{MY_KEY: "dev/DB_PASSWORD"}` → `Alias { key: "MY_KEY", path: "dev/DB_PASSWORD" }`
+#[derive(Debug, Clone)]
+pub enum EnvEntry {
+    /// Explicit alias: output key `key`, value from store path `path`.
+    Alias { key: String, path: String },
+    /// Single secret by path; output key = last path component.
+    Single(String),
+    /// All secrets whose path starts with `prefix/`.
+    Glob(String),
+}
+
+impl Serialize for EnvEntry {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            EnvEntry::Single(p) => s.serialize_str(p),
+            EnvEntry::Glob(prefix) => s.serialize_str(&format!("{prefix}/*")),
+            EnvEntry::Alias { key, path } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(key, path)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        // Use an untagged intermediate to handle both string and map shapes.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Map(BTreeMap<String, String>),
+        }
+
+        match Raw::deserialize(d)? {
+            Raw::Str(s) => {
+                if let Some(prefix) = s.strip_suffix("/*") {
+                    Ok(EnvEntry::Glob(prefix.to_string()))
+                } else {
+                    Ok(EnvEntry::Single(s))
+                }
+            }
+            Raw::Map(m) => {
+                if m.len() != 1 {
+                    return Err(serde::de::Error::custom(
+                        "alias entry must have exactly one key-value pair",
+                    ));
+                }
+                let (key, path) = m.into_iter().next().unwrap();
+                Ok(EnvEntry::Alias { key, path })
+            }
+        }
+    }
+}
+
+/// Settings for the `generate` command output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateConfig {
+    /// Output directory relative to the project root (e.g. `".generated"`).
+    pub target: String,
+    /// Output format. Currently only `"sops"` is supported.
+    #[serde(default = "default_generate_format")]
+    pub format: String,
+    /// Age recipients for the generated output files.
+    #[serde(default)]
+    pub age_recipients: Vec<String>,
+}
+
+fn default_generate_format() -> String {
+    "sops".to_string()
+}
+
+/// Store-level config overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StoreConfig {
+    /// Override for the recipients directory path within the store.
+    #[serde(default)]
+    pub recipients_path: Option<String>,
 }
 
 impl Config {
@@ -115,9 +215,9 @@ pub fn store_checkout(org: &str, repo: &str) -> PathBuf {
 /// file. Returns the first path found, or `None`.
 ///
 /// Candidate names per directory (checked in order):
-/// 1. `himitsu.yaml`
-/// 2. `.config/himitsu.yaml`
-/// 3. `.himitsu/config.yaml`
+/// 1. `himitsu.yaml` / `himitsu.yml`
+/// 2. `.config/himitsu.yaml` / `.config/himitsu.yml`
+/// 3. `.himitsu/config.yaml` / `.himitsu/config.yml`
 ///
 /// The walk stops at the user's home directory or after 20 levels.
 pub fn find_project_config() -> Option<PathBuf> {
@@ -125,8 +225,11 @@ pub fn find_project_config() -> Option<PathBuf> {
     let home_dir = dirs::home_dir();
     let candidates = [
         "himitsu.yaml",
+        "himitsu.yml",
         ".config/himitsu.yaml",
+        ".config/himitsu.yml",
         ".himitsu/config.yaml",
+        ".himitsu/config.yml",
     ];
 
     let mut dir = cwd.clone();
@@ -146,6 +249,19 @@ pub fn find_project_config() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Load and parse the first project config found by [`find_project_config`].
+///
+/// Returns `Some((config, path))` if a config file exists and parses
+/// successfully, or `None` if no config file is found.
+///
+/// Parsing errors are returned as `Err`.
+pub fn load_project_config() -> Option<(ProjectConfig, PathBuf)> {
+    let path = find_project_config()?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let cfg: ProjectConfig = serde_yaml::from_str(&contents).ok()?;
+    Some((cfg, path))
 }
 
 // ── Store resolution ────────────────────────────────────────────────────────
@@ -358,5 +474,97 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = Config::load(&tmp.path().join("nonexistent.yaml")).unwrap();
         assert!(cfg.default_store.is_none());
+    }
+
+    #[test]
+    fn env_entry_deserialize_single() {
+        let yaml = "\"dev/API_KEY\"";
+        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(entry, EnvEntry::Single(ref p) if p == "dev/API_KEY"));
+    }
+
+    #[test]
+    fn env_entry_deserialize_glob() {
+        let yaml = "\"dev/*\"";
+        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(entry, EnvEntry::Glob(ref p) if p == "dev"));
+    }
+
+    #[test]
+    fn env_entry_deserialize_alias() {
+        let yaml = "MY_KEY: dev/DB_PASSWORD";
+        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            EnvEntry::Alias { key, path } => {
+                assert_eq!(key, "MY_KEY");
+                assert_eq!(path, "dev/DB_PASSWORD");
+            }
+            _ => panic!("expected Alias variant"),
+        }
+    }
+
+    #[test]
+    fn env_entry_round_trip_serialize() {
+        // Single
+        let e = EnvEntry::Single("prod/STRIPE_KEY".into());
+        let s = serde_yaml::to_string(&e).unwrap();
+        assert!(s.trim() == "prod/STRIPE_KEY");
+
+        // Glob
+        let e = EnvEntry::Glob("prod".into());
+        let s = serde_yaml::to_string(&e).unwrap();
+        assert!(s.trim() == "prod/*");
+
+        // Alias
+        let e = EnvEntry::Alias {
+            key: "MY_DB".into(),
+            path: "prod/DB_PASS".into(),
+        };
+        let s = serde_yaml::to_string(&e).unwrap();
+        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
+        assert!(
+            matches!(back, EnvEntry::Alias { ref key, ref path } if key == "MY_DB" && path == "prod/DB_PASS")
+        );
+    }
+
+    #[test]
+    fn project_config_full_yaml_parses() {
+        let yaml = r#"
+default_store: acme/secrets
+envs:
+  dev:
+    - dev/API_KEY
+    - DB_PASS: dev/DB_PASSWORD
+    - dev/*
+  prod:
+    - prod/*
+generate:
+  target: .generated
+  format: sops
+  age_recipients:
+    - age1abc
+    - age1def
+store:
+  recipients_path: keys/recipients
+"#;
+        let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
+        assert_eq!(cfg.envs.len(), 2);
+
+        let dev_entries = cfg.envs.get("dev").unwrap();
+        assert_eq!(dev_entries.len(), 3);
+        assert!(matches!(&dev_entries[0], EnvEntry::Single(p) if p == "dev/API_KEY"));
+        assert!(
+            matches!(&dev_entries[1], EnvEntry::Alias { key, path } if key == "DB_PASS" && path == "dev/DB_PASSWORD")
+        );
+        assert!(matches!(&dev_entries[2], EnvEntry::Glob(p) if p == "dev"));
+
+        let gen = cfg.generate.unwrap();
+        assert_eq!(gen.target, ".generated");
+        assert_eq!(gen.format, "sops");
+        assert_eq!(gen.age_recipients, vec!["age1abc", "age1def"]);
+
+        let store = cfg.store.unwrap();
+        assert_eq!(store.recipients_path.as_deref(), Some("keys/recipients"));
     }
 }

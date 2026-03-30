@@ -48,6 +48,12 @@ pub enum HimitsuError {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("project config required: {0}")]
+    ProjectConfigRequired(String),
+
+    #[error("generate error: {0}")]
+    GenerateError(String),
+
     #[error("keychain error: {0}")]
     Keychain(String),
 

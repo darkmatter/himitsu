@@ -258,6 +258,16 @@ cargo test --test '*'             # Integration tests only
 - [x] First-use auto-initialization (no prompt — runs silently on first command)
 - [x] Lazy store cloning via `ensure_store`: `--remote <slug>` triggers clone if not present
 - [x] Project-level config (`himitsu.yaml`) discovery by walking CWD upward
+- [x] Project-level config also discovered at `.config/himitsu.yaml` and `.himitsu/config.yaml` (incl. `.yml` variants)
+- [x] `ProjectConfig` expanded with `envs`, `generate`, and `store` sections
+- [x] `EnvEntry` supports three YAML shapes: scalar string (Single/Glob with `/*`), single-key map (Alias)
+- [x] `load_project_config()` convenience function combining discovery + deserialization
+- [x] `generate --stdout --env <env>` decrypts and outputs YAML for an env definition
+- [x] `generate --stdout` (no `--env`) generates all envs from project config
+- [x] `generate` resolves glob entries (`dev/*`) to all matching secret paths
+- [x] `generate` resolves alias entries (`MY_KEY: dev/DB_PASSWORD`) to aliased output key
+- [x] `generate` errors clearly when no project config found
+- [x] `generate` errors clearly when referenced env not defined in config
 - [x] `resolve_store` canonical ordering: remote_override → project config → global config → implicit single → error
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
