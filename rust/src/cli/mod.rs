@@ -145,7 +145,7 @@ pub enum Command {
     #[command(hide = true)]
     Encrypt(encrypt::EncryptArgs),
 
-    /// Decrypt secrets (not supported - secrets are never stored in plaintext).
+    /// Not supported — secrets are never stored in plaintext. Use 'get <path>' to read individual values.
     Decrypt(decrypt::DecryptArgs),
 
     /// Sync stores: pull from git remote and optionally rekey drifted secrets.
@@ -163,13 +163,15 @@ pub enum Command {
     /// Manage remote stores (add, remove, list, set default).
     Remote(remote::RemoteArgs),
 
-    /// Generate and manage JSON schemas.
+    /// (Internal) Generate and manage JSON schemas for himitsu config files.
+    #[command(hide = true)]
     Schema(schema::SchemaArgs),
 
     /// Generate SOPS-encrypted output files from env definitions in project config.
     Generate(generate::GenerateArgs),
 
-    /// Generate typed config code from secrets.
+    /// (Legacy) Generate typed config code from secrets. See 'generate' for canonical output.
+    #[command(hide = true)]
     Codegen(codegen::CodegenArgs),
 
     /// Run git commands inside a store checkout (or all stores with --all).
@@ -232,7 +234,6 @@ impl Cli {
             self.command,
             Command::Set(_)
                 | Command::Get(_)
-                | Command::Encrypt(_)
                 | Command::Rekey(_)
                 | Command::Recipient(_)
                 | Command::Group(_)

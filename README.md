@@ -11,7 +11,7 @@ Age-based secrets management with transport-agnostic sharing. Encrypted secrets 
 - **Group-based recipients** -- organize keys into groups (team, admins, devices) with per-path policies.
 - **Cross-remote search** -- `himitsu search` finds secrets across all your remotes.
 - **Transport-agnostic sharing** -- share secrets via GitHub PR inbox or Nostr (planned).
-- **Typed codegen** -- generate TypeScript, Go, or Python config from your secrets (planned).
+- **SOPS generate** -- produce encrypted output files from project config (`himitsu generate`). Typed code generation (`codegen`) is available as a hidden power-user command.
 
 ## Install
 
@@ -135,13 +135,13 @@ When `himitsu.yaml` exists, himitsu uses `default_store` automatically (no `-r` 
 
 Create `~/.himitsu/` with age keypair, config, and directory structure.
 
-### `himitsu set <env> <key> <value>`
+### `himitsu set <path> <value>`
 
-Encrypt and store a secret.
+Encrypt and store a secret. Path format: `<env>/<KEY>` (e.g. `prod/API_KEY`).
 
-### `himitsu get <env> <key>`
+### `himitsu get <path>`
 
-Decrypt and print a secret value.
+Decrypt and print a secret value. Path format: `<env>/<KEY>` (e.g. `prod/API_KEY`).
 
 ### `himitsu ls [env]`
 
@@ -155,19 +155,25 @@ Re-encrypt all secrets for the current recipient set. Run this after adding or r
 
 Search key names across all remotes. Use `--refresh` to rebuild the index first.
 
-### `himitsu recipient add|rm|ls`
+### `himitsu recipient add|rm|show|ls`
 
 ```bash
-# Add yourself
+# Add yourself (default group: common)
+himitsu -r myorg/secrets recipient add laptop --self
+
+# Add yourself to a specific group
 himitsu -r myorg/secrets recipient add laptop --self --group team
 
 # Add someone by age public key
 himitsu -r myorg/secrets recipient add deploy-bot --age-key "age1..." --group admins
 
+# Show a recipient's public key
+himitsu -r myorg/secrets recipient show laptop
+
 # Remove
 himitsu -r myorg/secrets recipient rm deploy-bot --group admins
 
-# List
+# List all
 himitsu -r myorg/secrets recipient ls
 ```
 

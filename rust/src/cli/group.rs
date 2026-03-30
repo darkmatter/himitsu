@@ -34,7 +34,7 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
         GroupCommand::Rm { name } => {
             if name == "common" {
                 return Err(HimitsuError::Group(
-                    "cannot remove reserved group 'common'".into(),
+                    "cannot remove reserved group 'common' — it is the default group for 'recipient add' and 'init --self'".into(),
                 ));
             }
             let group_dir = recipients_dir.join(&name);
