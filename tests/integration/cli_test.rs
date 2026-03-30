@@ -488,7 +488,62 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("group"))
         .stdout(predicate::str::contains("rekey"))
         .stdout(predicate::str::contains("sync"))
-        .stdout(predicate::str::contains("git"));
+        .stdout(predicate::str::contains("git"))
+        .stdout(predicate::str::contains("generate"))
+        .stdout(predicate::str::contains("remote"))
+        .stdout(predicate::str::contains("ls"))
+        .stdout(predicate::str::contains("decrypt"));
+}
+
+#[test]
+fn help_does_not_show_hidden_commands() {
+    // Hidden commands should not appear in the default --help output.
+    // 'encrypt' is deprecated+hidden; 'codegen', 'schema' are demoted to hidden;
+    // 'share', 'inbox', 'import' are not yet implemented.
+    himitsu()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codegen").not())
+        .stdout(predicate::str::contains("schema").not())
+        .stdout(predicate::str::contains("  encrypt").not()) // hidden deprecated alias
+        .stdout(predicate::str::contains("  share").not())
+        .stdout(predicate::str::contains("  inbox").not())
+        .stdout(predicate::str::contains("  import").not());
+}
+
+#[test]
+fn recipient_show_existing() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    // Add a self recipient so there's something to find.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "recipient", "add", "mykey", "--self"])
+        .assert()
+        .success();
+
+    // show should print the public key
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "recipient", "show", "mykey"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("age1"));
+}
+
+#[test]
+fn recipient_show_nonexistent() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "recipient", "show", "nobody"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
 }
 
 // ============ --remote flag tests ============

@@ -273,17 +273,18 @@ cargo test --test '*'             # Integration tests only
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`
 - [ ] `SOPS_AGE_KEY_CMD` falls back to file-based key when keychain item is missing
-- [x] `set prod API_KEY "secret"` creates `vars/prod/API_KEY.age`
-- [x] `get prod API_KEY` returns `"secret"` after set
+- [x] `set prod/API_KEY "secret"` creates `vars/prod/API_KEY.age` (path-based syntax)
+- [x] `get prod/API_KEY` returns `"secret"` after set
 - [x] `set` then `get` with multiline values preserves newlines
 - [x] `set` then `get` with special characters (quotes, backslashes, unicode)
 - [x] `ls` with no args lists all envs
 - [x] `ls prod` lists keys in prod env
-- [x] `encrypt` re-encrypts all secrets for current recipients
+- [x] `rekey` re-encrypts all secrets for current recipients (`encrypt` is a deprecated hidden alias)
 - [x] `decrypt` is not implemented / errors (no plaintext at rest)
 - [x] `recipient add --self --group team` writes pubkey file to recipients/team/
 - [x] `recipient add` with explicit `--age-key` writes correct .pub file
 - [x] `recipient rm` removes the key file
+- [x] `recipient show <name>` prints the public key for a specific recipient
 - [x] `recipient ls` shows all recipients, optionally filtered by group
 - [x] `group add mygroup` creates directory + updates data.json
 - [x] `group rm mygroup` removes directory + updates data.json
@@ -603,6 +604,10 @@ cargo test proto                  # Proto round-trip and JSON Schema tests
 
 - [ ] Implement sync destinations for project-level encrypted secret delivery.
 - [ ] Implement typed codegen for downstream consumers.
+  **Note:** `codegen` is already implemented and functional (TS/Go/Python/Rust),
+  but has been demoted to a hidden command. The canonical user-facing output
+  command is `generate` (SOPS-encrypted files). Full Phase 8 codegen refers to
+  deeper integration: config-driven codegen, CI hooks, etc.
 - [ ] Implement import from external secret stores.
 
 ### Modules / files

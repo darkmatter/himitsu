@@ -15,16 +15,23 @@ pub struct RecipientArgs {
 #[derive(Debug, Subcommand)]
 pub enum RecipientCommand {
     /// Add a recipient.
+    ///
+    /// Examples:
+    ///   himitsu recipient add laptop --self                     # Add your own pubkey
+    ///   himitsu recipient add alice --age-key age1...           # Add a teammate's key
+    ///   himitsu recipient add ops --age-key age1... --group admins  # Add to specific group
+    ///
+    /// The default group is 'common'.
     Add {
         /// Recipient name (e.g. laptop-a, alice).
         name: String,
-        /// Add yourself as a recipient.
+        /// Add yourself as a recipient (reads the local age public key).
         #[arg(long = "self")]
         self_: bool,
-        /// Explicit age public key.
+        /// Explicit age public key (e.g. age1xxxxxxx...).
         #[arg(long)]
         age_key: Option<String>,
-        /// Group to add the recipient to.
+        /// Group to add the recipient to (default: common).
         #[arg(long)]
         group: Option<String>,
     },
@@ -32,7 +39,15 @@ pub enum RecipientCommand {
     Rm {
         /// Name of the recipient to remove.
         name: String,
-        /// Group to remove the recipient from.
+        /// Group to remove the recipient from (searches all groups if omitted).
+        #[arg(long)]
+        group: Option<String>,
+    },
+    /// Show the public key of a specific recipient.
+    Show {
+        /// Recipient name to look up.
+        name: String,
+        /// Group to search within (searches all groups if omitted).
         #[arg(long)]
         group: Option<String>,
     },
@@ -108,6 +123,41 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
                 ctx.commit_and_push(&format!("himitsu: remove recipient {name}"));
                 println!("Removed recipient '{name}'");
             } else {
+                return Err(HimitsuError::Recipient(format!(
+                    "recipient '{name}' not found"
+                )));
+            }
+        }
+
+        RecipientCommand::Show { name, group } => {
+            let recipients_dir = rstore::recipients_dir(&ctx.store);
+            if !recipients_dir.exists() {
+                return Err(HimitsuError::Recipient(format!(
+                    "recipient '{name}' not found"
+                )));
+            }
+            // Search the specified group, or all groups if not given.
+            let mut found = false;
+            for entry in std::fs::read_dir(&recipients_dir)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let group_name = entry.file_name().to_string_lossy().to_string();
+                if let Some(ref g) = group {
+                    if &group_name != g {
+                        continue;
+                    }
+                }
+                let pub_file = entry.path().join(format!("{name}.pub"));
+                if pub_file.exists() {
+                    let key = std::fs::read_to_string(&pub_file)?;
+                    println!("{}", key.trim());
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
                 return Err(HimitsuError::Recipient(format!(
                     "recipient '{name}' not found"
                 )));
