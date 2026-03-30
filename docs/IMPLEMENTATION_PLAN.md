@@ -302,6 +302,7 @@ cargo test --test '*'             # Integration tests only
 - [x] `ls github:org/repo` lists all secrets in named store
 - [x] `ls github:org/repo/prefix` lists secrets under prefix in named store
 - [x] `StoreConfig.recipients_path` wired through `Context` and all recipient-touching code paths
+- [x] `check` verifies store checkouts are up to date with their remotes (exit 1 when behind)
 - [x] Store-internal `.himitsu/config.yaml` `recipients_path` overrides default recipients directory
 - [x] `set` / `rekey` / `recipient add|rm|show|ls` / `group` all respect custom `recipients_path`
 - [ ] Golden fixture parity: outputs match captured shell fixtures

@@ -1,3 +1,4 @@
+pub mod check;
 pub mod codegen;
 pub mod decrypt;
 pub mod encrypt;
@@ -183,6 +184,9 @@ pub enum Command {
     /// Run git commands inside a store checkout (or all stores with --all).
     Git(git::GitArgs),
 
+    /// Verify store checkouts are up to date with their remotes.
+    Check(check::CheckArgs),
+
     // ── Hidden commands (not yet implemented) ─────────────────────
     /// Share secrets with external recipients.
     #[command(hide = true)]
@@ -285,6 +289,7 @@ impl Cli {
             Command::Generate(args) => generate::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
+            Command::Check(args) => check::run(args, &ctx),
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),

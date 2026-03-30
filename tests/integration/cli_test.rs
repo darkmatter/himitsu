@@ -1868,3 +1868,185 @@ fn recipient_add_with_custom_recipients_path() {
         .join("my/recipients/common/extra-key.pub")
         .exists());
 }
+
+// ============ check tests ============
+
+/// Configure git identity for commits in a directory.
+fn git_config_identity(dir: &std::path::Path) {
+    for (k, v) in &[("user.email", "test@example.com"), ("user.name", "Test")] {
+        std::process::Command::new("git")
+            .args(["config", k, v])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+}
+
+/// Create a bare repo + clone pair that are in sync.
+/// Returns `(bare_dir, stores_dir_path)` — the stores_dir is created at
+/// `state/stores/<org>/<repo>` inside the given `home`.
+fn setup_synced_store(home: &tempfile::TempDir, org: &str, repo: &str) -> tempfile::TempDir {
+    let bare = tempfile::TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "--bare", bare.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    let stores_dir = home.path().join(format!("state/stores/{org}/{repo}"));
+    std::process::Command::new("git")
+        .args([
+            "clone",
+            bare.path().to_str().unwrap(),
+            stores_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    git_config_identity(&stores_dir);
+
+    std::fs::write(stores_dir.join("README.md"), "init\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+
+    bare
+}
+
+/// Push one more commit to the bare repo (via a second clone) so the main
+/// checkout is behind.  Then fetch in the main checkout so remote refs update.
+fn make_store_behind(bare: &tempfile::TempDir, stores_dir: &std::path::Path) {
+    let second = tempfile::TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args([
+            "clone",
+            bare.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    git_config_identity(second.path());
+    std::fs::write(second.path().join("extra.txt"), "extra\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(second.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "extra"])
+        .current_dir(second.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(second.path())
+        .output()
+        .unwrap();
+
+    // Update remote refs in the main checkout
+    std::process::Command::new("git")
+        .args(["fetch", "--quiet"])
+        .current_dir(stores_dir)
+        .output()
+        .unwrap();
+}
+
+#[test]
+fn test_check_up_to_date() {
+    let (home, _store) = setup();
+
+    let _bare = setup_synced_store(&home, "myorg", "mypkg");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["check", "myorg/mypkg", "--offline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("up to date"));
+}
+
+#[test]
+fn test_check_behind_exits_nonzero() {
+    let (home, _store) = setup();
+
+    let bare = setup_synced_store(&home, "myorg", "behind");
+    let stores_dir = home.path().join("state/stores/myorg/behind");
+    make_store_behind(&bare, &stores_dir);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["check", "myorg/behind", "--offline"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("behind origin"));
+}
+
+#[test]
+fn test_check_no_stores() {
+    let (home, _store) = setup();
+
+    // No stores in stores_dir → should print a message and exit 0.
+    // (setup() creates a --store-based init, not a slug-based remote store.)
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no stores found"));
+}
+
+#[test]
+fn test_check_offline_skips_fetch() {
+    let (home, _store) = setup();
+
+    let stores_dir = home.path().join("state/stores/myorg/offline");
+    std::fs::create_dir_all(&stores_dir).unwrap();
+
+    // Init a local git repo with an unreachable remote URL.
+    std::process::Command::new("git")
+        .args(["init", stores_dir.to_str().unwrap()])
+        .output()
+        .unwrap();
+    git_config_identity(&stores_dir);
+    std::fs::write(stores_dir.join("README.md"), "hello\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://does-not-exist.invalid/org/repo.git",
+        ])
+        .current_dir(&stores_dir)
+        .output()
+        .unwrap();
+
+    // --offline: fetch is skipped, no network error.  No remote tracking branch
+    // means the command prints a warning about no tracking branch but exits 0.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["check", "myorg/offline", "--offline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myorg/offline"));
+}
