@@ -296,6 +296,14 @@ cargo test --test '*'             # Integration tests only
 - [x] `remote remove` deletes store checkout
 - [x] `search <query>` matches key names across remotes
 - [x] `search` with no matches returns empty output, exit 0
+- [x] Provider-prefixed qualified references (`github:org/repo/path`) parsed by `SecretRef`
+- [x] `get github:org/repo/path` retrieves secret from named store without `--remote` flag
+- [x] `set github:org/repo/path val` writes secret to named store, collecting recipients from that store
+- [x] `ls github:org/repo` lists all secrets in named store
+- [x] `ls github:org/repo/prefix` lists secrets under prefix in named store
+- [x] `StoreConfig.recipients_path` wired through `Context` and all recipient-touching code paths
+- [x] Store-internal `.himitsu/config.yaml` `recipients_path` overrides default recipients directory
+- [x] `set` / `rekey` / `recipient add|rm|show|ls` / `group` all respect custom `recipients_path`
 - [ ] Golden fixture parity: outputs match captured shell fixtures
 
 ### Acceptance Criteria

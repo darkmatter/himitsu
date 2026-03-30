@@ -805,6 +805,7 @@ mod tests {
             data_dir: tmp.path().join("share"),
             state_dir: tmp.path().join("state"),
             store,
+            recipients_path: None,
         };
 
         let args = CodegenArgs {
@@ -830,6 +831,7 @@ mod tests {
             data_dir: tmp.path().join("share"),
             state_dir: tmp.path().join("state"),
             store,
+            recipients_path: None,
         };
 
         let args = CodegenArgs {
@@ -856,6 +858,7 @@ mod tests {
             data_dir: tmp.path().join("share"),
             state_dir: tmp.path().join("state"),
             store,
+            recipients_path: None,
         };
 
         let args = CodegenArgs {
@@ -884,6 +887,7 @@ mod tests {
             data_dir: tmp.path().join("share"),
             state_dir: tmp.path().join("state"),
             store,
+            recipients_path: None,
         };
 
         let args = CodegenArgs {

@@ -114,14 +114,35 @@ pub fn read_recipients_from_dir(dir: &Path) -> Result<Vec<Recipient>> {
     Ok(recipients)
 }
 
+/// Collect all recipients across all groups, respecting an optional
+/// `recipients_path` override.
+///
+/// When `recipients_path` is `Some(p)`, the recipients directory is resolved
+/// as `store_path.join(p)` instead of the default `.himitsu/recipients/`.
+/// See [`crate::remote::store::recipients_dir_with_override`].
+pub fn collect_recipients(
+    store_path: &Path,
+    recipients_path: Option<&str>,
+) -> Result<Vec<Recipient>> {
+    let dir = crate::remote::store::recipients_dir_with_override(store_path, recipients_path);
+    collect_recipients_from_groups(&dir)
+}
+
 /// Collect all recipients across all groups in a store's `.himitsu/recipients/` directory.
+///
+/// This is a backwards-compatible wrapper around [`collect_recipients`] with no
+/// path override.
 pub fn collect_all_recipients(store_path: &Path) -> Result<Vec<Recipient>> {
-    let recipients_dir = crate::remote::store::recipients_dir(store_path);
+    collect_recipients(store_path, None)
+}
+
+/// (Internal) Collect all recipients from group subdirectories inside `recipients_dir`.
+fn collect_recipients_from_groups(recipients_dir: &Path) -> Result<Vec<Recipient>> {
     let mut all = vec![];
     if !recipients_dir.exists() {
         return Ok(all);
     }
-    for entry in std::fs::read_dir(&recipients_dir)? {
+    for entry in std::fs::read_dir(recipients_dir)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
             let group_recipients = read_recipients_from_dir(&entry.path())?;

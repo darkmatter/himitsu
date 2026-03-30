@@ -18,6 +18,18 @@ pub fn recipients_dir(store: &Path) -> PathBuf {
     store.join(".himitsu").join("recipients")
 }
 
+/// Path to the recipients directory, respecting an optional override.
+///
+/// When `override_path` is `Some(p)`, joins `store` with `p` (making it
+/// relative to the store root). When `None`, falls back to the default
+/// `.himitsu/recipients/` layout returned by [`recipients_dir`].
+pub fn recipients_dir_with_override(store: &Path, override_path: Option<&str>) -> PathBuf {
+    match override_path {
+        Some(p) => store.join(p),
+        None => recipients_dir(store),
+    }
+}
+
 /// Path to the store's own config file.
 pub fn store_config_path(store: &Path) -> PathBuf {
     store.join(".himitsu").join("config.yaml")
@@ -160,6 +172,20 @@ mod tests {
 
         let paths = list_secrets(tmp.path(), Some("prod")).unwrap();
         assert_eq!(paths, vec!["prod/DB_PASS", "prod/integrations/STRIPE_KEY"]);
+    }
+
+    #[test]
+    fn recipients_dir_with_override_uses_custom_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom = recipients_dir_with_override(tmp.path(), Some("custom/recipients"));
+        assert_eq!(custom, tmp.path().join("custom/recipients"));
+    }
+
+    #[test]
+    fn recipients_dir_with_override_none_uses_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let default = recipients_dir_with_override(tmp.path(), None);
+        assert_eq!(default, recipients_dir(tmp.path()));
     }
 
     #[test]

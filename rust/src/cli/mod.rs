@@ -33,6 +33,12 @@ pub struct Context {
     pub state_dir: PathBuf,
     /// Resolved store checkout path (may be empty if no store needed).
     pub store: PathBuf,
+    /// Optional override for the recipients directory within `store`.
+    ///
+    /// Loaded from the store-internal `.himitsu/config.yaml` first, then
+    /// from the project-level `himitsu.yaml` `store.recipients_path` field.
+    /// When `None`, the default `.himitsu/recipients/` layout is used.
+    pub recipients_path: Option<String>,
 }
 
 impl Context {
@@ -209,6 +215,7 @@ impl Cli {
                 data_dir: data_dir.clone(),
                 state_dir: state_dir.clone(),
                 store: PathBuf::new(),
+                recipients_path: None,
             };
             init::run(
                 init::InitArgs {
@@ -220,7 +227,7 @@ impl Cli {
             eprintln!();
         }
 
-        // ── Resolve store ─────────────────────────────────────────────────
+        // ── Resolve store ─────────────────────────────────────────────────────
         let store_override: Option<PathBuf> = if let Some(slug) = &self.remote {
             // ensure_store validates the slug and lazy-clones if the checkout
             // doesn't exist locally yet.
@@ -253,10 +260,12 @@ impl Cli {
             PathBuf::new()
         };
 
+        let recipients_path = load_recipients_path_override(&store);
         let ctx = Context {
             data_dir,
             state_dir,
             store,
+            recipients_path,
         };
 
         match self.command {
@@ -281,4 +290,41 @@ impl Cli {
             Command::Import(args) => import::run(args, &ctx),
         }
     }
+}
+
+// ── Context helpers ──────────────────────────────────────────────────────────
+
+/// Determine the recipients directory override for a resolved store.
+///
+/// Resolution order (first `Some` wins):
+/// 1. Store-internal `.himitsu/config.yaml` → `StoreConfig.recipients_path`
+/// 2. Project config (walked up from CWD) → `store.recipients_path`
+/// 3. `None` → use default `.himitsu/recipients/` layout
+fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
+    if store.as_os_str().is_empty() {
+        return None;
+    }
+
+    // 1. Check store-internal config
+    let store_cfg_path = crate::remote::store::store_config_path(store);
+    if store_cfg_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&store_cfg_path) {
+            if let Ok(cfg) = serde_yaml::from_str::<crate::config::StoreConfig>(&contents) {
+                if cfg.recipients_path.is_some() {
+                    return cfg.recipients_path;
+                }
+            }
+        }
+    }
+
+    // 2. Check project config
+    if let Some((project_cfg, _)) = crate::config::load_project_config() {
+        if let Some(ref store_cfg) = project_cfg.store {
+            if store_cfg.recipients_path.is_some() {
+                return store_cfg.recipients_path.clone();
+            }
+        }
+    }
+
+    None
 }

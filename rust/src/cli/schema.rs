@@ -256,6 +256,7 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
             state_dir: tmp.path().join("state"),
             store: store.clone(),
+            recipients_path: None,
         };
 
         cmd_refresh(&ctx).unwrap();
