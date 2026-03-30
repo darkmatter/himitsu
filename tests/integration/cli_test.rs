@@ -491,8 +491,7 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("git"))
         .stdout(predicate::str::contains("generate"))
         .stdout(predicate::str::contains("remote"))
-        .stdout(predicate::str::contains("ls"))
-        .stdout(predicate::str::contains("decrypt"));
+        .stdout(predicate::str::contains("ls"));
 }
 
 #[test]
@@ -509,7 +508,8 @@ fn help_does_not_show_hidden_commands() {
         .stdout(predicate::str::contains("  encrypt").not()) // hidden deprecated alias
         .stdout(predicate::str::contains("  share").not())
         .stdout(predicate::str::contains("  inbox").not())
-        .stdout(predicate::str::contains("  import").not());
+        .stdout(predicate::str::contains("  import").not())
+        .stdout(predicate::str::contains("  decrypt").not());
 }
 
 #[test]
