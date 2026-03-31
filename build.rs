@@ -71,7 +71,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn emit_git_build_info() {
     let git_sha = git_commit_sha().unwrap_or_else(|| "unknown".to_string());
+    let git_short_sha = git_short_commit_sha().unwrap_or_else(|| "unknown".to_string());
+    let git_date = git_commit_date().unwrap_or_else(|| "unknown".to_string());
+
     println!("cargo:rustc-env=HIMITSU_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=HIMITSU_GIT_SHORT_SHA={git_short_sha}");
+    println!("cargo:rustc-env=HIMITSU_GIT_DATE={git_date}");
 
     let Some(git_dir) = git_dir() else {
         return;
@@ -95,20 +100,29 @@ fn emit_git_build_info() {
 }
 
 fn git_commit_sha() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
+    git_output(&["rev-parse", "HEAD"])
+}
+
+fn git_short_commit_sha() -> Option<String> {
+    git_output(&["rev-parse", "--short", "HEAD"])
+}
+
+fn git_commit_date() -> Option<String> {
+    git_output(&["log", "-1", "--date=short", "--format=%cd", "HEAD"])
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
 
-    let sha = String::from_utf8(output.stdout).ok()?;
-    let sha = sha.trim();
-    if sha.is_empty() {
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
         None
     } else {
-        Some(sha.to_string())
+        Some(value.to_string())
     }
 }
 
