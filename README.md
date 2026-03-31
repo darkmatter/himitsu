@@ -2,16 +2,19 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-Age-based secrets management with transport-agnostic sharing. Encrypted secrets are stored as one file per key (`.himitsu/secrets/<path>.age`) in git-backed stores, with group-based recipient control and cross-remote search.
+Age-based secrets management. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key in a git-backed `.himitsu/` store, with group-based recipient control and typed codegen.
+
+![himitsu demo](demo/demo-vhs.gif)
 
 ## Features
 
-- **Age-only encryption** -- secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys. No KMS, no GPG.
-- **One file per secret** -- `.himitsu/secrets/<path>.age` keeps diffs simple and listing fast.
-- **Group-based recipients** -- organize keys into groups (team, admins, devices) with per-path policies.
-- **Cross-remote search** -- `himitsu search` finds secrets across all your remotes.
-- **Transport-agnostic sharing** -- share secrets via GitHub PR inbox or Nostr (planned).
-- **SOPS generate** -- produce encrypted output files from project config (`himitsu generate`).
+- **Age-only encryption** — no KMS, no GPG, no SOPS. One `.age` file per secret.
+- **One file per secret** — `.himitsu/secrets/<env>/<KEY>.age` keeps diffs readable.
+- **Group-based recipients** — organize keys into named groups; re-encrypt for all with `encrypt`.
+- **Typed codegen** — generate TypeScript, Go, Python, or Rust type stubs directly from your secret store.
+- **Cross-store search** — `himitsu search` queries a local SQLite index across all known stores.
+- **JSON schema export** — `himitsu schema` writes machine-readable schemas for your secret structure.
+- **Nix integration** — flake library for devShell injection, secret packaging, and container entrypoints.
 
 ## Install
 
@@ -19,7 +22,7 @@ Age-based secrets management with transport-agnostic sharing. Encrypted secrets 
 # Run directly
 nix run github:darkmatter/himitsu -- <command>
 
-# Add to devShell
+# Add to a devShell
 {
   inputs.himitsu.url = "github:darkmatter/himitsu";
   # ...
@@ -28,272 +31,260 @@ nix run github:darkmatter/himitsu -- <command>
   };
 }
 
-# Or build from source
+# Build from source
 cargo build --release
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Initialize himitsu (creates XDG data/state dirs with age keys and config)
+# 1. Initialize — creates age keypair and scaffolds the store
 himitsu init
 
-# 2. Create a remote to store secrets
-himitsu remote add myorg/secrets
+# 2. Store secrets  (env  key  value)
+himitsu set prod API_KEY     "sk_live_abc123"
+himitsu set prod DB_PASSWORD "hunter2"
+himitsu set dev  DB_PASSWORD "devpass"
 
-# 3. Add yourself as a recipient
-himitsu -r myorg/secrets recipient add laptop --self --group team
+# 3. Read them back
+himitsu get prod API_KEY      # → sk_live_abc123
+himitsu get dev  DB_PASSWORD  # → devpass
 
-# 4. Add secrets
-himitsu -r myorg/secrets set prod API_KEY "sk_live_xxx"
-himitsu -r myorg/secrets set prod DB_PASSWORD "hunter2"
-himitsu -r myorg/secrets set dev DB_PASSWORD "devpass"
+# 4. List environments / keys
+himitsu ls        # → dev, prod
+himitsu ls prod   # → API_KEY, DB_PASSWORD
 
-# 5. Read secrets back
-himitsu -r myorg/secrets get prod API_KEY
+# 5. Re-encrypt for all current recipients
+himitsu encrypt
 
-# 6. List environments and keys
-himitsu -r myorg/secrets ls          # lists: dev, prod
-himitsu -r myorg/secrets ls prod     # lists: API_KEY, DB_PASSWORD
+# 6. Generate typed stubs
+himitsu codegen --lang typescript --env prod --stdout
 
-# 7. Search across all remotes
-himitsu search DB
-
-# 8. Push changes
-himitsu --remote myorg/secrets git push
+# 7. Search across all stores
+himitsu search DB --refresh
 ```
 
-## Directory Layout
+Use `-s <path>` to target a specific store directory instead of the auto-detected one:
 
-### Global state (XDG dirs)
-
-```
-~/.local/share/himitsu/    # XDG data dir (keys, config)
-  key                      # age private key
-  key.pub                  # age public key
-  config.yaml              # User config (default remote, etc.)
-
-~/.local/state/himitsu/    # XDG state dir (db, stores)
-  himitsu.db               # Cross-remote search index
-  stores/
-    <org>/<repo>/          # Remote store checkouts
+```bash
+himitsu -s /path/to/.himitsu set prod API_KEY "sk_live_xxx"
 ```
 
-### Store layout (`stores/<org>/<repo>/`)
+## Store Layout
 
 ```
-himitsu.yaml               # Remote config (policies, identity sources)
-data.json                  # Group/env metadata
-.himitsu/
+.himitsu/                      # store root (auto-detected from $GIT_ROOT or ~/.himitsu)
   secrets/
     prod/
-      API_KEY.age          # Encrypted secret: .himitsu/secrets/<path>.age
+      API_KEY.age              # encrypted with all current recipients' age keys
       DB_PASSWORD.age
     dev/
       DB_PASSWORD.age
   recipients/
-    team/
-      alice.pub            # age public key
-      bob.pub
-    admins/
-      root.pub
+    common/
+      self.pub                 # your age public key (added automatically on init)
+      alice.pub
+    ops/
+      deploy-bot.pub
+  schemas/                     # written by `himitsu schema refresh`
+    secrets.json
 ```
 
-### Project binding (`himitsu.yaml`)
+The keyring lives separately in `$HIMITSU_HOME` (default: `~/.himitsu`):
 
-Place a `himitsu.yaml` at your project root (or in `.config/himitsu.yaml` / `.himitsu/config.yaml`). himitsu discovers it by walking up from the current directory.
-
-```yaml
-# himitsu.yaml — canonical project config
-default_store: acme/secrets
-
-envs:
-  dev:
-    - dev/DB_PASSWORD          # single secret — key = last component (DB_PASSWORD)
-    - MY_API_KEY: dev/API_KEY  # alias — output key MY_API_KEY, value from dev/API_KEY
-    - dev/*                    # glob — all secrets under dev/ prefix
-  prod:
-    - prod/*
-
-generate:
-  target: .generated           # output directory for encrypted files
-  format: sops
-  age_recipients:
-    - age1abc...               # age public keys for SOPS encryption
-    - age1def...
-
-store:
-  recipients_path: keys/recipients   # optional override
 ```
-
-When `himitsu.yaml` exists, himitsu uses `default_store` automatically (no `-r` flag needed).
+~/.himitsu/
+  key                          # age private key
+  keys/
+    age.txt                    # alternate key location (some builds)
+  cache/                       # search index (SQLite)
+```
 
 ## Commands
 
 ### `himitsu init`
 
-Create XDG data/state directories with age keypair and config.
+Scaffold the store directory and generate a local age keypair. Adds `self` to the `common` recipient group automatically.
 
-### `himitsu set <path> <value>`
+### `himitsu set <env> <key> <value>`
 
-Encrypt and store a secret. Path format: `<env>/<KEY>` (e.g. `prod/API_KEY`).
+Encrypt a secret and write it to `secrets/<env>/<key>.age`.
 
-### `himitsu get <path>`
+```bash
+himitsu set prod API_KEY "sk_live_abc123"
+himitsu set dev  DB_PASSWORD "devpass" --no-push
+```
 
-Decrypt and print a secret value. Path format: `<env>/<KEY>` (e.g. `prod/API_KEY`).
+`--no-push` skips the automatic git commit + push.
+
+### `himitsu get <env> <key>`
+
+Decrypt and print a single secret value.
+
+```bash
+himitsu get prod API_KEY
+```
 
 ### `himitsu ls [env]`
 
-List environments, or list keys within an environment.
+List environments, or list key names within an environment.
 
-### `himitsu rekey [path]`
+```bash
+himitsu ls         # → dev, prod
+himitsu ls prod    # → API_KEY, DB_PASSWORD
+```
 
-Re-encrypt all secrets for the current recipient set. Run this after adding or removing recipients.
+### `himitsu encrypt [env]`
+
+Re-encrypt secrets for the current recipient set. Run after adding or removing recipients.
+
+```bash
+himitsu encrypt        # re-encrypt all environments
+himitsu encrypt prod   # re-encrypt one environment
+```
 
 ### `himitsu search <query>`
 
-Search key names across all remotes. Use `--refresh` to rebuild the index first.
-
-### `himitsu recipient add|rm|show|ls`
+Search key names across all known stores. Uses a local SQLite index.
 
 ```bash
-# Add yourself (default group: common)
-himitsu -r myorg/secrets recipient add laptop --self
+himitsu search DB             # query the cached index
+himitsu search DB --refresh   # rebuild index first, then query
+```
 
-# Add yourself to a specific group
-himitsu -r myorg/secrets recipient add laptop --self --group team
+### `himitsu recipient add|rm|ls`
 
-# Add someone by age public key
-himitsu -r myorg/secrets recipient add deploy-bot --age-key "age1..." --group admins
+```bash
+# Add yourself
+himitsu recipient add laptop --self
 
-# Show a recipient's public key
-himitsu -r myorg/secrets recipient show laptop
+# Add a teammate by age public key
+himitsu recipient add alice --age-key "age1abc..." --group common
 
 # Remove
-himitsu -r myorg/secrets recipient rm deploy-bot --group admins
+himitsu recipient rm alice --group common
 
-# List all
-himitsu -r myorg/secrets recipient ls
+# List all recipients
+himitsu recipient ls
 ```
 
 ### `himitsu group add|rm|ls`
 
 ```bash
-himitsu -r myorg/secrets group add admins
-himitsu -r myorg/secrets group ls
-himitsu -r myorg/secrets group rm temp    # 'common' is reserved
+himitsu group add ops
+himitsu group ls
+himitsu group rm temp   # 'common' is reserved and cannot be removed
 ```
 
-### `himitsu remote add|default|list|remove`
+### `himitsu remote push|pull|status`
+
+Thin wrappers around `git` for the store directory.
 
 ```bash
-himitsu remote add myorg/secrets              # Clone existing
-himitsu remote add myorg/secrets --url git@github.com:myorg/secrets.git
-
-himitsu remote list                           # Show all registered stores
-himitsu remote default myorg/secrets          # Set default store
-himitsu remote default                        # Show current default
-himitsu remote remove myorg/secrets           # Delete store checkout
+himitsu remote push     # git push the store
+himitsu remote pull     # git pull the store
+himitsu remote status   # git status of the store
 ```
 
-### `himitsu generate [--env <env>] [--target <dir>] [--stdout]`
+### `himitsu sync [env]`
 
-Generate output from the `envs` definitions in your project `himitsu.yaml`.
+Sync secrets from a remote store into the local store.
 
 ```bash
-# Print all envs as plaintext YAML (useful for piping or debugging)
-himitsu generate --stdout
-
-# Print only the dev env
-himitsu generate --stdout --env dev
-
-# Write SOPS-encrypted files to .generated/ (requires sops in PATH)
-himitsu generate --env prod --target .generated
+himitsu sync          # sync all environments
+himitsu sync prod     # sync one environment
 ```
 
-**Entry shapes in `envs`:**
-- `"dev/API_KEY"` — single secret; output key = `API_KEY`
-- `"dev/*"` — glob; expands to all secrets under `dev/`
-- `MY_KEY: dev/DB_PASSWORD` — alias; output key = `MY_KEY`
+### `himitsu codegen`
 
-**Output (with `--stdout`):**
-```yaml
-# Generated by himitsu for env: dev
-# Do not edit — regenerate with `himitsu generate`
-API_KEY: "sk_dev_123"
-DB_PASSWORD: "hunter2"
-```
-
-**Without `--stdout`:** writes `<target>/<env>.sops.yaml` encrypted by `sops --encrypt --age`. Requires `sops` in `PATH` and `generate.age_recipients` configured.
-
-### `himitsu sync [store]`
-
-Pull all stores (or a specific one) from git remotes and re-encrypt any drifted secrets.
+Generate typed declarations from the secret store.
 
 ```bash
-himitsu sync                    # Pull and rekey all stores
-himitsu sync myorg/secrets      # Pull and rekey one store
-himitsu sync --no-rekey         # Pull only, skip re-encryption
+himitsu codegen --lang typescript --env prod --stdout
+himitsu codegen --lang golang     --env dev  --output ./secrets/types.go
+himitsu codegen --lang python     --merge-common
 ```
 
-### Flake Outputs
+Supported languages: `typescript`, `golang`, `python`, `rust`.
 
-The flake provides the following outputs:
+### `himitsu schema dump|dump-all|refresh|list`
 
-- `packages.default` and `packages.himitsu` - The `himitsu` CLI binary.
-- `packages.age-key-cmd` - A wrapper script that outputs the local `himitsu` age private key. Useful as a `SOPS_AGE_KEY_CMD`.
-- `lib.mkEncryptedSecrets` - A Nix function to package a remote's encrypted `vars/` directory into a Nix derivation.
-- `lib.mkDecryptWrapper` - A Nix function to create a wrapper script that decrypts packaged secrets using the provided `ageKeyCmd`.
+Export JSON schemas describing the store's secret structure.
 
-Example usage of lib functions:
+```bash
+himitsu schema list           # list available schema names
+himitsu schema refresh        # write all schemas to .himitsu/schemas/
+himitsu schema dump secrets   # print one schema to stdout
+himitsu schema dump-all       # print all schemas as a JSON object
+```
 
-```nix
-{
-  inputs.himitsu.url = "github:darkmatter/himitsu";
-  
-  outputs = { self, nixpkgs, himitsu, ... }: {
-    packages.x86_64-linux = {
-      # Package your production secrets
-      my-secrets = himitsu.lib.x86_64-linux.mkEncryptedSecrets {
-        name = "my-prod-secrets";
-        src = ./path/to/remote;
-        env = "prod";
-      };
+### `himitsu git [args...]`
 
-      # Create a decryption script
-      decrypt-my-secrets = himitsu.lib.x86_64-linux.mkDecryptWrapper {
-        name = "decrypt-prod-secrets";
-        secretsPkg = self.packages.x86_64-linux.my-secrets;
-        destDir = "/run/secrets/decrypted";
-        # Uses the local himitsu age-key-cmd by default
-      };
-    };
-  };
-}
+Run any `git` command inside the himitsu store directory.
+
+```bash
+himitsu git status
+himitsu git log --oneline
+himitsu git push
 ```
 
 ## Global Options
 
 | Flag | Description |
 |------|-------------|
-| `-r <org/repo>` | Target remote. Overrides project binding and default remote. |
-| `-v` | Increase log verbosity (`-v` debug, `-vv` trace). |
+| `-s, --store <path>` | Override the store directory (default: `$GIT_ROOT/.himitsu/` or `~/.himitsu/`). |
+| `-v, --verbose` | Increase log verbosity. `-v` = debug, `-vv` = trace. |
+
+## Nix Integration
+
+The flake exposes a library for downstream consumers:
+
+```nix
+{
+  inputs.himitsu.url = "github:darkmatter/himitsu";
+
+  outputs = { self, nixpkgs, himitsu, ... }: let
+    system = "x86_64-linux";
+    lib = himitsu.lib.${system};
+  in {
+    # Wrap any devShell with automatic secret injection
+    devShells.default = lib.mkDevShell {
+      devShell = pkgs.mkShell { packages = [ nodejs ]; };
+      store    = ./.himitsu;
+      env      = "dev";
+    };
+
+    # Package encrypted secrets into a derivation
+    packages.my-secrets = lib.packSecrets ./.himitsu/secrets/prod;
+  };
+}
+```
+
+**Flake outputs:**
+
+| Output | Description |
+|--------|-------------|
+| `packages.default` / `packages.himitsu` | The `himitsu` CLI binary. |
+| `packages.age-key-cmd` | Shell script that prints the local age private key. Useful as `SOPS_AGE_KEY_CMD`. |
+| `lib.mkDevShell` | Wrap a devShell with automatic secret decryption on entry. |
+| `lib.packSecrets` | Collect `.age` files into a Nix derivation. |
+| `lib.wrapAge` | `age` binary pre-configured with the local identity. |
+| `lib.wrapSops` | `sops` binary pre-configured to discover the himitsu key. |
+| `lib.mkEntrypoint` | Container entrypoint that decrypts secrets then execs. |
 
 ## Development
 
 ```bash
-# Enter dev shell
-nix develop
+nix develop                                              # enter dev shell
 
-# Build
-cargo build
+cargo build                                              # debug build
+cargo build --release                                    # release build
+cargo fmt --all -- --check                               # format check (CI gate)
+cargo clippy --workspace --all-targets -- -D warnings    # lint (CI gate)
+cargo test --workspace                                   # all tests
 
-# Run tests
-cargo test
-
-# Lint
-cargo clippy -- -D warnings
-cargo fmt -- --check
+# Re-record the demo (requires release build)
+vhs demo/demo.tape
 ```
 
 ## License
