@@ -1129,6 +1129,61 @@ fn auto_init_then_command_continues() {
         .success();
 }
 
+// ============ explicit --store creation prompt tests ============
+
+#[test]
+fn explicit_store_prompt_creates_store_on_accept() {
+    let home = TempDir::new().unwrap();
+    let store = home.path().join("new-store");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .write_stdin("\n")
+        .args(["--store", &store.to_string_lossy(), "ls"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "No store exists. Create one at {}? Y/n",
+            store.display()
+        )))
+        .stderr(predicate::str::contains("No secrets found"));
+
+    assert!(store.join(".himitsu/secrets").exists());
+    assert!(store.join(".himitsu/recipients/common/self.pub").exists());
+}
+
+#[test]
+fn explicit_store_prompt_aborts_on_decline() {
+    let home = TempDir::new().unwrap();
+    let store = home.path().join("declined-store");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["init"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .write_stdin("n\n")
+        .args(["--store", &store.to_string_lossy(), "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!(
+            "No store exists. Create one at {}? Y/n",
+            store.display()
+        )))
+        .stderr(predicate::str::contains("store creation declined"));
+
+    assert!(!store.join(".himitsu").exists());
+}
+
 // ============ init wizard output tests ============
 
 #[test]

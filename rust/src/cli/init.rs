@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 
@@ -45,9 +45,7 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
         std::fs::write(&pubkey_path, format!("{public}\n"))?;
         public
     } else {
-        // Extract public key from existing key file
-        let contents = std::fs::read_to_string(&key_path)?;
-        extract_public_key(&contents).unwrap_or_default()
+        read_public_key(data_dir)?
     };
 
     let config_path = data_dir.join("config.yaml");
@@ -63,29 +61,11 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
     let store_existed = if store.as_os_str().is_empty() {
         true // no store requested
     } else {
-        store.join(".himitsu").join("secrets").exists()
+        store_exists(store)
     };
 
-    if !store.as_os_str().is_empty() && !store_existed {
-        // Create store layout: .himitsu/{secrets/, recipients/common/}
-        std::fs::create_dir_all(crate::remote::store::secrets_dir(store))?;
-        let common_dir = crate::remote::store::recipients_dir(store).join("common");
-        std::fs::create_dir_all(&common_dir)?;
-
-        // Add self as recipient
-        let self_pub = common_dir.join("self.pub");
-        if !self_pub.exists() && !pubkey.is_empty() {
-            std::fs::write(&self_pub, format!("{pubkey}\n"))?;
-        }
-    } else if !store.as_os_str().is_empty() && store_existed {
-        // Store already exists — ensure self.pub is present
-        let self_pub = crate::remote::store::recipients_dir(store)
-            .join("common")
-            .join("self.pub");
-        if !self_pub.exists() && !pubkey.is_empty() {
-            std::fs::create_dir_all(self_pub.parent().unwrap())?;
-            std::fs::write(&self_pub, format!("{pubkey}\n"))?;
-        }
+    if !store.as_os_str().is_empty() {
+        ensure_store_layout(store, &pubkey)?;
     }
 
     // ── 4. Handle --name: register a named remote store and set as default ─
@@ -177,6 +157,39 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn read_public_key(data_dir: &Path) -> Result<String> {
+    let pubkey_path = data_dir.join("key.pub");
+    if pubkey_path.exists() {
+        return Ok(std::fs::read_to_string(&pubkey_path)?.trim().to_string());
+    }
+
+    let key_path = data_dir.join("key");
+    let contents = std::fs::read_to_string(&key_path)?;
+    Ok(extract_public_key(&contents).unwrap_or_default())
+}
+
+pub(crate) fn store_exists(store: &Path) -> bool {
+    crate::remote::store::secrets_dir(store).exists()
+}
+
+pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
+    let existed = store_exists(store);
+
+    if !existed {
+        std::fs::create_dir_all(crate::remote::store::secrets_dir(store))?;
+    }
+
+    let self_pub = crate::remote::store::recipients_dir(store)
+        .join("common")
+        .join("self.pub");
+    if !self_pub.exists() && !pubkey.is_empty() {
+        std::fs::create_dir_all(self_pub.parent().unwrap())?;
+        std::fs::write(&self_pub, format!("{pubkey}\n"))?;
+    }
+
+    Ok(!existed)
 }
 
 fn timestamp() -> String {

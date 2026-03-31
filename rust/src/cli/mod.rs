@@ -19,12 +19,13 @@ pub mod set;
 pub mod share;
 pub mod sync;
 
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tracing::debug;
 
-use crate::error::Result;
+use crate::error::{HimitsuError, Result};
 
 /// Resolved paths for the current invocation.
 pub struct Context {
@@ -219,9 +220,9 @@ impl Cli {
         // For all non-init, non-git commands: if himitsu is not initialized,
         // automatically run init (no prompt needed — the user clearly wants
         // to use himitsu).
-        let is_init = matches!(self.command, Command::Init(_));
-        let is_git = matches!(self.command, Command::Git(_));
-        let is_version = matches!(self.command, Command::Version);
+        let is_init = matches!(&self.command, Command::Init(_));
+        let is_git = matches!(&self.command, Command::Git(_));
+        let is_version = matches!(&self.command, Command::Version);
 
         if !is_init && !is_git && !is_version && !data_dir.join("key").exists() {
             eprintln!("First run — initializing himitsu...");
@@ -252,7 +253,7 @@ impl Cli {
 
         // Commands that require a resolved store
         let needs_store = matches!(
-            self.command,
+            &self.command,
             Command::Set(_)
                 | Command::Get(_)
                 | Command::Rekey(_)
@@ -273,6 +274,13 @@ impl Cli {
             // Init, Ls, Search, Remote, Git, Version: store is optional
             PathBuf::new()
         };
+
+        if self.store.is_some()
+            && command_uses_explicit_path_store(&self.command)
+            && !init::store_exists(&store)
+        {
+            prompt_to_create_store(&store, &data_dir, &state_dir)?;
+        }
 
         let recipients_path = load_recipients_path_override(&store);
         let ctx = Context {
@@ -309,6 +317,49 @@ impl Cli {
             Command::Import(args) => import::run(args, &ctx),
         }
     }
+}
+
+fn command_uses_explicit_path_store(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Set(_)
+            | Command::Get(_)
+            | Command::Ls(_)
+            | Command::Rekey(_)
+            | Command::Encrypt(_)
+            | Command::Decrypt(_)
+            | Command::Recipient(_)
+            | Command::Group(_)
+            | Command::Schema(_)
+            | Command::Generate(_)
+            | Command::Codegen(_)
+            | Command::Share(_)
+            | Command::Import(_)
+    )
+}
+
+fn prompt_to_create_store(store: &Path, data_dir: &Path, state_dir: &Path) -> Result<()> {
+    eprint!("No store exists. Create one at {}? Y/n ", store.display());
+    io::stderr().flush()?;
+
+    let mut response = String::new();
+    io::stdin().read_line(&mut response)?;
+
+    let answer = response.trim();
+    if !answer.is_empty()
+        && !answer.eq_ignore_ascii_case("y")
+        && !answer.eq_ignore_ascii_case("yes")
+    {
+        return Err(HimitsuError::StoreNotFound(format!(
+            "store creation declined for {}",
+            store.display()
+        )));
+    }
+
+    std::fs::create_dir_all(state_dir.join("stores"))?;
+    let pubkey = init::read_public_key(data_dir)?;
+    init::ensure_store_layout(store, &pubkey)?;
+    Ok(())
 }
 
 // ── Context helpers ──────────────────────────────────────────────────────────
