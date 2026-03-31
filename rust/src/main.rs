@@ -1,3 +1,4 @@
+mod build_info;
 mod cli;
 pub mod config;
 pub mod crypto;

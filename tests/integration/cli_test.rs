@@ -466,12 +466,28 @@ fn search_no_matches_returns_empty() {
 // ============ version and help tests ============
 
 #[test]
-fn version_prints() {
+fn version_prints_with_commit_sha() {
     himitsu()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("himitsu 0.1.0"));
+        .stdout(predicate::str::contains("himitsu 0.1.0 (commit "))
+        .stdout(predicate::str::is_match(r"(?:[0-9a-f]{40}|unknown)").unwrap());
+}
+
+#[test]
+fn version_subcommand_prints_without_initializing() {
+    let home = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("himitsu 0.1.0 (commit "))
+        .stdout(predicate::str::is_match(r"(?:[0-9a-f]{40}|unknown)").unwrap());
+
+    assert!(!home.path().join("share/key").exists());
 }
 
 #[test]
@@ -491,7 +507,8 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("git"))
         .stdout(predicate::str::contains("generate"))
         .stdout(predicate::str::contains("remote"))
-        .stdout(predicate::str::contains("ls"));
+        .stdout(predicate::str::contains("ls"))
+        .stdout(predicate::str::contains("version"));
 }
 
 #[test]

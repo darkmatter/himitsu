@@ -112,7 +112,12 @@ impl Context {
 
 /// Himitsu - age-based secrets management with transport-agnostic sharing.
 #[derive(Debug, Parser)]
-#[command(name = "himitsu", version, about, long_about = None)]
+#[command(
+    name = "himitsu",
+    version = crate::build_info::VERSION,
+    about,
+    long_about = None
+)]
 pub struct Cli {
     /// Override the store path directly (for testing or advanced use).
     #[arg(short = 's', long, global = true)]
@@ -188,6 +193,9 @@ pub enum Command {
     /// Verify store checkouts are up to date with their remotes.
     Check(check::CheckArgs),
 
+    /// Print version information.
+    Version,
+
     // ── Hidden commands (not yet implemented) ─────────────────────
     /// Share secrets with external recipients.
     #[command(hide = true)]
@@ -213,8 +221,9 @@ impl Cli {
         // to use himitsu).
         let is_init = matches!(self.command, Command::Init(_));
         let is_git = matches!(self.command, Command::Git(_));
+        let is_version = matches!(self.command, Command::Version);
 
-        if !is_init && !is_git && !data_dir.join("key").exists() {
+        if !is_init && !is_git && !is_version && !data_dir.join("key").exists() {
             eprintln!("First run — initializing himitsu...");
             let ctx = Context {
                 data_dir: data_dir.clone(),
@@ -261,7 +270,7 @@ impl Cli {
         } else if needs_store {
             crate::config::resolve_store(None)?
         } else {
-            // Init, Ls, Search, Remote, Git: store is optional
+            // Init, Ls, Search, Remote, Git, Version: store is optional
             PathBuf::new()
         };
 
@@ -291,6 +300,10 @@ impl Cli {
             Command::Codegen(args) => codegen::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Check(args) => check::run(args, &ctx),
+            Command::Version => {
+                println!("{}", crate::build_info::VERSION_LINE);
+                Ok(())
+            }
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),

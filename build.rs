@@ -5,8 +5,11 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    emit_git_build_info();
+
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
 
     // Path to our proto source directory.
@@ -64,4 +67,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn emit_git_build_info() {
+    let git_sha = git_commit_sha().unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=HIMITSU_GIT_SHA={git_sha}");
+
+    let Some(git_dir) = git_dir() else {
+        return;
+    };
+
+    let head_path = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head_path.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
+
+    if let Ok(head) = std::fs::read_to_string(&head_path) {
+        if let Some(reference) = head.strip_prefix("ref: ").map(str::trim) {
+            println!(
+                "cargo:rerun-if-changed={}",
+                git_dir.join(reference).display()
+            );
+        }
+    }
+}
+
+fn git_commit_sha() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let sha = String::from_utf8(output.stdout).ok()?;
+    let sha = sha.trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_string())
+    }
+}
+
+fn git_dir() -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let git_dir = String::from_utf8(output.stdout).ok()?;
+    let git_dir = git_dir.trim();
+    if git_dir.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(git_dir))
+    }
 }
