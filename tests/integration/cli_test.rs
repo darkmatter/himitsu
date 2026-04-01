@@ -39,7 +39,7 @@ fn init_creates_directory_tree() {
     let (home, store) = setup();
     // Key files at data_dir (HIMITSU_HOME/share/)
     assert!(home.path().join("share/key").exists());
-    assert!(home.path().join("share/config.yaml").exists());
+    assert!(home.path().join("config/config.yaml").exists());
     // Store layout at store_root/.himitsu/
     assert!(store.path().join(".himitsu/secrets").exists());
     assert!(store.path().join(".himitsu/recipients/common").exists());
@@ -100,6 +100,58 @@ fn set_get_roundtrip() {
         .assert()
         .success()
         .stdout("secret123");
+}
+
+#[test]
+fn set_normalizes_leading_slash() {
+    // /dev/hello is valid — leading / is stripped to give path dev/hello
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "/dev/hello", "world"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set dev/hello"));
+
+    // The age file lands at the normalized path, not any absolute location
+    assert!(store.path().join(".himitsu/secrets/dev/hello.age").exists());
+}
+
+#[test]
+fn set_rejects_traversal_path() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "../../etc/passwd", "oops"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not a valid secret path component",
+        ));
+}
+
+#[test]
+fn get_normalizes_leading_slash() {
+    // /dev/hello resolves to the same secret as dev/hello
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "set", "dev/hello", "world"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "get", "/dev/hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("world"));
 }
 
 #[test]
@@ -1233,7 +1285,7 @@ fn init_with_name_registers_store_as_default() {
     assert!(home.path().join("state/stores/myorg/myproject").exists());
 
     // The global config should have default_store set.
-    let cfg_text = std::fs::read_to_string(home.path().join("share/config.yaml")).unwrap();
+    let cfg_text = std::fs::read_to_string(home.path().join("config/config.yaml")).unwrap();
     assert!(cfg_text.contains("myorg/myproject"));
 }
 
