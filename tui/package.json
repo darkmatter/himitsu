@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "postinstall": "bun2nix -o bun.nix"
   },
   "dependencies": {
     "@opentui/core": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "bun2nix": "^2.0.8",
     "typescript": "^5"
   }
 }

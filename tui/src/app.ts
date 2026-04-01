@@ -1,101 +1,128 @@
 import {
-  Box, Text,
+  Box,
+  Text,
   BoxRenderable,
   type CliRenderer,
   type KeyEvent,
-} from "@opentui/core"
-import { colors } from "./theme"
-import { clearChildren } from "./helpers"
-import { Dashboard } from "./views/dashboard"
-import { SearchView } from "./views/search"
-import { SecretView } from "./views/secret"
-import { InitWizard } from "./views/init-wizard"
-import * as himitsu from "./himitsu"
+} from "@opentui/core";
+import { colors } from "./theme";
+import { clearChildren } from "./helpers";
+import { Dashboard } from "./views/dashboard";
+import { SearchView } from "./views/search";
+import { SecretView } from "./views/secret";
+import { InitWizard, type WizardDefaults } from "./views/init-wizard";
+import * as himitsu from "./himitsu";
 
-type View = "wizard" | "dashboard" | "search" | "secret"
+type View = "wizard" | "dashboard" | "search" | "secret";
 
 interface AppState {
-  view: View
-  remote?: string
-  selectedEnv?: string
+  view: View;
+  remote?: string;
+  selectedEnv?: string;
 }
 
-export function createApp(renderer: CliRenderer, remote?: string) {
-  // Check if himitsu is initialized
-  const needsInit = !remote && !isInitialized()
+interface AppOptions {
+  initMode?: boolean;
+  initDefaults?: WizardDefaults;
+}
+
+export function createApp(
+  renderer: CliRenderer,
+  remote?: string,
+  options?: AppOptions,
+) {
+  const initMode = options?.initMode ?? false;
+  const initDefaults = options?.initDefaults;
+
+  // When launched with --init, always show the wizard.
+  // Otherwise check if himitsu is initialized.
+  const needsInit = initMode || (!remote && !isInitialized());
 
   const state: AppState = {
     view: needsInit ? "wizard" : "dashboard",
     remote,
-  }
+  };
 
   const content = new BoxRenderable(renderer, {
     id: "content",
     flexDirection: "column",
     flexGrow: 1,
-  })
+  });
 
   function navigate(view: View, data?: any) {
-    state.view = view
-    if (data?.env) state.selectedEnv = data.env
-    if (data?.remote) state.remote = data.remote
-    renderView()
+    state.view = view;
+    if (data?.env) state.selectedEnv = data.env;
+    if (data?.remote) state.remote = data.remote;
+    renderView();
   }
 
   function handleAction(action: string, data?: any) {
     switch (action) {
       case "select-env":
-        navigate("secret", { env: data })
-        break
+        navigate("secret", { env: data });
+        break;
       case "back":
-        navigate("dashboard")
-        break
+        navigate("dashboard");
+        break;
     }
   }
 
   function renderView() {
-    clearChildren(content)
+    clearChildren(content);
 
     switch (state.view) {
       case "wizard":
-        content.add(InitWizard(renderer, (remote) => {
-          state.remote = remote
-          navigate("dashboard")
-        }))
-        break
+        content.add(
+          InitWizard(
+            renderer,
+            (wizardRemote) => {
+              // In init-only mode, exit after the wizard completes.
+              if (initMode) {
+                renderer.destroy();
+                process.exit(0);
+              }
+              state.remote = wizardRemote;
+              navigate("dashboard");
+            },
+            initDefaults,
+          ),
+        );
+        break;
       case "dashboard":
-        content.add(Dashboard(renderer, state.remote, handleAction))
-        break
+        content.add(Dashboard(renderer, state.remote, handleAction));
+        break;
       case "search":
-        content.add(SearchView(renderer, handleAction))
-        break
+        content.add(SearchView(renderer, handleAction));
+        break;
       case "secret":
-        content.add(SecretView(renderer, state.remote, state.selectedEnv!, handleAction))
-        break
+        content.add(
+          SecretView(renderer, state.remote, state.selectedEnv!, handleAction),
+        );
+        break;
     }
   }
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
     // Don't intercept keys during wizard
-    if (state.view === "wizard") return
+    if (state.view === "wizard") return;
 
     if (key.name === "escape") {
       if (state.view !== "dashboard") {
-        navigate("dashboard")
+        navigate("dashboard");
       }
-      return
+      return;
     }
 
     if (key.name === "/" && state.view === "dashboard") {
-      navigate("search")
-      return
+      navigate("search");
+      return;
     }
 
     if (key.name === "q" && !key.ctrl && state.view === "dashboard") {
-      renderer.destroy()
-      return
+      renderer.destroy();
+      return;
     }
-  })
+  });
 
   const header = Box(
     {
@@ -106,7 +133,7 @@ export function createApp(renderer: CliRenderer, remote?: string) {
     Text({ content: " himitsu ", fg: colors.bg, bg: colors.accent }),
     Text({ content: "  " }),
     Text({ content: "q quit  / search  esc back", fg: colors.fgDim }),
-  )
+  );
 
   const root = Box(
     {
@@ -118,18 +145,18 @@ export function createApp(renderer: CliRenderer, remote?: string) {
     },
     header,
     content,
-  )
+  );
 
-  renderView()
-  return root
+  renderView();
+  return root;
 }
 
 /** Check if himitsu has been initialized (keys exist). */
 function isInitialized(): boolean {
   try {
-    const result = himitsu.init()
-    return result.store_existed
+    const result = himitsu.init();
+    return result.key_existed;
   } catch {
-    return false
+    return false;
   }
 }
