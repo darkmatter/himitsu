@@ -36,11 +36,8 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         // For cross-store writes, use the target store's default recipients layout.
         (resolved, path, None)
     } else {
-        (
-            ctx.store.clone(),
-            args.path.clone(),
-            ctx.recipients_path.as_deref(),
-        )
+        let path = secret_ref.path.expect("bare SecretRef always has a path");
+        (ctx.store.clone(), path, ctx.recipients_path.as_deref())
     };
 
     let recipients = age::collect_recipients(&effective_store, recipients_path_override)?;

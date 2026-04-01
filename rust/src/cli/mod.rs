@@ -1,5 +1,6 @@
 pub mod check;
 pub mod codegen;
+pub mod context;
 pub mod decrypt;
 pub mod encrypt;
 pub mod generate;
@@ -177,6 +178,9 @@ pub enum Command {
     /// Manage remote stores (add, remove, list, set default).
     Remote(remote::RemoteArgs),
 
+    /// Manage the active store context used for disambiguation.
+    Context(context::ContextArgs),
+
     /// (Internal) Generate and manage JSON schemas for himitsu config files.
     #[command(hide = true)]
     Schema(schema::SchemaArgs),
@@ -236,6 +240,9 @@ impl Cli {
                 init::InitArgs {
                     json: false,
                     name: None,
+                    home: None,
+                    key_provider: None,
+                    no_tui: true,
                 },
                 &ctx,
             )?;
@@ -303,6 +310,7 @@ impl Cli {
             Command::Recipient(args) => recipient::run(args, &ctx),
             Command::Group(args) => group::run(args, &ctx),
             Command::Remote(args) => remote::run(args, &ctx),
+            Command::Context(args) => context::run(args, &ctx),
             Command::Schema(args) => schema::run(args, &ctx),
             Command::Generate(args) => generate::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),

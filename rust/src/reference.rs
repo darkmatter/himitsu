@@ -2,6 +2,43 @@ use std::path::PathBuf;
 
 use crate::error::{HimitsuError, Result};
 
+/// Normalise a raw secret path into a canonical store-relative identifier.
+///
+/// Secret paths are **store-internal names**, not filesystem paths. A leading
+/// `/` is therefore just a user convenience (e.g. `/dev/hello` → `dev/hello`)
+/// and is silently stripped.  Components that have no meaning in a store
+/// namespace (`.`, `..`, empty double-slash segments) are rejected with a
+/// clear error.
+fn normalize_path(raw: &str) -> Result<String> {
+    let stripped = raw.trim_start_matches('/');
+    if stripped.is_empty() {
+        return Err(HimitsuError::InvalidReference(
+            "secret path cannot be empty".into(),
+        ));
+    }
+    for component in stripped.split('/') {
+        match component {
+            ".." => {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "'..' is not a valid secret path component in {raw:?}"
+                )))
+            }
+            "." => {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "'.' is not a valid secret path component in {raw:?}"
+                )))
+            }
+            "" => {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "empty path component (consecutive slashes) in {raw:?}"
+                )))
+            }
+            _ => {}
+        }
+    }
+    Ok(stripped.to_string())
+}
+
 /// A parsed reference to a store or secret.
 ///
 /// # Supported formats
@@ -66,7 +103,7 @@ impl SecretRef {
                         "empty secret path after org/repo in reference: {input:?}"
                     )));
                 }
-                Some(p.to_string())
+                Some(normalize_path(p)?)
             } else {
                 None
             };
@@ -78,10 +115,11 @@ impl SecretRef {
             })
         } else {
             // Bare path — no provider prefix
+            let path = normalize_path(input)?;
             Ok(SecretRef {
                 provider: None,
                 store_slug: None,
-                path: Some(input.to_string()),
+                path: Some(path),
             })
         }
     }
@@ -89,6 +127,32 @@ impl SecretRef {
     /// Returns `true` if this reference includes a provider and store slug.
     pub fn is_qualified(&self) -> bool {
         self.store_slug.is_some()
+    }
+
+    /// Parse a store reference, accepting either a bare slug (`org/repo`) or a
+    /// provider-qualified reference (`github:org/repo`).
+    ///
+    /// The result always has `store_slug` set.  Returns an error if the input
+    /// does not contain a valid `org/repo` slug.
+    pub fn parse_store_ref(input: &str) -> Result<Self> {
+        if input.contains(':') {
+            // Qualified — parse normally; store_slug must be present.
+            let r = Self::parse(input)?;
+            if r.store_slug.is_none() {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "expected a store reference (org/repo or provider:org/repo), got {input:?}"
+                )));
+            }
+            Ok(r)
+        } else {
+            // Treat as a bare slug: must be exactly org/repo.
+            crate::config::validate_remote_slug(input)?;
+            Ok(SecretRef {
+                provider: None,
+                store_slug: Some(input.to_string()),
+                path: None,
+            })
+        }
     }
 
     /// Resolve the local store checkout path for a qualified reference.
@@ -195,6 +259,106 @@ mod tests {
     #[test]
     fn parse_empty_org_errors() {
         let result = SecretRef::parse("github:/repo");
+        assert!(result.is_err());
+    }
+
+    // ── Path normalisation ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_bare_leading_slash_is_stripped() {
+        // /dev/hello is a perfectly valid secret path — leading / is notation
+        let r = SecretRef::parse("/dev/hello").unwrap();
+        assert_eq!(r.path, Some("dev/hello".into()));
+    }
+
+    #[test]
+    fn parse_bare_multiple_leading_slashes_stripped() {
+        let r = SecretRef::parse("///prod/KEY").unwrap();
+        assert_eq!(r.path, Some("prod/KEY".into()));
+    }
+
+    #[test]
+    fn parse_qualified_leading_slash_in_path_stripped() {
+        let r = SecretRef::parse("github:org/repo//dev/KEY").unwrap();
+        assert_eq!(r.path, Some("dev/KEY".into()));
+    }
+
+    #[test]
+    fn parse_bare_traversal_errors() {
+        let result = SecretRef::parse("../../etc/passwd");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a valid secret path component"),
+            "message was: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_bare_dot_component_errors() {
+        let result = SecretRef::parse("prod/./API_KEY");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a valid secret path component"),
+            "message was: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_qualified_traversal_errors() {
+        let result = SecretRef::parse("github:org/repo/../../etc/passwd");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a valid secret path component"),
+            "message was: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_double_slash_mid_path_errors() {
+        let result = SecretRef::parse("prod//KEY");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("consecutive slashes"), "message was: {msg}");
+    }
+
+    // ── parse_store_ref ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_store_ref_bare_slug() {
+        let r = SecretRef::parse_store_ref("org/repo").unwrap();
+        assert_eq!(r.store_slug, Some("org/repo".into()));
+        assert_eq!(r.provider, None);
+        assert_eq!(r.path, None);
+    }
+
+    #[test]
+    fn parse_store_ref_qualified() {
+        let r = SecretRef::parse_store_ref("github:org/repo").unwrap();
+        assert_eq!(r.store_slug, Some("org/repo".into()));
+        assert_eq!(r.provider, Some("github".into()));
+        assert_eq!(r.path, None);
+    }
+
+    #[test]
+    fn parse_store_ref_qualified_with_path_keeps_slug() {
+        // Path portion is ignored for store-ref context
+        let r = SecretRef::parse_store_ref("github:org/repo/prod/KEY").unwrap();
+        assert_eq!(r.store_slug, Some("org/repo".into()));
+    }
+
+    #[test]
+    fn parse_store_ref_bare_path_errors() {
+        // A bare key name is not a valid store ref
+        let result = SecretRef::parse_store_ref("notaslug");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_store_ref_invalid_slug_errors() {
+        let result = SecretRef::parse_store_ref("a/b/c");
         assert!(result.is_err());
     }
 

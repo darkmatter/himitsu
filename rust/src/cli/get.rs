@@ -27,7 +27,8 @@ pub fn run(args: GetArgs, ctx: &Context) -> Result<()> {
         })?;
         (resolved, path)
     } else {
-        (ctx.store.clone(), args.path.clone())
+        let path = secret_ref.path.expect("bare SecretRef always has a path");
+        (ctx.store.clone(), path)
     };
 
     let ciphertext = store::read_secret(&effective_store, &secret_path)?;

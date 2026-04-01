@@ -1,16 +1,82 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HimitsuError, Result};
 
-/// Global user config stored at `data_dir()/config.yaml`.
+/// How age private keys are stored and retrieved.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyProvider {
+    /// Keys live on disk at `data_dir()/key` (the default).
+    #[default]
+    Disk,
+    /// Keys are stored in the macOS Keychain via the `security` CLI.
+    MacosKeychain,
+}
+
+impl fmt::Display for KeyProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyProvider::Disk => write!(f, "disk"),
+            KeyProvider::MacosKeychain => write!(f, "macos-keychain"),
+        }
+    }
+}
+
+impl std::str::FromStr for KeyProvider {
+    type Err = HimitsuError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "disk" => Ok(KeyProvider::Disk),
+            "macos-keychain" => Ok(KeyProvider::MacosKeychain),
+            other => Err(HimitsuError::InvalidConfig(format!(
+                "unknown key provider '{other}': expected 'disk' or 'macos-keychain'"
+            ))),
+        }
+    }
+}
+
+/// Global user config stored at `config_dir()/config.yaml`.
+///
+/// Every field can be overridden at runtime with a `HIMITSU_<FIELD>` environment
+/// variable (env vars take precedence over the file). Field names map to env
+/// vars by uppercasing and replacing `.` with `_`:
+///
+/// | Field            | Env var                   |
+/// |------------------|---------------------------|
+/// | `default_store`  | `HIMITSU_DEFAULT_STORE`   |
+/// | `key_provider`   | `HIMITSU_KEY_PROVIDER`    |
+/// | `data_dir`       | `HIMITSU_DATA_DIR`        |
+/// | `context`        | `HIMITSU_CONTEXT`         |
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default remote store slug (e.g. `"myorg/secrets"`).
+    /// Override: `HIMITSU_DEFAULT_STORE=org/repo`
     #[serde(default)]
     pub default_store: Option<String>,
+
+    /// Active store context for explicit disambiguation.
+    ///
+    /// When set, this is used instead of `default_store` or any heuristic.
+    /// Set with `himitsu context remote <ref>`.
+    /// Override: `HIMITSU_CONTEXT=org/repo`
+    #[serde(default)]
+    pub context: Option<String>,
+
+    /// Which backend stores age private keys.
+    /// Override: `HIMITSU_KEY_PROVIDER=macos-keychain`
+    #[serde(default)]
+    pub key_provider: KeyProvider,
+
+    /// Override for the himitsu data directory (age keys).
+    /// Defaults to `~/.local/share/himitsu` when unset.
+    /// Override: `HIMITSU_DATA_DIR=/custom/path`
+    #[serde(default)]
+    pub data_dir: Option<String>,
 }
 
 /// Per-project config discovered by walking up from the current directory.
@@ -125,18 +191,40 @@ pub struct StoreConfig {
 }
 
 impl Config {
-    /// Load config from a YAML file. Returns `Default` if the file is missing.
+    /// Load config from a YAML file, then apply any `HIMITSU_*` environment
+    /// variable overrides on top.
+    ///
+    /// Missing file → all defaults. Unknown env vars are silently ignored.
+    /// `HIMITSU_HOME` is excluded because it controls test isolation at the
+    /// path level and is handled separately by [`config_dir`] / [`data_dir`].
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Config::default());
-        }
-        let contents = std::fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&contents)?;
+        use figment::{
+            providers::{Env, Serialized},
+            Figment,
+        };
+
+        // Read the file first (best-effort; fall back to defaults if absent).
+        let from_file: Config = if path.exists() {
+            let contents = std::fs::read_to_string(path)?;
+            serde_yaml::from_str(&contents)?
+        } else {
+            Config::default()
+        };
+
+        // Layer: file values as the base, env vars win over them.
+        let config = Figment::from(Serialized::defaults(from_file))
+            .merge(Env::prefixed("HIMITSU_").ignore(&["HOME"]))
+            .extract()
+            .map_err(|e| HimitsuError::InvalidConfig(e.to_string()))?;
+
         Ok(config)
     }
 
-    /// Write a default config to the given path.
+    /// Write a default config to the given path (creating parent dirs).
     pub fn write_default(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let config = Config::default();
         let yaml = serde_yaml::to_string(&config)?;
         std::fs::write(path, yaml)?;
@@ -156,11 +244,44 @@ impl Config {
 
 // ── XDG-style path helpers ─────────────────────────────────────────────────
 
+/// Config directory: `$XDG_CONFIG_HOME/himitsu` or `~/.config/himitsu`.
+/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/config`.
+///
+/// This is a fixed, bootstrap-level location that never depends on user
+/// config, so it can be read by `data_dir()` without a circular dependency.
+pub fn config_dir() -> PathBuf {
+    if let Ok(val) = std::env::var("HIMITSU_HOME") {
+        return PathBuf::from(val).join("config");
+    }
+    dirs::config_dir()
+        .expect("cannot determine XDG config directory")
+        .join("himitsu")
+}
+
+/// Path to the global config file: `config_dir()/config.yaml`.
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.yaml")
+}
+
 /// Data directory: `$XDG_DATA_HOME/himitsu` or `~/.local/share/himitsu`.
 /// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/share`.
+///
+/// If `Config.data_dir` is set in `config_path()`, that value is used instead
+/// of the XDG default.
 pub fn data_dir() -> PathBuf {
     if let Ok(val) = std::env::var("HIMITSU_HOME") {
         return PathBuf::from(val).join("share");
+    }
+    // Best-effort: read custom data_dir from the config file.
+    if let Ok(contents) = std::fs::read_to_string(config_path()) {
+        if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
+            if let Some(custom) = cfg.data_dir {
+                let p = custom.trim().to_string();
+                if !p.is_empty() {
+                    return PathBuf::from(p);
+                }
+            }
+        }
     }
     dirs::data_dir()
         .expect("cannot determine XDG data directory")
@@ -169,19 +290,28 @@ pub fn data_dir() -> PathBuf {
 
 /// State directory: `$XDG_STATE_HOME/himitsu` or `~/.local/state/himitsu`.
 /// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/state`.
+///
+/// When a custom `data_dir` is configured, state lives at `data_dir/state`
+/// so all himitsu files stay together.
 pub fn state_dir() -> PathBuf {
     if let Ok(val) = std::env::var("HIMITSU_HOME") {
         return PathBuf::from(val).join("state");
+    }
+    // Mirror any custom data_dir: state lives alongside it.
+    if let Ok(contents) = std::fs::read_to_string(config_path()) {
+        if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
+            if let Some(custom) = cfg.data_dir {
+                let p = custom.trim().to_string();
+                if !p.is_empty() {
+                    return PathBuf::from(p).join("state");
+                }
+            }
+        }
     }
     dirs::state_dir()
         .or_else(dirs::data_dir)
         .expect("cannot determine XDG state directory")
         .join("himitsu")
-}
-
-/// Path to the global config file.
-pub fn config_path() -> PathBuf {
-    data_dir().join("config.yaml")
 }
 
 /// Path to the age private key file.
@@ -323,12 +453,14 @@ pub fn ensure_store(slug: &str) -> Result<PathBuf> {
 
 /// Resolve which store to use when no explicit `--store`/`--remote` is given.
 ///
-/// Resolution order:
-/// 1. `remote_override` slug (from `--remote` flag) → `ensure_store(slug)`.
-/// 2. Project config `default_store` (found by walking up from CWD) → `ensure_store(slug)`.
-/// 3. Global config `default_store` → `ensure_store(slug)`.
-/// 4. Single store in `stores_dir()` → use it implicitly.
-/// 5. Actionable error on ambiguity or absence.
+/// Resolution order (first match wins, no warning):
+/// 1. `remote_override` slug — from the `--remote` flag (explicit).
+/// 2. Project config `default_store` — walked up from CWD (explicit).
+/// 3. Global config `context` — set via `himitsu context remote` (explicit).
+/// 4. Global config `default_store` (explicit).
+/// 5. Single store in `stores_dir()` — unambiguous, no warning.
+/// 6. Multiple stores + project-local store detected — use it, emit a warning.
+/// 7. Unresolvable → actionable error.
 pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
     if let Some(slug) = remote_override {
         return ensure_store(slug);
@@ -345,13 +477,18 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
         }
     }
 
-    // Try global config default_store
+    // Try global config context (explicit user-set disambiguation)
     let cfg = Config::load(&config_path())?;
+    if let Some(slug) = &cfg.context {
+        return ensure_store(slug);
+    }
+
+    // Try global config default_store
     if let Some(slug) = &cfg.default_store {
         return ensure_store(slug);
     }
 
-    // Enumerate stores (implicit single-store fallback — no lazy clone here)
+    // Enumerate stores (implicit fallback — no lazy clone here)
     let dir = stores_dir();
     let mut found: Vec<PathBuf> = vec![];
     if dir.exists() {
@@ -384,6 +521,23 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
                         .map(|r| r.to_string_lossy().replace('\\', "/").to_string())
                 })
                 .collect();
+
+            // Check whether the CWD sits inside one of the known store checkouts.
+            // If so, use it — but always warn so the user knows we guessed.
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Some(matched) = found.iter().find(|p| cwd.starts_with(*p)) {
+                    let slug = matched
+                        .strip_prefix(stores_dir())
+                        .ok()
+                        .map(|r| r.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|| matched.to_string_lossy().into_owned());
+                    eprintln!(
+                        "note: multiple stores found — using '{slug}' because you are inside it.\n      Set a default with `himitsu context remote {slug}` to silence this."
+                    );
+                    return Ok(matched.clone());
+                }
+            }
+
             Err(HimitsuError::AmbiguousStore(slugs))
         }
     }
