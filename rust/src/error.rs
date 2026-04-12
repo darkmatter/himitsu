@@ -69,9 +69,6 @@ pub enum HimitsuError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

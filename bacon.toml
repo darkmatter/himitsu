@@ -27,6 +27,10 @@ need_stdout = false
 command = ["cargo", "clippy"]
 need_stdout = false
 
+[jobs.coverage]
+command = ["cargo", "tarpaulin"]
+need_stdout = false
+
 # Run clippy on all targets
 # To disable some lints, you may change the job this way:
 #    [jobs.clippy-all]

@@ -25,10 +25,12 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
-  targetFps: 30,
-});
+(async () => {
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: true,
+    targetFps: 30,
+  });
 
-const app = createApp(renderer, remote, { initMode, initDefaults });
-renderer.root.add(app);
+  const app = createApp(renderer, remote, { initMode, initDefaults });
+  renderer.root.add(app);
+})();

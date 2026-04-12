@@ -1,23 +1,28 @@
 import {
-  Box, Text, Input,
+  Box,
+  Text,
+  Input,
   BoxRenderable,
   TextRenderable,
   type CliRenderer,
   InputRenderableEvents,
-} from "@opentui/core"
-import { colors } from "../theme"
-import { clearChildren } from "../helpers"
-import * as himitsu from "../himitsu"
+} from "@opentui/core";
+import { colors } from "../theme";
+import { clearChildren } from "../helpers";
+import * as himitsu from "../himitsu";
 
-export function SearchView(renderer: CliRenderer, onAction: (action: string, data?: any) => void) {
+export function SearchView(
+  renderer: CliRenderer,
+  onAction: (action: string, data?: any) => void,
+) {
   const resultsBox = new BoxRenderable(renderer, {
     id: "search-results",
     flexDirection: "column",
     flexGrow: 1,
-  })
+  });
 
   function doSearch(query: string) {
-    clearChildren(resultsBox)
+    clearChildren(resultsBox);
 
     if (query.length < 2) {
       resultsBox.add(
@@ -26,11 +31,11 @@ export function SearchView(renderer: CliRenderer, onAction: (action: string, dat
           content: "  Type at least 2 characters to search...",
           fg: colors.fgDim,
         }),
-      )
-      return
+      );
+      return;
     }
 
-    const results = himitsu.search(query, true)
+    const results = himitsu.search(query, true);
     if (results.length === 0) {
       resultsBox.add(
         new TextRenderable(renderer, {
@@ -38,8 +43,8 @@ export function SearchView(renderer: CliRenderer, onAction: (action: string, dat
           content: `  No results for "${query}"`,
           fg: colors.fgDim,
         }),
-      )
-      return
+      );
+      return;
     }
 
     resultsBox.add(
@@ -49,19 +54,38 @@ export function SearchView(renderer: CliRenderer, onAction: (action: string, dat
         fg: colors.fgDim,
         marginBottom: 1,
       }),
-    )
+    );
 
     results.forEach((r, i) => {
       const row = new BoxRenderable(renderer, {
         id: `result-${i}`,
         flexDirection: "row",
         marginLeft: 2,
-      })
-      row.add(new TextRenderable(renderer, { id: `rk-${i}`, content: r.key.padEnd(24), fg: colors.fg }))
-      row.add(new TextRenderable(renderer, { id: `re-${i}`, content: r.env.padEnd(12), fg: colors.yellow }))
-      row.add(new TextRenderable(renderer, { id: `rr-${i}`, content: r.store, fg: colors.fgDim }))
-      resultsBox.add(row)
-    })
+      });
+      const created = r.created_at ? r.created_at.slice(0, 10) : "–";
+      row.add(
+        new TextRenderable(renderer, {
+          id: `rp-${i}`,
+          content: r.path.padEnd(28),
+          fg: colors.fg,
+        }),
+      );
+      row.add(
+        new TextRenderable(renderer, {
+          id: `rs-${i}`,
+          content: r.store.padEnd(20),
+          fg: colors.yellow,
+        }),
+      );
+      row.add(
+        new TextRenderable(renderer, {
+          id: `rc-${i}`,
+          content: created,
+          fg: colors.fgDim,
+        }),
+      );
+      resultsBox.add(row);
+    });
   }
 
   const searchInput = Input({
@@ -71,14 +95,14 @@ export function SearchView(renderer: CliRenderer, onAction: (action: string, dat
     focusedBackgroundColor: colors.bgHighlight,
     textColor: colors.fg,
     cursorColor: colors.accent,
-  })
+  });
 
   searchInput.on(InputRenderableEvents.INPUT, (value: string) => {
-    doSearch(value)
-  })
+    doSearch(value);
+  });
 
-  searchInput.focus()
-  doSearch("")
+  searchInput.focus();
+  doSearch("");
 
   return Box(
     { flexDirection: "column", flexGrow: 1 },
@@ -93,8 +117,11 @@ export function SearchView(renderer: CliRenderer, onAction: (action: string, dat
     ),
     Box(
       { flexDirection: "column", marginLeft: 2, marginBottom: 1 },
-      Text({ content: "KEY                     ENV         REMOTE", fg: colors.fgMuted }),
+      Text({
+        content: "PATH                         STORE                CREATED",
+        fg: colors.fgMuted,
+      }),
     ),
     resultsBox,
-  )
+  );
 }

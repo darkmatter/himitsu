@@ -244,11 +244,22 @@ impl Config {
 
 // ── XDG-style path helpers ─────────────────────────────────────────────────
 
-/// Config directory: `$XDG_CONFIG_HOME/himitsu` or `~/.config/himitsu`.
+/// Config directory for `config.yaml`.
+///
+/// | Platform | Default path                                  |
+/// |----------|-----------------------------------------------|
+/// | Linux    | `$XDG_CONFIG_HOME/himitsu` → `~/.config/himitsu` |
+/// | macOS    | `~/Library/Application Support/himitsu`       |
+///
 /// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/config`.
 ///
 /// This is a fixed, bootstrap-level location that never depends on user
-/// config, so it can be read by `data_dir()` without a circular dependency.
+/// config, so it can safely be read by `data_dir()` without a circular
+/// dependency.
+///
+/// On macOS `dirs::config_dir()` and `dirs::data_dir()` both return
+/// `~/Library/Application Support/`, so config and data share a root —
+/// this is correct macOS behaviour.
 pub fn config_dir() -> PathBuf {
     if let Ok(val) = std::env::var("HIMITSU_HOME") {
         return PathBuf::from(val).join("config");
@@ -263,11 +274,15 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.yaml")
 }
 
-/// Data directory: `$XDG_DATA_HOME/himitsu` or `~/.local/share/himitsu`.
-/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/share`.
+/// Data directory — stores the age keypair and associated key material.
 ///
-/// If `Config.data_dir` is set in `config_path()`, that value is used instead
-/// of the XDG default.
+/// | Platform | Default path                                  |
+/// |----------|-----------------------------------------------|
+/// | Linux    | `$XDG_DATA_HOME/himitsu` → `~/.local/share/himitsu` |
+/// | macOS    | `~/Library/Application Support/himitsu`       |
+///
+/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/share`.
+/// When `Config.data_dir` is set, that value overrides the platform default.
 pub fn data_dir() -> PathBuf {
     if let Ok(val) = std::env::var("HIMITSU_HOME") {
         return PathBuf::from(val).join("share");
@@ -288,16 +303,24 @@ pub fn data_dir() -> PathBuf {
         .join("himitsu")
 }
 
-/// State directory: `$XDG_STATE_HOME/himitsu` or `~/.local/state/himitsu`.
-/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/state`.
+/// State directory — stores the SQLite search index and remote store checkouts.
 ///
-/// When a custom `data_dir` is configured, state lives at `data_dir/state`
-/// so all himitsu files stay together.
+/// | Platform | Default path                                      |
+/// |----------|---------------------------------------------------|
+/// | Linux    | `$XDG_STATE_HOME/himitsu` → `~/.local/state/himitsu` |
+/// | macOS    | `~/Library/Application Support/himitsu`           |
+///
+/// On macOS `dirs::state_dir()` returns `None` (the platform has no direct
+/// equivalent of `$XDG_STATE_HOME`), so state co-locates with data under
+/// `~/Library/Application Support/himitsu/` — everything in one place.
+///
+/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/state`.
+/// When `Config.data_dir` is set, state lives at `<data_dir>/state/`.
 pub fn state_dir() -> PathBuf {
     if let Ok(val) = std::env::var("HIMITSU_HOME") {
         return PathBuf::from(val).join("state");
     }
-    // Mirror any custom data_dir: state lives alongside it.
+    // When a custom data_dir is configured, state lives alongside it.
     if let Ok(contents) = std::fs::read_to_string(config_path()) {
         if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
             if let Some(custom) = cfg.data_dir {
@@ -308,10 +331,13 @@ pub fn state_dir() -> PathBuf {
             }
         }
     }
+    // Use the platform state dir when available (Linux); otherwise fall back
+    // to our own data_dir() — not dirs::data_dir() — so that any future
+    // config-level override is still honoured on platforms like macOS that
+    // lack a dedicated state directory.
     dirs::state_dir()
-        .or_else(dirs::data_dir)
-        .expect("cannot determine XDG state directory")
-        .join("himitsu")
+        .map(|p| p.join("himitsu"))
+        .unwrap_or_else(data_dir)
 }
 
 /// Path to the age private key file.
@@ -322,11 +348,6 @@ pub fn key_path() -> PathBuf {
 /// Path to the age public key file.
 pub fn pubkey_path() -> PathBuf {
     data_dir().join("key.pub")
-}
-
-/// Path to the search index database.
-pub fn index_path() -> PathBuf {
-    state_dir().join("himitsu.db")
 }
 
 /// Directory containing managed store checkouts.

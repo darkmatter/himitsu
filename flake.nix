@@ -22,7 +22,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         # -- TUI binary ──────────────────────────────────────────────
         himitsuTUI = pkgs.callPackage ./tui/default.nix {
-          inherit (bun2nix.packages.${system}) default;
+          bun2nix = bun2nix.packages.${system}.default;
         };
 
         # ── Core binary ──────────────────────────────────────────────
@@ -130,7 +130,7 @@
             alias himitsu="$(git rev-parse --show-toplevel)/target/debug/himitsu"
           '';
         };
-        
+
         devShells.coverage = pkgs.mkShell {
           inputsFrom = [
             derivation

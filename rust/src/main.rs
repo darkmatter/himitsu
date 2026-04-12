@@ -4,7 +4,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod git;
-pub mod index;
+
 pub mod keyring;
 pub mod proto;
 pub mod reference;
@@ -15,6 +15,11 @@ use tracing_subscriber::EnvFilter;
 
 use cli::Cli;
 
+/// Himitsu is an AGE-based secrets manager that enables the sharing of secrets with
+/// other users. Secrets are stored in a local git-backed store. You may have as many
+/// stores as you want and still interact wiht them as if you had a single store since
+/// they are referenced using a path-based format. This enables sharing of secrets
+/// between multiple users and teams.
 fn main() {
     let cli = Cli::parse();
 

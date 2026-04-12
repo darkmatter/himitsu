@@ -3,7 +3,7 @@ use clap::Args;
 use super::Context;
 use crate::crypto::age;
 use crate::error::{HimitsuError, Result};
-use crate::index::SecretIndex;
+
 use crate::reference::SecretRef;
 use crate::remote::store;
 
@@ -23,9 +23,6 @@ pub struct SetArgs {
 
 pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
     let secret_ref = SecretRef::parse(&args.path)?;
-    // Capture slug before partial moves below.
-    let qualified_slug = secret_ref.store_slug.clone();
-
     let (effective_store, secret_path, recipients_path_override) = if secret_ref.is_qualified() {
         let resolved = secret_ref.resolve_store()?;
         let path = secret_ref.path.ok_or_else(|| {
@@ -49,20 +46,6 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
 
     let ciphertext = age::encrypt(args.value.as_bytes(), &recipients)?;
     store::write_secret(&effective_store, &secret_path, &ciphertext)?;
-
-    // Update search index
-    if let Ok(idx) = SecretIndex::open(&ctx.index_path()) {
-        // For qualified refs, the store_id is the slug; for bare paths use ctx.
-        let store_id = if qualified_slug.is_some() {
-            qualified_slug
-        } else {
-            ctx.store_id()
-        };
-        if let Some(sid) = store_id {
-            let _ = idx.register_remote(&sid, None);
-            let _ = idx.upsert(&sid, &secret_path);
-        }
-    }
 
     if !args.no_push {
         ctx.commit_and_push(&format!("himitsu: set {secret_path}"));

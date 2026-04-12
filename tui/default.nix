@@ -5,7 +5,12 @@ bun2nix.mkDerivation {
 
   src = ./.;
 
-  bunNix = ./bun.nix;
+  bunDeps = bun2nix.fetchBunDeps {
+    bunNix = ./bun.nix;
+  };
 
   module = "src/index.ts";
+
+  # @opentui/core uses top-level await, which is incompatible with --bytecode (CJS mode)
+  bunCompileToBytecode = false;
 }

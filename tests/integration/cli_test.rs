@@ -116,7 +116,10 @@ fn set_normalizes_leading_slash() {
         .stdout(predicate::str::contains("Set dev/hello"));
 
     // The age file lands at the normalized path, not any absolute location
-    assert!(store.path().join(".himitsu/secrets/dev/hello.age").exists());
+    assert!(store
+        .path()
+        .join(".himitsu/secrets/dev/hello.yaml")
+        .exists());
 }
 
 #[test]
@@ -167,7 +170,7 @@ fn set_creates_age_file() {
 
     assert!(store
         .path()
-        .join(".himitsu/secrets/prod/DB_PASS.age")
+        .join(".himitsu/secrets/prod/DB_PASS.yaml")
         .exists());
 }
 
@@ -1820,14 +1823,23 @@ fn ls_with_qualified_provider_prefix_lists_store_secrets() {
         .assert()
         .success();
 
-    // `ls github:acme/secrets` → list all secrets in that store.
+    // `ls github:acme/secrets` → depth 1 by default, so subdirectories are
+    // collapsed: shows "dev/" and "prod/" but not their children.
     himitsu()
         .env("HIMITSU_HOME", home.path())
         .args(["ls", "github:acme/secrets"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("prod/API_KEY"))
-        .stdout(predicate::str::contains("dev/API_KEY"));
+        .stdout(predicate::str::contains("prod/"))
+        .stdout(predicate::str::contains("dev/"));
+
+    // With -R (recursive) all leaf paths are visible.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["ls", "-R", "github:acme/secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY"));
 }
 
 #[test]
@@ -1847,14 +1859,16 @@ fn ls_with_qualified_prefix_filters_secrets() {
         .assert()
         .success();
 
-    // `ls github:acme/secrets/prod` → only prod/* secrets.
+    // `ls github:acme/secrets/prod` → prefix "prod", depth 1 relative to it.
+    // prod/API_KEY is one level under prod/ so it shows as a leaf.
+    // dev/* must be absent.
     himitsu()
         .env("HIMITSU_HOME", home.path())
         .args(["ls", "github:acme/secrets/prod"])
         .assert()
         .success()
         .stdout(predicate::str::contains("prod/API_KEY"))
-        .stdout(predicate::str::contains("dev/API_KEY").not());
+        .stdout(predicate::str::contains("dev").not());
 }
 
 #[test]

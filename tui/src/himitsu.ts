@@ -21,8 +21,9 @@ export interface InitResult {
 
 export interface SearchResult {
   store: string;
-  env: string;
-  key: string;
+  path: string;
+  created_at: string | null;
+  version: number | null;
 }
 
 export interface GroupInfo {
@@ -114,17 +115,15 @@ export function setSecret(
 }
 
 export function search(query: string, refresh = false): SearchResult[] {
-  const args = ["search", query];
+  const args = ["search", "--json", query];
   if (refresh) args.push("--refresh");
   const out = tryRun(args);
   if (!out) return [];
-  return out
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [store, env, key] = line.split("\t");
-      return { store, env, key };
-    });
+  try {
+    return JSON.parse(out) as SearchResult[];
+  } catch {
+    return [];
+  }
 }
 
 export function listGroups(store?: string): GroupInfo[] {

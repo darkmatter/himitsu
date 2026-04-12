@@ -56,29 +56,9 @@ impl Context {
         self.data_dir.join("key.pub")
     }
 
-    /// Path to the search index database.
-    pub fn index_path(&self) -> PathBuf {
-        self.state_dir.join("himitsu.db")
-    }
-
     /// Directory containing managed store checkouts.
     pub fn stores_dir(&self) -> PathBuf {
         self.state_dir.join("stores")
-    }
-
-    /// Extract an identifier for the store (slug or full path).
-    pub fn store_id(&self) -> Option<String> {
-        if self.store.as_os_str().is_empty() {
-            return None;
-        }
-        // Try to get slug relative to stores_dir
-        if let Ok(rel) = self.store.strip_prefix(self.stores_dir()) {
-            let s = rel.to_string_lossy().replace('\\', "/");
-            if !s.is_empty() {
-                return Some(s);
-            }
-        }
-        Some(self.store.to_string_lossy().to_string())
     }
 
     /// Find the git root: in the new model the store itself is the git root.
@@ -311,6 +291,7 @@ impl Cli {
             Command::Group(args) => group::run(args, &ctx),
             Command::Remote(args) => remote::run(args, &ctx),
             Command::Context(args) => context::run(args, &ctx),
+
             Command::Schema(args) => schema::run(args, &ctx),
             Command::Generate(args) => generate::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),
@@ -346,6 +327,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
     )
 }
 
+/// When no store exists, himitsu will prompt the user to create one.
 fn prompt_to_create_store(store: &Path, data_dir: &Path, state_dir: &Path) -> Result<()> {
     eprint!("No store exists. Create one at {}? Y/n ", store.display());
     io::stderr().flush()?;

@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "himitsu",
-  "project_id": "15de9214-4c51-4493-9bc5-3d49c86ca767"
+  "dolt_database": "hm",
+  "project_id": "e217671a-cd5e-4f97-beae-5dc3bb7806b9"
 }
