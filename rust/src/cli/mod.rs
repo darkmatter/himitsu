@@ -115,7 +115,7 @@ pub struct Cli {
     pub verbose: u8,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -197,6 +197,11 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        let command = match self.command {
+            Some(cmd) => cmd,
+            None => return Self::launch_tui(),
+        };
+
         let data_dir = crate::config::data_dir();
         let state_dir = crate::config::state_dir();
 
@@ -204,9 +209,9 @@ impl Cli {
         // For all non-init, non-git commands: if himitsu is not initialized,
         // automatically run init (no prompt needed — the user clearly wants
         // to use himitsu).
-        let is_init = matches!(&self.command, Command::Init(_));
-        let is_git = matches!(&self.command, Command::Git(_));
-        let is_version = matches!(&self.command, Command::Version);
+        let is_init = matches!(&command, Command::Init(_));
+        let is_git = matches!(&command, Command::Git(_));
+        let is_version = matches!(&command, Command::Version);
 
         if !is_init && !is_git && !is_version && !data_dir.join("key").exists() {
             eprintln!("First run — initializing himitsu...");
@@ -240,7 +245,7 @@ impl Cli {
 
         // Commands that require a resolved store
         let needs_store = matches!(
-            &self.command,
+            &command,
             Command::Set(_)
                 | Command::Get(_)
                 | Command::Rekey(_)
@@ -263,7 +268,7 @@ impl Cli {
         };
 
         if self.store.is_some()
-            && command_uses_explicit_path_store(&self.command)
+            && command_uses_explicit_path_store(&command)
             && !init::store_exists(&store)
         {
             prompt_to_create_store(&store, &data_dir, &state_dir)?;
@@ -277,7 +282,7 @@ impl Cli {
             recipients_path,
         };
 
-        match self.command {
+        match command {
             Command::Init(args) => init::run(args, &ctx),
             Command::Set(args) => set::run(args, &ctx),
             Command::Get(args) => get::run(args, &ctx),
@@ -304,6 +309,19 @@ impl Cli {
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
+        }
+    }
+
+    fn launch_tui() -> Result<()> {
+        use std::process::Command as Cmd;
+
+        match Cmd::new("himitsu-tui").status() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(HimitsuError::NotSupported(
+                "TUI not found. Install himitsu-tui or run a subcommand (try `himitsu --help`).".into(),
+            )),
+            Err(e) => Err(e.into()),
         }
     }
 }
