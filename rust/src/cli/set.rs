@@ -30,6 +30,11 @@ pub struct SetArgs {
     /// Human-readable description.
     #[arg(long)]
     pub description: Option<String>,
+    /// Default environment variable name used when this secret is injected
+    /// into a process environment (e.g. `himitsu exec`). When unset, the
+    /// callers derive one from the last path segment.
+    #[arg(long = "env-key", value_name = "NAME")]
+    pub env_key: Option<String>,
     /// Optional expiration reminder: RFC 3339 timestamp, relative duration
     /// (`30d`, `6mo`, `1y`), or the literal `never` to clear.
     #[arg(long)]
@@ -39,6 +44,9 @@ pub struct SetArgs {
 pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
     if let Some(ref totp) = args.totp {
         validate_totp(totp)?;
+    }
+    if let Some(ref env_key) = args.env_key {
+        validate_env_key(env_key)?;
     }
 
     let expires_at_ts = match args.expires_at.as_deref() {
@@ -57,6 +65,7 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         url: args.url.clone().unwrap_or_default(),
         expires_at: expires_at_ts,
         description: args.description.clone().unwrap_or_default(),
+        env_key: args.env_key.clone().unwrap_or_default(),
     };
 
     let secret_path = encrypt_and_write(ctx, &args.path, &sv, args.no_push)?;
@@ -80,6 +89,7 @@ pub fn set_plaintext(
         url: String::new(),
         expires_at: None,
         description: String::new(),
+        env_key: String::new(),
     };
     encrypt_and_write(ctx, path, &sv, no_push)
 }
@@ -166,6 +176,33 @@ pub(crate) fn validate_totp(input: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a `--env-key` override.
+///
+/// Must be a legal POSIX environment variable name: a letter or underscore
+/// followed by letters, digits, or underscores. We're deliberately strict so
+/// a typo like `--env-key db url` fails loudly instead of silently injecting
+/// under a name no shell can read.
+pub(crate) fn validate_env_key(input: &str) -> Result<()> {
+    if input.is_empty() {
+        return Err(HimitsuError::InvalidReference(
+            "env-key is empty".into(),
+        ));
+    }
+    let mut chars = input.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(HimitsuError::InvalidReference(format!(
+            "env-key must start with a letter or underscore (got {input:?})"
+        )));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(HimitsuError::InvalidReference(format!(
+            "env-key may only contain letters, digits, or underscores (got {input:?})"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +232,29 @@ mod tests {
     #[test]
     fn totp_rejects_empty() {
         assert!(validate_totp("").is_err());
+    }
+
+    #[test]
+    fn env_key_accepts_uppercase_with_underscores() {
+        assert!(validate_env_key("DATABASE_URL").is_ok());
+        assert!(validate_env_key("_PRIVATE").is_ok());
+        assert!(validate_env_key("API_KEY_2").is_ok());
+    }
+
+    #[test]
+    fn env_key_rejects_leading_digit() {
+        let err = validate_env_key("1FOO").unwrap_err();
+        assert!(err.to_string().contains("letter or underscore"));
+    }
+
+    #[test]
+    fn env_key_rejects_hyphen_and_space() {
+        assert!(validate_env_key("FOO-BAR").is_err());
+        assert!(validate_env_key("FOO BAR").is_err());
+    }
+
+    #[test]
+    fn env_key_rejects_empty() {
+        assert!(validate_env_key("").is_err());
     }
 }

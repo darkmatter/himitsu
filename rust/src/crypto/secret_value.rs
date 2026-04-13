@@ -23,6 +23,9 @@ pub struct Decoded {
     pub url: String,
     /// Human-readable description — empty when unset.
     pub description: String,
+    /// Default env var name used when injecting this secret into a process
+    /// environment (e.g. for `himitsu exec`). Empty = derive from path.
+    pub env_key: String,
     /// Expiration timestamp — `None` when unset.
     pub expires_at: Option<pbjson_types::Timestamp>,
 }
@@ -33,6 +36,7 @@ impl Decoded {
         !self.totp.is_empty()
             || !self.url.is_empty()
             || !self.description.is_empty()
+            || !self.env_key.is_empty()
             || self
                 .expires_at
                 .as_ref()
@@ -59,6 +63,7 @@ pub fn decode(plaintext: &[u8]) -> Decoded {
             totp: sv.totp,
             url: sv.url,
             description: sv.description,
+            env_key: sv.env_key,
             expires_at: sv.expires_at,
         },
         _ => Decoded {
@@ -75,6 +80,7 @@ fn has_any_field(sv: &SecretValue) -> bool {
         || !sv.totp.is_empty()
         || !sv.url.is_empty()
         || !sv.description.is_empty()
+        || !sv.env_key.is_empty()
         || sv
             .expires_at
             .as_ref()
@@ -104,13 +110,27 @@ mod tests {
             url: "https://example.com".to_string(),
             expires_at: None,
             description: "db".to_string(),
+            env_key: "DATABASE_URL".to_string(),
         };
         let bytes = encode(&sv);
         let d = decode(&bytes);
         assert_eq!(d.data, b"abc");
         assert_eq!(d.url, "https://example.com");
         assert_eq!(d.description, "db");
+        assert_eq!(d.env_key, "DATABASE_URL");
         assert!(d.totp.starts_with("otpauth://"));
+        assert!(d.has_metadata());
+    }
+
+    #[test]
+    fn env_key_alone_counts_as_metadata() {
+        let sv = SecretValue {
+            data: b"xyz".to_vec(),
+            env_key: "API_TOKEN".to_string(),
+            ..Default::default()
+        };
+        let d = decode(&encode(&sv));
+        assert_eq!(d.env_key, "API_TOKEN");
         assert!(d.has_metadata());
     }
 }

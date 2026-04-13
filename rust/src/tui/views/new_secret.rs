@@ -255,6 +255,7 @@ impl NewSecretView {
             url: String::new(),
             expires_at: None,
             description: String::new(),
+            env_key: String::new(),
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = match age::encrypt(&wire, &recipients) {

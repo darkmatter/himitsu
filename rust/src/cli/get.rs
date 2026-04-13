@@ -74,6 +74,9 @@ fn emit_metadata_block(decoded: &secret_value::Decoded) {
     if !decoded.description.is_empty() {
         let _ = writeln!(out, "description: {}", decoded.description);
     }
+    if !decoded.env_key.is_empty() {
+        let _ = writeln!(out, "env_key:     {}", decoded.env_key);
+    }
 
     if let Some(ref ts) = decoded.expires_at {
         if !duration::is_unset(ts) {

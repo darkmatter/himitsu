@@ -230,9 +230,9 @@ impl SecretViewerView {
     fn persist_edited(&mut self, plaintext: &str) -> crate::error::Result<()> {
         let recipients =
             age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
-        // Preserve existing metadata (totp/url/description/expires_at) when
-        // the user edits only the value. Fall back to a bare SecretValue if
-        // the original envelope was a legacy raw payload.
+        // Preserve existing metadata (totp/url/description/env_key/expires_at)
+        // when the user edits only the value. Fall back to a bare SecretValue
+        // if the original envelope was a legacy raw payload.
         let existing = self.read_decoded().unwrap_or_default();
         let sv = SecretValue {
             data: plaintext.as_bytes().to_vec(),
@@ -242,6 +242,7 @@ impl SecretViewerView {
             url: existing.url,
             expires_at: existing.expires_at,
             description: existing.description,
+            env_key: existing.env_key,
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
