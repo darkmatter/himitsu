@@ -1,25 +1,27 @@
-//! Dashboard view: environments list + secrets for the selected env.
+//! Dashboard view: environments list + cross-store secrets table.
 //!
-//! Data comes from internal Rust APIs (`remote::store::list_secrets`), never
-//! from a subprocess. An "environment" is the first path segment of each
-//! secret (e.g. `prod/DATABASE_URL` → env `prod`).
+//! Data is sourced from [`search_core`] with an empty query so every
+//! registered store contributes rows — the same pipeline the search view
+//! uses. An "environment" is the first path segment of each secret
+//! (e.g. `prod/DATABASE_URL` → env `prod`).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+};
 use ratatui::Frame;
 
-use crate::cli::search::SearchResult;
+use crate::cli::search::{relative_time, search_core, SearchResult};
 use crate::cli::Context;
-use crate::remote::store;
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
-/// Which of the two lists has keyboard focus.
+/// Which of the two panes has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardFocus {
     Envs,
@@ -41,12 +43,17 @@ pub enum DashboardAction {
 }
 
 pub struct DashboardView {
-    store_slug: String,
-    store_path: PathBuf,
+    /// Slug of the store currently in `ctx.store`. Rendered dim in the STORE
+    /// column when it matches a row; other stores are highlighted.
+    current_store_slug: String,
+    /// Cached clone of the invoking `Context`, used by `refresh_and_select`
+    /// so repeated reloads see the same stores_dir as the initial load.
+    ctx: Context,
     envs: Vec<String>,
-    secrets_by_env: BTreeMap<String, Vec<String>>,
+    /// Rows grouped by env, each group already folders-first sorted.
+    rows_by_env: BTreeMap<String, Vec<SearchResult>>,
     env_state: ListState,
-    secret_state: ListState,
+    secret_state: TableState,
     focus: DashboardFocus,
     stores_dir: PathBuf,
     picker: Option<StorePicker>,
@@ -61,28 +68,26 @@ enum StatusKind {
 
 impl DashboardView {
     pub fn new(ctx: &Context) -> Self {
-        let store_slug = derive_store_slug(ctx);
-        let (envs, secrets_by_env) = load_envs(&ctx.store);
+        let current_store_slug = derive_store_slug(ctx);
+        let (envs, rows_by_env) = load_rows(ctx);
         let mut env_state = ListState::default();
         if !envs.is_empty() {
             env_state.select(Some(0));
         }
-        let mut secret_state = ListState::default();
-        // Pre-select the first secret of the first env so pressing Tab and
-        // then Enter "just works" without an extra j/k.
+        let mut secret_state = TableState::default();
         if let Some(first_env) = envs.first() {
-            if secrets_by_env
+            if rows_by_env
                 .get(first_env)
-                .is_some_and(|v: &Vec<String>| !v.is_empty())
+                .is_some_and(|v: &Vec<SearchResult>| !v.is_empty())
             {
                 secret_state.select(Some(0));
             }
         }
         Self {
-            store_slug,
-            store_path: ctx.store.clone(),
+            current_store_slug,
+            ctx: ctx.clone(),
             envs,
-            secrets_by_env,
+            rows_by_env,
             env_state,
             secret_state,
             focus: DashboardFocus::Envs,
@@ -103,22 +108,25 @@ impl DashboardView {
     /// Re-read the store from disk and (when possible) re-select the secret
     /// path that was just created. Called after the new-secret form submits.
     pub fn refresh_and_select(&mut self, created_path: Option<&str>) {
-        let (envs, secrets_by_env) = load_envs(&self.store_path);
+        let (envs, rows_by_env) = load_rows(&self.ctx);
         self.envs = envs;
-        self.secrets_by_env = secrets_by_env;
+        self.rows_by_env = rows_by_env;
 
         if let Some(path) = created_path {
             if let Some((env, _)) = path.split_once('/') {
                 if let Some(idx) = self.envs.iter().position(|e| e == env) {
                     self.env_state.select(Some(idx));
+                    self.reset_secret_selection();
                     return;
                 }
             }
         }
         if self.envs.is_empty() {
             self.env_state.select(None);
+            self.secret_state.select(None);
         } else if self.env_state.selected().is_none() {
             self.env_state.select(Some(0));
+            self.reset_secret_selection();
         }
     }
 
@@ -163,8 +171,6 @@ impl DashboardView {
                 DashboardAction::None
             }
             (KeyCode::Right | KeyCode::Char('l'), _) => {
-                // h/l also cycle focus — feels natural for vim users and
-                // doesn't clash with any other dashboard binding.
                 self.set_focus(DashboardFocus::Secrets);
                 DashboardAction::None
             }
@@ -185,7 +191,7 @@ impl DashboardView {
             (KeyCode::Enter, _) => self.on_enter(),
             // US-013: `s` opens the store picker overlay.
             (KeyCode::Char('s'), KeyModifiers::NONE) => {
-                self.picker = Some(StorePicker::new(&self.stores_dir, self.store_path.clone()));
+                self.picker = Some(StorePicker::new(&self.stores_dir, self.ctx.store.clone()));
                 DashboardAction::None
             }
             _ => DashboardAction::None,
@@ -198,15 +204,10 @@ impl DashboardView {
         if self.focus != DashboardFocus::Secrets {
             return DashboardAction::None;
         }
-        let Some(secret_path) = self.selected_secret_path().map(str::to_string) else {
+        let Some(row) = self.selected_row().cloned() else {
             return DashboardAction::None;
         };
-        DashboardAction::OpenViewer(SearchResult {
-            store: self.store_slug.clone(),
-            store_path: self.store_path.clone(),
-            path: secret_path,
-            created_at: None,
-        })
+        DashboardAction::OpenViewer(row)
     }
 
     fn toggle_focus(&mut self) {
@@ -222,7 +223,7 @@ impl DashboardView {
         // When entering the Secrets pane, make sure it has a valid selection
         // (or None if the list is empty).
         if focus == DashboardFocus::Secrets {
-            let len = self.selected_secrets().len();
+            let len = self.selected_rows().len();
             match self.secret_state.selected() {
                 Some(i) if i < len => {}
                 _ => {
@@ -271,7 +272,7 @@ impl DashboardView {
     }
 
     fn secret_prev(&mut self) {
-        let len = self.selected_secrets().len();
+        let len = self.selected_rows().len();
         if len == 0 {
             return;
         }
@@ -281,7 +282,7 @@ impl DashboardView {
     }
 
     fn secret_next(&mut self) {
-        let len = self.selected_secrets().len();
+        let len = self.selected_rows().len();
         if len == 0 {
             return;
         }
@@ -291,7 +292,7 @@ impl DashboardView {
     }
 
     fn reset_secret_selection(&mut self) {
-        let len = self.selected_secrets().len();
+        let len = self.selected_rows().len();
         if len == 0 {
             self.secret_state.select(None);
         } else {
@@ -299,21 +300,18 @@ impl DashboardView {
         }
     }
 
-    fn selected_secrets(&self) -> &[String] {
+    fn selected_rows(&self) -> &[SearchResult] {
         self.env_state
             .selected()
             .and_then(|i| self.envs.get(i))
-            .and_then(|env| self.secrets_by_env.get(env))
+            .and_then(|env| self.rows_by_env.get(env))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
 
-    fn selected_secret_path(&self) -> Option<&str> {
-        let secrets = self.selected_secrets();
-        self.secret_state
-            .selected()
-            .and_then(|i| secrets.get(i))
-            .map(String::as_str)
+    fn selected_row(&self) -> Option<&SearchResult> {
+        let rows = self.selected_rows();
+        self.secret_state.selected().and_then(|i| rows.get(i))
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -348,7 +346,7 @@ impl DashboardView {
             ),
             Span::raw("  "),
             Span::styled(
-                &self.store_slug,
+                &self.current_store_slug,
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
@@ -367,7 +365,7 @@ impl DashboardView {
     fn draw_body(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(area);
 
         self.draw_envs(frame, columns[0]);
@@ -415,9 +413,9 @@ impl DashboardView {
             .borders(Borders::ALL)
             .title(title)
             .border_style(border_style(focused));
-        let secrets_len = self.selected_secrets().len();
+        let rows_len = self.selected_rows().len();
 
-        if secrets_len == 0 {
+        if rows_len == 0 {
             let empty_msg = if self.envs.is_empty() {
                 "  no secrets in this store"
             } else {
@@ -432,16 +430,53 @@ impl DashboardView {
             return;
         }
 
-        let items: Vec<ListItem> = self
-            .selected_secrets()
+        let header_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let header = Row::new(vec![
+            Cell::from("PATH").style(header_style),
+            Cell::from("DESCRIPTION").style(header_style),
+            Cell::from("MODIFIED").style(header_style),
+            Cell::from("STORE").style(header_style),
+        ])
+        .height(1);
+
+        // description column is currently blank — surfacing it requires
+        // decrypting each row, deferred until a session-scoped cache exists.
+        let rows: Vec<Row> = self
+            .selected_rows()
             .iter()
-            .map(|p| ListItem::new(Line::from(Span::raw(p.clone()))))
+            .map(|r| {
+                let modified = relative_time(r.updated_at.as_deref());
+                let is_home = r.store == self.current_store_slug;
+                let store_style = if is_home {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::Magenta)
+                };
+                Row::new(vec![
+                    Cell::from(r.path.clone()),
+                    Cell::from(""),
+                    Cell::from(modified),
+                    Cell::from(r.store.clone()).style(store_style),
+                ])
+            })
             .collect();
-        let list = List::new(items)
+
+        let widths = [
+            Constraint::Percentage(45),
+            Constraint::Percentage(25),
+            Constraint::Length(14),
+            Constraint::Min(10),
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header)
             .block(block)
-            .highlight_style(highlight_style(focused))
+            .row_highlight_style(highlight_style(focused))
             .style(body_style(focused));
-        frame.render_stateful_widget(list, area, &mut self.secret_state);
+
+        frame.render_stateful_widget(table, area, &mut self.secret_state);
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -520,31 +555,62 @@ fn highlight_style(focused: bool) -> Style {
     } else {
         // Greyed-out highlight so the user still sees *where* the selection
         // will be if they re-focus this pane, but it's clearly inactive.
-        Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::Black)
+        Style::default().bg(Color::DarkGray).fg(Color::Black)
     }
 }
 
-fn load_envs(store: &Path) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
-    if store.as_os_str().is_empty() {
-        return (Vec::new(), BTreeMap::new());
-    }
+/// Load every secret across every registered store via `search_core`, then
+/// group by env with folders-first ordering inside each group.
+fn load_rows(ctx: &Context) -> (Vec<String>, BTreeMap<String, Vec<SearchResult>>) {
+    let results = search_core(ctx, "").unwrap_or_default();
+    group_and_sort(results)
+}
 
-    let paths = store::list_secrets(store, None).unwrap_or_default();
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for path in paths {
-        let env = match path.split_once('/') {
+fn group_and_sort(
+    results: Vec<SearchResult>,
+) -> (Vec<String>, BTreeMap<String, Vec<SearchResult>>) {
+    let mut map: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
+    for r in results {
+        let env = match r.path.split_once('/') {
             Some((head, _)) if !head.is_empty() => head.to_string(),
             _ => continue,
         };
-        map.entry(env).or_default().push(path);
+        map.entry(env).or_default().push(r);
     }
-    for secrets in map.values_mut() {
-        secrets.sort();
+    for rows in map.values_mut() {
+        sort_folders_first(rows);
     }
     let envs: Vec<String> = map.keys().cloned().collect();
     (envs, map)
+}
+
+/// Folders-first sort: within a single env, entries whose path (after the
+/// env segment) contains a `/` are "folder" entries and come first, grouped
+/// by the first folder segment. Bare leaves follow, sorted alphabetically.
+fn sort_folders_first(rows: &mut [SearchResult]) {
+    rows.sort_by(|a, b| {
+        let (a_folder, a_rest) = split_folder(&a.path);
+        let (b_folder, b_rest) = split_folder(&b.path);
+        match (a_folder, b_folder) {
+            (Some(af), Some(bf)) => af.cmp(bf).then_with(|| a_rest.cmp(b_rest)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a_rest.cmp(b_rest),
+        }
+    });
+}
+
+/// Given a secret path like `prod/db/primary`, returns `(Some("db"),
+/// "primary")`. For a bare `prod/API_KEY` returns `(None, "API_KEY")`.
+fn split_folder(path: &str) -> (Option<&str>, &str) {
+    let after_env = match path.split_once('/') {
+        Some((_, rest)) => rest,
+        None => path,
+    };
+    match after_env.split_once('/') {
+        Some((folder, rest)) => (Some(folder), rest),
+        None => (None, after_env),
+    }
 }
 
 fn derive_store_slug(ctx: &Context) -> String {
@@ -569,34 +635,50 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn mk_result(store: &str, path: &str) -> SearchResult {
+        SearchResult {
+            store: store.to_string(),
+            store_path: PathBuf::from(format!("/tmp/{store}")),
+            path: path.to_string(),
+            created_at: None,
+            updated_at: Some("2026-04-10T12:00:00Z".to_string()),
+        }
+    }
+
     fn make_view(envs: &[(&str, &[&str])]) -> DashboardView {
-        let mut secrets_by_env = BTreeMap::new();
+        let mut rows_by_env: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
         let mut env_list: Vec<String> = Vec::new();
         for (env, secrets) in envs {
             env_list.push((*env).to_string());
-            secrets_by_env.insert(
-                (*env).to_string(),
-                secrets.iter().map(|s| (*s).to_string()).collect(),
-            );
+            let rows: Vec<SearchResult> = secrets
+                .iter()
+                .map(|p| mk_result("test/store", p))
+                .collect();
+            rows_by_env.insert((*env).to_string(), rows);
         }
         let mut env_state = ListState::default();
-        let mut secret_state = ListState::default();
+        let mut secret_state = TableState::default();
         if !env_list.is_empty() {
             env_state.select(Some(0));
             if let Some(first) = env_list.first() {
-                if secrets_by_env
+                if rows_by_env
                     .get(first)
-                    .is_some_and(|v: &Vec<String>| !v.is_empty())
+                    .is_some_and(|v: &Vec<SearchResult>| !v.is_empty())
                 {
                     secret_state.select(Some(0));
                 }
             }
         }
         DashboardView {
-            store_slug: "test/store".to_string(),
-            store_path: PathBuf::from("/tmp/test/store"),
+            current_store_slug: "test/store".to_string(),
+            ctx: Context {
+                data_dir: PathBuf::from("/tmp/himitsu-test-data"),
+                state_dir: PathBuf::from("/tmp/himitsu-test-state"),
+                store: PathBuf::from("/tmp/test/store"),
+                recipients_path: None,
+            },
             envs: env_list,
-            secrets_by_env,
+            rows_by_env,
             env_state,
             secret_state,
             focus: DashboardFocus::Envs,
@@ -615,22 +697,74 @@ mod tests {
     }
 
     #[test]
-    fn load_envs_groups_by_first_segment() {
-        let paths = vec![
-            "prod/API_KEY".to_string(),
-            "prod/DATABASE_URL".to_string(),
-            "staging/API_KEY".to_string(),
-            "bare_no_slash".to_string(),
+    fn folders_first_sort_orders_correctly() {
+        let mut rows = vec![
+            mk_result("s", "prod/API_KEY"),
+            mk_result("s", "prod/DATABASE_URL"),
+            mk_result("s", "prod/db/primary_password"),
+            mk_result("s", "prod/db/replica_password"),
+            mk_result("s", "prod/cache/redis_url"),
         ];
-        let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for path in paths {
-            if let Some((head, _)) = path.split_once('/') {
-                if !head.is_empty() {
-                    map.entry(head.to_string()).or_default().push(path);
-                }
+        sort_folders_first(&mut rows);
+        let got: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(
+            got,
+            vec![
+                "prod/cache/redis_url",
+                "prod/db/primary_password",
+                "prod/db/replica_password",
+                "prod/API_KEY",
+                "prod/DATABASE_URL",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_rows_render_all_columns() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut view = make_view(&[("prod", &["prod/API_KEY", "prod/db/primary"])]);
+        view.set_focus(DashboardFocus::Secrets);
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| view.draw(f)).unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
             }
+            text.push('\n');
         }
-        let envs: Vec<String> = map.keys().cloned().collect();
+
+        assert!(text.contains("PATH"), "missing PATH header:\n{text}");
+        assert!(
+            text.contains("DESCRIPTION"),
+            "missing DESCRIPTION header:\n{text}"
+        );
+        assert!(
+            text.contains("MODIFIED"),
+            "missing MODIFIED header:\n{text}"
+        );
+        assert!(text.contains("STORE"), "missing STORE header:\n{text}");
+        assert!(
+            text.contains("prod/db/primary") || text.contains("prod/API_KEY"),
+            "missing at least one data row:\n{text}"
+        );
+    }
+
+    #[test]
+    fn load_envs_groups_by_first_segment() {
+        let results = vec![
+            mk_result("s", "prod/API_KEY"),
+            mk_result("s", "prod/DATABASE_URL"),
+            mk_result("s", "staging/API_KEY"),
+            mk_result("s", "bare_no_slash"),
+        ];
+        let (envs, map) = group_and_sort(results);
         assert_eq!(envs, vec!["prod", "staging"]);
         assert_eq!(map["prod"].len(), 2);
         assert_eq!(map["staging"].len(), 1);
@@ -649,18 +783,20 @@ mod tests {
     }
 
     #[test]
-    fn selected_secrets_updates_with_selection() {
-        let mut view = make_view(&[("prod", &["prod/A", "prod/B"]), ("staging", &["staging/X"])]);
-        assert_eq!(view.selected_secrets().len(), 2);
+    fn selected_rows_updates_with_selection() {
+        let mut view =
+            make_view(&[("prod", &["prod/A", "prod/B"]), ("staging", &["staging/X"])]);
+        assert_eq!(view.selected_rows().len(), 2);
         view.select_next();
-        assert_eq!(view.selected_secrets(), &["staging/X".to_string()]);
+        assert_eq!(view.selected_rows().len(), 1);
+        assert_eq!(view.selected_rows()[0].path, "staging/X");
     }
 
     #[test]
     fn empty_view_has_no_selection() {
         let view = make_view(&[]);
         assert_eq!(view.env_state.selected(), None);
-        assert!(view.selected_secrets().is_empty());
+        assert!(view.selected_rows().is_empty());
     }
 
     #[test]
@@ -754,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn jk_on_secrets_list_moves_secret_selection() {
+    fn jk_on_secrets_table_moves_selection() {
         let mut view = make_view(&[("prod", &["prod/A", "prod/B", "prod/C"])]);
         view.on_key(press(KeyCode::Tab));
         assert_eq!(view.focus, DashboardFocus::Secrets);
@@ -781,7 +917,6 @@ mod tests {
             DashboardAction::OpenViewer(r) => {
                 assert_eq!(r.path, "prod/B");
                 assert_eq!(r.store, "test/store");
-                assert_eq!(r.store_path, PathBuf::from("/tmp/test/store"));
             }
             other => panic!("expected OpenViewer, got {other:?}"),
         }

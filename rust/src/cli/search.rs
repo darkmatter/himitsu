@@ -32,6 +32,9 @@ pub struct SearchResult {
     pub store_path: PathBuf,
     pub path: String,
     pub created_at: Option<String>,
+    /// Plaintext `lastmodified` timestamp from the on-disk envelope
+    /// (`YYYY-MM-DDTHH:MM:SSZ`). Populated without decryption.
+    pub updated_at: Option<String>,
 }
 
 /// Run a search across all known stores and return sorted results.
@@ -46,14 +49,15 @@ pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
         let paths = store::list_secrets(&store_path, None).unwrap_or_default();
         for path in paths {
             if needle.is_empty() || path.to_lowercase().contains(&needle) {
-                let created_at = store::read_secret_meta(&store_path, &path)
-                    .ok()
-                    .and_then(|m| m.created_at);
+                let meta = store::read_secret_meta(&store_path, &path).ok();
+                let created_at = meta.as_ref().and_then(|m| m.created_at.clone());
+                let updated_at = meta.and_then(|m| m.lastmodified);
                 results.push(SearchResult {
                     store: slug.clone(),
                     store_path: store_path.clone(),
                     path,
                     created_at,
+                    updated_at,
                 });
             }
         }
@@ -126,6 +130,80 @@ fn store_label(store: &std::path::Path, ctx: &Context) -> String {
         }
     }
     store.to_string_lossy().to_string()
+}
+
+// ── Time helpers ───────────────────────────────────────────────────────────
+
+/// Format an ISO-8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) or a bare date
+/// (`YYYY-MM-DD`) as a human-readable relative time ("3 days ago").
+///
+/// Returns `"-"` when `ts` is `None`, and the original string when parsing
+/// fails so callers still surface something useful.
+pub(crate) fn relative_time(ts: Option<&str>) -> String {
+    let Some(raw) = ts else {
+        return "-".to_string();
+    };
+    let Some(then) = parse_utc_epoch(raw) else {
+        return raw.to_string();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - then;
+    if delta < 0 {
+        // Clock skew — treat anything in the "future" as just-now.
+        return "just now".to_string();
+    }
+    if delta < 60 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if delta < 3600 {
+        (delta / 60, "minute")
+    } else if delta < 86_400 {
+        (delta / 3600, "hour")
+    } else if delta < 86_400 * 30 {
+        (delta / 86_400, "day")
+    } else if delta < 86_400 * 365 {
+        (delta / (86_400 * 30), "month")
+    } else {
+        (delta / (86_400 * 365), "year")
+    };
+    let plural = if n == 1 { "" } else { "s" };
+    format!("{n} {unit}{plural} ago")
+}
+
+/// Parse `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` into epoch seconds (UTC).
+fn parse_utc_epoch(raw: &str) -> Option<i64> {
+    // Split "date[Thh:mm:ss[Z]]".
+    let (date, time) = match raw.split_once('T') {
+        Some((d, t)) => (d, Some(t.trim_end_matches('Z'))),
+        None => (raw, None),
+    };
+    let mut parts = date.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    // days_from_civil (Hinnant) — inverse of civil_date above.
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = y_adj - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let mut secs = days * 86_400;
+    if let Some(t) = time {
+        let mut tp = t.split(':');
+        let h: i64 = tp.next()?.parse().ok()?;
+        let mi: i64 = tp.next()?.parse().ok()?;
+        let s: i64 = tp.next().unwrap_or("0").parse().ok()?;
+        secs += h * 3600 + mi * 60 + s;
+    }
+    Some(secs)
 }
 
 // ── Output formatters ──────────────────────────────────────────────────────
