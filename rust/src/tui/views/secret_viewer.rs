@@ -322,6 +322,27 @@ pub fn store_path_for(label: &str, ctx: &Context) -> Option<PathBuf> {
     None
 }
 
+// ── Help overlay integration (US-012) ─────────────────────────────────
+//
+// In its own impl block so parallel branches adding new bindings can extend
+// `help_entries` without colliding with the main impl.
+impl SecretViewerView {
+    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("r", "reveal / hide value"),
+            ("y", "copy value to clipboard"),
+            ("e", "rekey for current recipients"),
+            ("?", "toggle this help"),
+            ("esc", "back to search"),
+            ("ctrl-c", "quit"),
+        ]
+    }
+
+    pub fn help_title() -> &'static str {
+        "secret · keys"
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
