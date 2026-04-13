@@ -41,9 +41,19 @@ enum StatusKind {
     Error,
 }
 
+/// A row in the rendered results list. Folders are visual-only — they group
+/// adjacent secrets that share a top-level path prefix and display a child
+/// count. They are never selectable; navigation steps over them.
+#[derive(Debug, Clone)]
+enum Row {
+    Folder { name: String, count: usize },
+    Secret { result: SearchResult, indent: bool },
+}
+
 pub struct SearchView {
     query: String,
     results: Vec<SearchResult>,
+    rows: Vec<Row>,
     list_state: ListState,
     /// Snapshot of the context used to build this view.
     ///
@@ -67,6 +77,7 @@ impl SearchView {
         let mut view = Self {
             query: String::new(),
             results: Vec::new(),
+            rows: Vec::new(),
             list_state: ListState::default(),
             ctx: ctx_owned,
             picker: None,
@@ -151,33 +162,62 @@ impl SearchView {
 
     fn refresh_results(&mut self) {
         self.results = search_core(&self.ctx, &self.query).unwrap_or_default();
-        if self.results.is_empty() {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(0));
-        }
+        self.rows = build_rows(&self.results);
+        self.list_state.select(self.first_selectable());
     }
 
     fn selected_result(&self) -> Option<&SearchResult> {
-        self.list_state.selected().and_then(|i| self.results.get(i))
+        self.list_state
+            .selected()
+            .and_then(|i| self.rows.get(i))
+            .and_then(|row| match row {
+                Row::Secret { result, .. } => Some(result),
+                Row::Folder { .. } => None,
+            })
+    }
+
+    fn is_selectable(&self, i: usize) -> bool {
+        matches!(self.rows.get(i), Some(Row::Secret { .. }))
+    }
+
+    fn first_selectable(&self) -> Option<usize> {
+        (0..self.rows.len()).find(|i| self.is_selectable(*i))
     }
 
     fn select_prev(&mut self) {
-        if self.results.is_empty() {
+        if self.rows.is_empty() {
             return;
         }
-        let i = self.list_state.selected().unwrap_or(0);
-        let next = if i == 0 { self.results.len() - 1 } else { i - 1 };
-        self.list_state.select(Some(next));
+        let Some(start) = self.list_state.selected() else {
+            self.list_state.select(self.first_selectable());
+            return;
+        };
+        let len = self.rows.len();
+        for step in 1..=len {
+            let idx = (start + len - step) % len;
+            if self.is_selectable(idx) {
+                self.list_state.select(Some(idx));
+                return;
+            }
+        }
     }
 
     fn select_next(&mut self) {
-        if self.results.is_empty() {
+        if self.rows.is_empty() {
             return;
         }
-        let i = self.list_state.selected().unwrap_or(0);
-        let next = (i + 1) % self.results.len();
-        self.list_state.select(Some(next));
+        let Some(start) = self.list_state.selected() else {
+            self.list_state.select(self.first_selectable());
+            return;
+        };
+        let len = self.rows.len();
+        for step in 1..=len {
+            let idx = (start + step) % len;
+            if self.is_selectable(idx) {
+                self.list_state.select(Some(idx));
+                return;
+            }
+        }
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -239,7 +279,7 @@ impl SearchView {
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let block = Block::default().borders(Borders::ALL).title(" results ");
 
-        if self.results.is_empty() {
+        if self.rows.is_empty() {
             let msg = if self.query.is_empty() {
                 "  no secrets found"
             } else {
@@ -255,32 +295,60 @@ impl SearchView {
         }
 
         let path_w = self
-            .results
+            .rows
             .iter()
-            .map(|r| r.path.len())
+            .filter_map(|row| match row {
+                Row::Secret { result, indent } => {
+                    Some(result.path.len() + if *indent { 2 } else { 0 })
+                }
+                _ => None,
+            })
             .max()
             .unwrap_or(0);
         let store_w = self
-            .results
+            .rows
             .iter()
-            .map(|r| r.store.len())
+            .filter_map(|row| match row {
+                Row::Secret { result, .. } => Some(result.store.len()),
+                _ => None,
+            })
             .max()
             .unwrap_or(0);
 
         let items: Vec<ListItem> = self
-            .results
+            .rows
             .iter()
-            .map(|r| {
-                let created = r.created_at.as_deref().unwrap_or("-");
-                let line = Line::from(vec![
-                    Span::raw(format!("{:<path_w$}  ", r.path, path_w = path_w)),
-                    Span::styled(
-                        format!("{:<store_w$}  ", r.store, store_w = store_w),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::styled(created.to_string(), Style::default().fg(Color::DarkGray)),
-                ]);
-                ListItem::new(line)
+            .map(|row| match row {
+                Row::Folder { name, count } => {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("▸ {name}/"),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("({count})"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]);
+                    ListItem::new(line)
+                }
+                Row::Secret { result, indent } => {
+                    let prefix = if *indent { "  " } else { "" };
+                    let created = result.created_at.as_deref().unwrap_or("-");
+                    let padded_path = format!("{prefix}{}", result.path);
+                    let line = Line::from(vec![
+                        Span::raw(format!("{padded_path:<path_w$}  ")),
+                        Span::styled(
+                            format!("{:<store_w$}  ", result.store, store_w = store_w),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::styled(created.to_string(), Style::default().fg(Color::DarkGray)),
+                    ]);
+                    ListItem::new(line)
+                }
             })
             .collect();
 
@@ -318,6 +386,56 @@ impl SearchView {
         };
         frame.render_widget(Paragraph::new(line), area);
     }
+}
+
+/// Group a flat list of results into rows with folder headers, where a
+/// "folder" is any top-level path segment that contains ≥ 2 leaves. Single
+/// leaves render flat. Folders always sort before singles; within each group
+/// entries are alphabetized so the layout is stable regardless of input order.
+fn build_rows(results: &[SearchResult]) -> Vec<Row> {
+    use std::collections::HashMap;
+
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
+    for r in results {
+        let prefix = match r.path.split_once('/') {
+            Some((head, _)) => head.to_string(),
+            None => r.path.clone(),
+        };
+        if !groups.contains_key(&prefix) {
+            order.push(prefix.clone());
+        }
+        groups.entry(prefix).or_default().push(r.clone());
+    }
+
+    let mut folders: Vec<(String, Vec<SearchResult>)> = Vec::new();
+    let mut singles: Vec<(String, Vec<SearchResult>)> = Vec::new();
+    for name in order {
+        let items = groups.remove(&name).unwrap_or_default();
+        if items.len() >= 2 {
+            folders.push((name, items));
+        } else {
+            singles.push((name, items));
+        }
+    }
+    folders.sort_by(|a, b| a.0.cmp(&b.0));
+    singles.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut rows = Vec::new();
+    for (name, mut items) in folders {
+        let count = items.len();
+        rows.push(Row::Folder { name, count });
+        items.sort_by(|a, b| a.path.cmp(&b.path));
+        for result in items {
+            rows.push(Row::Secret { result, indent: true });
+        }
+    }
+    for (_, items) in singles {
+        for result in items {
+            rows.push(Row::Secret { result, indent: false });
+        }
+    }
+    rows
 }
 
 // ── Help overlay integration (US-012) ─────────────────────────────────
@@ -398,7 +516,31 @@ mod tests {
         let ctx = make_ctx(&dir.path().join("store"));
         let view = SearchView::new(&ctx);
         assert_eq!(view.results.len(), 3);
-        assert_eq!(view.list_state.selected(), Some(0));
+        // Rows: [Folder(prod,2), Secret(prod/API_KEY), Secret(prod/DATABASE_URL), Secret(staging/API_KEY)]
+        assert_eq!(view.rows.len(), 4);
+        assert!(matches!(view.rows[0], Row::Folder { ref name, count: 2 } if name == "prod"));
+        assert_eq!(view.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn folders_first_grouping() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let view = SearchView::new(&ctx);
+        let kinds: Vec<&'static str> = view
+            .rows
+            .iter()
+            .map(|r| match r {
+                Row::Folder { .. } => "folder",
+                Row::Secret { indent: true, .. } => "child",
+                Row::Secret { indent: false, .. } => "leaf",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["folder", "child", "child", "leaf"]);
+        match &view.rows[3] {
+            Row::Secret { result, .. } => assert_eq!(result.path, "staging/API_KEY"),
+            _ => panic!("expected secret leaf at row 3"),
+        }
     }
 
     #[test]
@@ -473,11 +615,14 @@ mod tests {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        assert_eq!(view.list_state.selected(), Some(0));
+        // Row 0 is a Folder header (unselectable); first secret is row 1.
+        assert_eq!(view.list_state.selected(), Some(1));
         view.on_key(key(KeyCode::Up));
-        assert_eq!(view.list_state.selected(), Some(2));
+        // Up skips the folder at row 0 and wraps to the last secret (row 3).
+        assert_eq!(view.list_state.selected(), Some(3));
         view.on_key(key(KeyCode::Down));
-        assert_eq!(view.list_state.selected(), Some(0));
+        // Down from row 3 wraps; row 0 is a folder so lands on row 1.
+        assert_eq!(view.list_state.selected(), Some(1));
     }
 
     #[test]
