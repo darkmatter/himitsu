@@ -263,7 +263,7 @@ fn render_table(results: &[SearchResult], use_color: bool, now: DateTime<Utc>) -
 
 /// Format an ISO 8601 / RFC3339 timestamp (or a plain `YYYY-MM-DD` date) as a
 /// gh-style relative time like "2 hours ago", "3 days ago", "just now".
-fn relative_time(ts: &str, now: DateTime<Utc>) -> String {
+pub(crate) fn relative_time(ts: &str, now: DateTime<Utc>) -> String {
     let parsed = DateTime::parse_from_rfc3339(ts)
         .map(|d| d.with_timezone(&Utc))
         .or_else(|_| {
