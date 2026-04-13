@@ -537,14 +537,14 @@ mod tests {
         let store = state_dir.join("stores/test/repo");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(store.join(".himitsu/secrets")).unwrap();
-        std::fs::create_dir_all(store.join(".himitsu/recipients/common")).unwrap();
+        std::fs::create_dir_all(store.join(".himitsu/recipients")).unwrap();
 
         let identity = Identity::generate();
         let pubkey = identity.to_public().to_string();
         let secret = identity.to_string().expose_secret().to_string();
         std::fs::write(data_dir.join("key"), &secret).unwrap();
         std::fs::write(
-            store.join(".himitsu/recipients/common/me.pub"),
+            store.join(".himitsu/recipients/me.pub"),
             format!("{pubkey}\n"),
         )
         .unwrap();

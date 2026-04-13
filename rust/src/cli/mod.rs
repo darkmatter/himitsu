@@ -398,14 +398,9 @@ fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
     }
 
     // 1. Check store-internal config
-    let store_cfg_path = crate::remote::store::store_config_path(store);
-    if store_cfg_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&store_cfg_path) {
-            if let Ok(cfg) = serde_yaml::from_str::<crate::config::StoreConfig>(&contents) {
-                if cfg.recipients_path.is_some() {
-                    return cfg.recipients_path;
-                }
-            }
+    if let Ok(cfg) = crate::remote::store::load_store_config(store) {
+        if cfg.recipients_path.is_some() {
+            return cfg.recipients_path;
         }
     }
 

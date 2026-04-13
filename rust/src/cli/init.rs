@@ -128,10 +128,17 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
         if !dest.exists() {
             // Create a fresh local store at stores_dir/<org>/<repo>
             std::fs::create_dir_all(crate::remote::store::secrets_dir(&dest))?;
-            let common_dir = crate::remote::store::recipients_dir(&dest).join("common");
-            std::fs::create_dir_all(&common_dir)?;
+            let recipients_dir = crate::remote::store::recipients_dir(&dest);
+            std::fs::create_dir_all(&recipients_dir)?;
             if !pubkey.is_empty() {
-                std::fs::write(common_dir.join("self.pub"), format!("{pubkey}\n"))?;
+                std::fs::write(recipients_dir.join("self.pub"), format!("{pubkey}\n"))?;
+                // Seed the common group with this recipient.
+                let mut store_cfg = crate::remote::store::load_store_config(&dest)?;
+                store_cfg
+                    .recipients
+                    .groups
+                    .insert("common".to_string(), vec!["self".to_string()]);
+                crate::remote::store::save_store_config(&dest, &store_cfg)?;
             }
         }
         // Set (or update) default_store in global config
@@ -291,12 +298,27 @@ pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
         std::fs::create_dir_all(crate::remote::store::secrets_dir(store))?;
     }
 
-    let self_pub = crate::remote::store::recipients_dir(store)
-        .join("common")
-        .join("self.pub");
+    let recipients_dir = crate::remote::store::recipients_dir(store);
+    std::fs::create_dir_all(&recipients_dir)?;
+    let self_pub = recipients_dir.join("self.pub");
+    let mut wrote_self = false;
     if !self_pub.exists() && !pubkey.is_empty() {
-        std::fs::create_dir_all(self_pub.parent().unwrap())?;
         std::fs::write(&self_pub, format!("{pubkey}\n"))?;
+        wrote_self = true;
+    }
+
+    // Seed the store config with a `common: [self]` mapping on first setup.
+    if wrote_self {
+        let mut store_cfg = crate::remote::store::load_store_config(store)?;
+        let members = store_cfg
+            .recipients
+            .groups
+            .entry("common".to_string())
+            .or_default();
+        if !members.iter().any(|m| m == "self") {
+            members.push("self".to_string());
+        }
+        crate::remote::store::save_store_config(store, &store_cfg)?;
     }
 
     Ok(!existed)

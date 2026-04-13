@@ -42,11 +42,8 @@ fn init_creates_directory_tree() {
     assert!(home.path().join("config/config.yaml").exists());
     // Store layout at store_root/.himitsu/
     assert!(store.path().join(".himitsu/secrets").exists());
-    assert!(store.path().join(".himitsu/recipients/common").exists());
-    assert!(store
-        .path()
-        .join(".himitsu/recipients/common/self.pub")
-        .exists());
+    assert!(store.path().join(".himitsu/recipients").exists());
+    assert!(store.path().join(".himitsu/recipients/self.pub").exists());
 }
 
 #[test]
@@ -75,7 +72,7 @@ fn init_generates_valid_age_key() {
 #[test]
 fn init_adds_self_as_recipient() {
     let (_home, store) = setup();
-    let self_pub = store.path().join(".himitsu/recipients/common/self.pub");
+    let self_pub = store.path().join(".himitsu/recipients/self.pub");
     assert!(self_pub.exists());
     let contents = std::fs::read_to_string(self_pub).unwrap();
     assert!(contents.starts_with("age1"));
@@ -342,14 +339,17 @@ fn recipient_add_self() {
             "add",
             "mydevice",
             "--self",
-            "--group",
-            "team",
+            "--description",
+            "laptop",
         ])
         .assert()
         .success();
 
-    let pub_file = store.path().join(".himitsu/recipients/team/mydevice.pub");
+    let pub_file = store.path().join(".himitsu/recipients/mydevice.pub");
     assert!(pub_file.exists());
+    // Sidecar should be written when --description is given.
+    let sidecar = store.path().join(".himitsu/recipients/mydevice.yaml");
+    assert!(sidecar.exists());
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn recipient_add_explicit_key() {
 
     assert!(store
         .path()
-        .join(".himitsu/recipients/common/bot.pub")
+        .join(".himitsu/recipients/bot.pub")
         .exists());
 }
 
@@ -404,7 +404,7 @@ fn recipient_rm() {
 
     assert!(!store
         .path()
-        .join(".himitsu/recipients/common/todelete.pub")
+        .join(".himitsu/recipients/todelete.pub")
         .exists());
 }
 
@@ -418,7 +418,8 @@ fn recipient_ls() {
         .args(["--store", &s, "recipient", "ls"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("common/self"));
+        .stdout(predicate::str::contains("self"))
+        .stdout(predicate::str::contains("NAME"));
 }
 
 // ============ group tests ============
@@ -434,7 +435,9 @@ fn group_add_creates_directory() {
         .assert()
         .success();
 
-    assert!(store.path().join(".himitsu/recipients/admins").exists());
+    // Groups are now mappings in .himitsu/config.yaml, not filesystem dirs.
+    let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
+    assert!(cfg.contains("admins"), "config.yaml should list admins: {cfg}");
 }
 
 #[test]
@@ -454,7 +457,9 @@ fn group_rm_removes_directory() {
         .assert()
         .success();
 
-    assert!(!store.path().join(".himitsu/recipients/temp").exists());
+    // Group mapping should be gone from config.yaml.
+    let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
+    assert!(!cfg.contains("temp"), "config.yaml should not list temp: {cfg}");
 }
 
 #[test]
@@ -602,13 +607,14 @@ fn recipient_show_existing() {
         .assert()
         .success();
 
-    // show should print the public key
+    // show should print the public key (plus metadata headers).
     himitsu()
         .env("HIMITSU_HOME", home.path())
         .args(["--store", &s, "recipient", "show", "mykey"])
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("age1"));
+        .stdout(predicate::str::contains("Public key:"))
+        .stdout(predicate::str::contains("age1"));
 }
 
 #[test]
@@ -1210,7 +1216,7 @@ fn explicit_store_prompt_creates_store_on_accept() {
         .stderr(predicate::str::contains("No secrets found"));
 
     assert!(store.join(".himitsu/secrets").exists());
-    assert!(store.join(".himitsu/recipients/common/self.pub").exists());
+    assert!(store.join(".himitsu/recipients/self.pub").exists());
 }
 
 #[test]
@@ -2006,10 +2012,10 @@ fn recipient_add_with_custom_recipients_path() {
         .assert()
         .success();
 
-    // The new key file should be under the custom path.
+    // The new key file should be under the custom path (flat layout).
     assert!(store
         .path()
-        .join("my/recipients/common/extra-key.pub")
+        .join("my/recipients/extra-key.pub")
         .exists());
 }
 

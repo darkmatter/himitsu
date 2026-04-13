@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -7,8 +8,9 @@ use crate::error::{HimitsuError, Result};
 // ── Store-internal layout ──────────────────────────────────────────────────
 //
 //   store/.himitsu/secrets/<path>.yaml
-//   store/.himitsu/recipients/<group>/*.pub
-//   store/.himitsu/config.yaml
+//   store/.himitsu/recipients/<name>.pub          (flat)
+//   store/.himitsu/recipients/<name>.yaml         (optional metadata)
+//   store/.himitsu/config.yaml                    (groups mapping)
 //
 // Secret files use a SOPS-inspired YAML envelope:
 //
@@ -136,6 +138,67 @@ pub fn recipients_dir_with_override(store: &Path, override_path: Option<&str>) -
 /// Path to the store's own config file.
 pub fn store_config_path(store: &Path) -> PathBuf {
     store.join(".himitsu").join("config.yaml")
+}
+
+// ── Store-internal config.yaml ─────────────────────────────────────────────
+
+/// Store-internal `config.yaml` shape.
+///
+/// Persists both the recipients-path override and the group → member mapping.
+/// Unknown fields are preserved on round-trip via `#[serde(flatten)]` only
+/// for known keys; anything else is silently dropped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StoreFileConfig {
+    /// Override for the recipients directory path within the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients_path: Option<String>,
+
+    /// Recipients block — currently only a group → members mapping.
+    #[serde(default, skip_serializing_if = "RecipientsBlock::is_empty")]
+    pub recipients: RecipientsBlock,
+}
+
+/// Recipients-related store config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecipientsBlock {
+    /// Group name → ordered list of recipient names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, Vec<String>>,
+}
+
+impl RecipientsBlock {
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+}
+
+/// Load the store-internal config.yaml, returning defaults if absent.
+pub fn load_store_config(store: &Path) -> Result<StoreFileConfig> {
+    let path = store_config_path(store);
+    if !path.exists() {
+        return Ok(StoreFileConfig::default());
+    }
+    let contents = std::fs::read_to_string(&path)?;
+    if contents.trim().is_empty() {
+        return Ok(StoreFileConfig::default());
+    }
+    serde_yaml::from_str(&contents).map_err(|e| {
+        HimitsuError::InvalidConfig(format!(
+            "failed to parse store config at {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// Write the store-internal config.yaml (creating parent dirs).
+pub fn save_store_config(store: &Path, cfg: &StoreFileConfig) -> Result<()> {
+    let path = store_config_path(store);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml::to_string(cfg)?;
+    std::fs::write(&path, yaml)?;
+    Ok(())
 }
 
 // ── Secret I/O ─────────────────────────────────────────────────────────────
@@ -285,6 +348,9 @@ fn read_envelope(path: &Path) -> Result<SecretEnvelope> {
 }
 
 /// Collect recipient public key strings from all `.pub` files in the store.
+///
+/// Walks both the current flat layout and any legacy group subdirectories so
+/// that stores mid-migration still produce the complete recipient set.
 fn collect_recipient_strings(store: &Path) -> Vec<String> {
     let mut out = vec![];
     collect_pub_strings_recursive(&recipients_dir(store), &mut out);
@@ -400,7 +466,7 @@ mod tests {
     fn make_store() -> TempDir {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join(".himitsu/secrets")).unwrap();
-        std::fs::create_dir_all(dir.path().join(".himitsu/recipients/common")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".himitsu/recipients")).unwrap();
         dir
     }
 
