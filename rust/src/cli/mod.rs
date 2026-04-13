@@ -20,7 +20,7 @@ pub mod set;
 pub mod share;
 pub mod sync;
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -124,6 +124,7 @@ pub enum Command {
     Init(init::InitArgs),
 
     /// Set a secret value.
+    #[command(alias = "add")]
     Set(set::SetArgs),
 
     /// Get a secret value.
@@ -313,16 +314,12 @@ impl Cli {
     }
 
     fn launch_tui() -> Result<()> {
-        use std::process::Command as Cmd;
-
-        match Cmd::new("himitsu-tui").status() {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(HimitsuError::NotSupported(
-                "TUI not found. Install himitsu-tui or run a subcommand (try `himitsu --help`).".into(),
-            )),
-            Err(e) => Err(e.into()),
+        if !io::stdout().is_terminal() {
+            return Err(HimitsuError::NotSupported(
+                "stdout is not a terminal — run a subcommand (try `himitsu --help`).".into(),
+            ));
         }
+        crate::tui::run()
     }
 }
 
