@@ -66,6 +66,11 @@ impl App {
                     // query is fresh (we don't retain search state on purpose).
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
+                SecretViewerAction::Deleted => {
+                    // After a successful delete, route back to the search
+                    // view so the (now missing) secret drops out of listings.
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                }
             },
         }
     }
