@@ -32,6 +32,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ratatui = "0.29"
 crossterm = "0.28"
 arboard = "3"
+nucleo-matcher = "0.3"
+owo-colors = "4"
 
 [build-dependencies]
 prost-build = "0.13"

@@ -206,6 +206,7 @@ impl DashboardView {
             store_path: self.store_path.clone(),
             path: secret_path,
             created_at: None,
+            updated_at: None,
         })
     }
 
