@@ -43,3 +43,22 @@ pub fn new() -> Result<Tui> {
     let backend = CrosstermBackend::new(io::stdout());
     Ok(Terminal::new(backend)?)
 }
+
+/// Suspend the alternate screen + raw mode for the duration of `f`, then
+/// reinstall them. Used to run external processes (e.g. `$EDITOR`) that
+/// expect a cooked terminal. The outer [`Guard`] remains in scope so a
+/// panic inside `f` still restores the terminal via the Drop impl.
+pub fn suspend_then<R>(terminal: &mut Tui, f: impl FnOnce() -> R) -> Result<R> {
+    // Leave the alternate screen so the child process writes to the real
+    // terminal, and drop raw mode so line-editing works.
+    let _ = disable_raw_mode();
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+
+    let result = f();
+
+    // Re-enter raw mode + alt screen and force a full redraw.
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    Ok(result)
+}

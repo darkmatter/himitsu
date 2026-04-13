@@ -27,6 +27,16 @@ enum ViewerParent {
     Search,
 }
 
+/// Intent emitted by [`App::on_key`] when a view needs the outer event
+/// loop to do something that requires owning the terminal — e.g. suspend
+/// the alternate screen and run `$EDITOR`.
+#[derive(Debug)]
+pub enum AppIntent {
+    /// Suspend the TUI, open the user's editor on the given plaintext,
+    /// then call [`App::finish_secret_edit`] with the outcome.
+    EditSecretValue(String),
+}
+
 pub struct App {
     pub should_quit: bool,
     ctx: Context,
@@ -49,7 +59,7 @@ impl App {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
         // ── Help overlay intercept (US-012) ────────────────────────────
         // If the overlay is open, route every key to it. Otherwise, a
         // top-level `?` opens the overlay populated from the current view.
@@ -59,11 +69,11 @@ impl App {
                 HelpAction::None => {}
                 HelpAction::Close => self.help = None,
             }
-            return;
+            return None;
         }
         if matches!(key.code, KeyCode::Char('?')) {
             self.help = Some(self.help_for_current_view());
-            return;
+            return None;
         }
 
         match &mut self.view {
@@ -111,7 +121,19 @@ impl App {
                         ViewerParent::Search => View::Search(SearchView::new(&self.ctx)),
                     };
                 }
+                SecretViewerAction::EditValue(plain) => {
+                    return Some(AppIntent::EditSecretValue(plain));
+                }
             },
+        }
+        None
+    }
+
+    /// Deliver the result of an external edit back to the currently-active
+    /// secret viewer. No-op if the user has already navigated away.
+    pub fn finish_secret_edit(&mut self, result: std::result::Result<Option<String>, String>) {
+        if let View::SecretViewer(viewer) = &mut self.view {
+            viewer.finish_edit(result);
         }
     }
 
