@@ -4,9 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    bun2nix.url = "github:nix-community/bun2nix";
-    bun2nix.inputs.nixpkgs.follows = "nixpkgs";
-
   };
 
   outputs =
@@ -14,16 +11,11 @@
       self,
       nixpkgs,
       flake-utils,
-      bun2nix,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        # -- TUI binary ──────────────────────────────────────────────
-        himitsuTUI = pkgs.callPackage ./tui/default.nix {
-          bun2nix = bun2nix.packages.${system}.default;
-        };
 
         # ── Core binary ──────────────────────────────────────────────
         himitsu = pkgs.rustPlatform.buildRustPackage {
@@ -34,7 +26,6 @@
           nativeBuildInputs = [
             pkgs.git
             pkgs.protobuf
-            himitsuTUI
           ];
 
           meta = with pkgs.lib; {
