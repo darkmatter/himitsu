@@ -18,6 +18,16 @@ enum View {
     SecretViewer(SecretViewerView),
 }
 
+/// Intent emitted by [`App::on_key`] when a view needs the outer event
+/// loop to do something that requires owning the terminal — e.g. suspend
+/// the alternate screen and run `$EDITOR`.
+#[derive(Debug)]
+pub enum AppIntent {
+    /// Suspend the TUI, open the user's editor on the given plaintext,
+    /// then call [`App::finish_secret_edit`] with the outcome.
+    EditSecretValue(String),
+}
+
 pub struct App {
     pub should_quit: bool,
     ctx: Context,
@@ -34,7 +44,7 @@ impl App {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
         match &mut self.view {
             View::Dashboard(dash) => match dash.on_key(key) {
                 DashboardAction::None => {}
@@ -66,7 +76,19 @@ impl App {
                     // query is fresh (we don't retain search state on purpose).
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
+                SecretViewerAction::EditValue(plain) => {
+                    return Some(AppIntent::EditSecretValue(plain));
+                }
             },
+        }
+        None
+    }
+
+    /// Deliver the result of an external edit back to the currently-active
+    /// secret viewer. No-op if the user has already navigated away.
+    pub fn finish_secret_edit(&mut self, result: std::result::Result<Option<String>, String>) {
+        if let View::SecretViewer(viewer) = &mut self.view {
+            viewer.finish_edit(result);
         }
     }
 

@@ -7,8 +7,11 @@
 //! - `y` — copy the (already-revealed or freshly-decrypted) value to the
 //!   system clipboard via [`arboard`]. Falls back to a status message if
 //!   the clipboard backend is unavailable (e.g. headless CI).
-//! - `e` — re-encrypt this one secret for the current recipient set via
-//!   [`crate::cli::rekey::rekey_store`].
+//! - `e` — decrypt the secret, open it in `$EDITOR`, and re-encrypt the
+//!   edited plaintext for the current recipients. The TUI suspends its
+//!   alternate screen while the editor runs.
+//! - `R` — re-encrypt this one secret for the current recipient set via
+//!   [`crate::cli::rekey::rekey_store`] (no value change).
 //! - `Esc` — emit `SecretViewerAction::Back` so the router pops to the
 //!   previous view (search).
 
@@ -26,11 +29,15 @@ use crate::crypto::age;
 use crate::remote::store::{self, SecretMeta};
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretViewerAction {
     None,
     Back,
     Quit,
+    /// Caller (event loop) should suspend the TUI, open `$EDITOR` on the
+    /// carried plaintext, then hand the result back via
+    /// [`SecretViewerView::finish_edit`].
+    EditValue(String),
 }
 
 #[derive(Debug, Clone)]
@@ -110,12 +117,68 @@ impl SecretViewerView {
                 self.copy_to_clipboard();
                 SecretViewerAction::None
             }
-            (KeyCode::Char('e'), _) => {
+            (KeyCode::Char('R'), _) => {
                 self.rekey();
                 SecretViewerAction::None
             }
+            (KeyCode::Char('e'), _) => self.begin_edit(),
             _ => SecretViewerAction::None,
         }
+    }
+
+    /// Decrypt the current value and ask the event loop to run `$EDITOR`.
+    ///
+    /// Returns [`SecretViewerAction::EditValue`] with the plaintext on
+    /// success, or [`SecretViewerAction::None`] with a status message set on
+    /// decrypt failure (so the user sees *why* the edit did not happen).
+    fn begin_edit(&mut self) -> SecretViewerAction {
+        match self.decrypt() {
+            Ok(plain) => SecretViewerAction::EditValue(plain),
+            Err(e) => {
+                self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
+                SecretViewerAction::None
+            }
+        }
+    }
+
+    /// Handle the result of an external edit. Called by the event loop
+    /// after `$EDITOR` exits. `result` is `Ok(Some(new_plaintext))` on a
+    /// real change, `Ok(None)` for "no change / cancelled", and
+    /// `Err(msg)` for a terminal failure (spawn error, non-zero exit).
+    pub fn finish_edit(&mut self, result: std::result::Result<Option<String>, String>) {
+        match result {
+            Ok(None) => {
+                self.status = Some((
+                    "edit cancelled (no changes)".to_string(),
+                    StatusKind::Info,
+                ));
+            }
+            Ok(Some(plain)) => match self.persist_edited(&plain) {
+                Ok(()) => {
+                    // Keep the new value visible so the user sees what they
+                    // just committed.
+                    self.value = ValueState::Revealed(plain);
+                    self.status = Some(("edited".to_string(), StatusKind::Info));
+                }
+                Err(e) => {
+                    self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
+                }
+            },
+            Err(e) => {
+                self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
+            }
+        }
+    }
+
+    fn persist_edited(&mut self, plaintext: &str) -> crate::error::Result<()> {
+        let recipients =
+            age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
+        let ciphertext = age::encrypt(plaintext.as_bytes(), &recipients)?;
+        store::write_secret(&self.store_path, &self.path, &ciphertext)?;
+        if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
+            self.meta = meta;
+        }
+        Ok(())
     }
 
     // ── Actions ────────────────────────────────────────────────────────
@@ -289,6 +352,8 @@ impl SecretViewerView {
                 Span::styled("y", Style::default().fg(Color::Cyan)),
                 Span::raw(" copy  "),
                 Span::styled("e", Style::default().fg(Color::Cyan)),
+                Span::raw(" edit  "),
+                Span::styled("R", Style::default().fg(Color::Cyan)),
                 Span::raw(" rekey  "),
                 Span::styled("esc", Style::default().fg(Color::Cyan)),
                 Span::raw(" back  "),
@@ -332,6 +397,10 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn shift(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
     }
 
     fn ctrl(c: char) -> KeyEvent {
@@ -427,17 +496,84 @@ mod tests {
     }
 
     #[test]
-    fn e_rekeys_and_updates_status() {
+    fn shift_r_rekeys_and_updates_status() {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let before = store::read_secret_meta(&ctx.store, &path).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(press(KeyCode::Char('e')));
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.on_key(shift('R'));
         match &view.status {
             Some((msg, StatusKind::Info)) => assert!(msg.contains("rekeyed")),
             other => panic!("expected info status, got {other:?}"),
         }
         let after = store::read_secret_meta(&ctx.store, &path).unwrap();
         assert_ne!(before.lastmodified, after.lastmodified);
+    }
+
+    #[test]
+    fn e_emits_edit_value_action_with_plaintext() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        match view.on_key(press(KeyCode::Char('e'))) {
+            SecretViewerAction::EditValue(plain) => assert_eq!(plain, "s3cret"),
+            other => panic!("expected EditValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finish_edit_with_new_value_persists_and_reencrypts() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.finish_edit(Ok(Some("rotated".to_string())));
+        match &view.status {
+            Some((msg, StatusKind::Info)) => assert_eq!(msg, "edited"),
+            other => panic!("expected info 'edited', got {other:?}"),
+        }
+        // Round-trip: decrypt again and confirm the new ciphertext.
+        let plain = view.decrypt().unwrap();
+        assert_eq!(plain, "rotated");
+    }
+
+    #[test]
+    fn finish_edit_with_no_change_reports_cancelled() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        view.finish_edit(Ok(None));
+        match &view.status {
+            Some((msg, StatusKind::Info)) => {
+                assert!(msg.contains("cancelled"), "got {msg}");
+            }
+            other => panic!("expected info cancelled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn footer_hint_lists_edit_and_rekey_bindings() {
+        // The footer is drawn via ratatui's Line; we can cheaply assert by
+        // rendering the viewer into a TestBackend buffer and searching the
+        // text content for the expected hint tokens.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| view.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(rendered.contains("e edit"), "missing 'e edit' hint: {rendered}");
+        assert!(rendered.contains("R rekey"), "missing 'R rekey' hint: {rendered}");
     }
 }
