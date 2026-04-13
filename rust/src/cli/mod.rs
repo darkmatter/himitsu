@@ -29,6 +29,7 @@ use tracing::debug;
 use crate::error::{HimitsuError, Result};
 
 /// Resolved paths for the current invocation.
+#[derive(Clone)]
 pub struct Context {
     /// XDG data directory: `~/.local/share/himitsu/` (keys, config).
     pub data_dir: PathBuf,

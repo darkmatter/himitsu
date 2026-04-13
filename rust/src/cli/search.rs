@@ -26,26 +26,45 @@ pub struct SearchArgs {
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub store: String,
+    /// Filesystem path of the store that holds this result. Consumed by the
+    /// TUI viewer (US-006) to load the secret; unused by the CLI path.
+    #[allow(dead_code)]
+    pub store_path: PathBuf,
     pub path: String,
+    pub created_at: Option<String>,
 }
 
-pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
-    let query = args.query.to_lowercase();
+/// Run a search across all known stores and return sorted results.
+///
+/// Pure IO-in/data-out: no printing. Shared by the CLI (`run`) and the TUI
+/// search view so both see the same results.
+pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
+    let needle = query.to_lowercase();
     let mut results = Vec::new();
 
     for (slug, store_path) in collect_stores(ctx)? {
         let paths = store::list_secrets(&store_path, None).unwrap_or_default();
         for path in paths {
-            if path.to_lowercase().contains(&query) {
+            if needle.is_empty() || path.to_lowercase().contains(&needle) {
+                let created_at = store::read_secret_meta(&store_path, &path)
+                    .ok()
+                    .and_then(|m| m.created_at);
                 results.push(SearchResult {
                     store: slug.clone(),
+                    store_path: store_path.clone(),
                     path,
+                    created_at,
                 });
             }
         }
     }
 
     results.sort_by(|a, b| (&a.store, &a.path).cmp(&(&b.store, &b.path)));
+    Ok(results)
+}
+
+pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
+    let results = search_core(ctx, &args.query)?;
 
     if args.json {
         print_json(&results);
@@ -116,8 +135,9 @@ fn print_json(results: &[SearchResult]) {
         .iter()
         .map(|r| {
             serde_json::json!({
-                "store": r.store,
-                "path":  r.path,
+                "store":      r.store,
+                "path":       r.path,
+                "created_at": r.created_at,
             })
         })
         .collect();

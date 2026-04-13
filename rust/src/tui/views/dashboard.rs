@@ -17,8 +17,15 @@ use ratatui::Frame;
 use crate::cli::Context;
 use crate::remote::store;
 
+/// Outcome of handling a key — lets the app router decide where to go next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardAction {
+    None,
+    Quit,
+    EnterSearch,
+}
+
 pub struct DashboardView {
-    pub should_quit: bool,
     store_slug: String,
     envs: Vec<String>,
     secrets_by_env: BTreeMap<String, Vec<String>>,
@@ -34,7 +41,6 @@ impl DashboardView {
             env_state.select(Some(0));
         }
         Self {
-            should_quit: false,
             store_slug,
             envs,
             secrets_by_env,
@@ -42,13 +48,22 @@ impl DashboardView {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
+    pub fn on_key(&mut self, key: KeyEvent) -> DashboardAction {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), _) => self.should_quit = true,
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
-            (KeyCode::Up | KeyCode::Char('k'), _) => self.select_prev(),
-            (KeyCode::Down | KeyCode::Char('j'), _) => self.select_next(),
-            _ => {}
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => DashboardAction::Quit,
+            (KeyCode::Char('q'), _) => DashboardAction::Quit,
+            (KeyCode::Char('/'), _) => DashboardAction::EnterSearch,
+            // Esc has no parent view to return to from the dashboard — swallow it.
+            (KeyCode::Esc, _) => DashboardAction::None,
+            (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.select_prev();
+                DashboardAction::None
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.select_next();
+                DashboardAction::None
+            }
+            _ => DashboardAction::None,
         }
     }
 
@@ -195,6 +210,8 @@ impl DashboardView {
         let footer = Line::from(vec![
             Span::styled("↑/↓ j/k", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
+            Span::styled("/", Style::default().fg(Color::Cyan)),
+            Span::raw(" search  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit  "),
             Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
@@ -261,12 +278,19 @@ mod tests {
             env_state.select(Some(0));
         }
         DashboardView {
-            should_quit: false,
             store_slug: "test/store".to_string(),
             envs: env_list,
             secrets_by_env,
             env_state,
         }
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
     #[test]
@@ -324,5 +348,39 @@ mod tests {
         view.select_next();
         view.select_prev();
         assert_eq!(view.env_state.selected(), None);
+    }
+
+    #[test]
+    fn slash_emits_enter_search_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(
+            view.on_key(press(KeyCode::Char('/'))),
+            DashboardAction::EnterSearch
+        );
+    }
+
+    #[test]
+    fn q_emits_quit_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(view.on_key(press(KeyCode::Char('q'))), DashboardAction::Quit);
+    }
+
+    #[test]
+    fn ctrl_c_emits_quit_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(view.on_key(ctrl('c')), DashboardAction::Quit);
+    }
+
+    #[test]
+    fn esc_is_swallowed_on_dashboard() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(view.on_key(press(KeyCode::Esc)), DashboardAction::None);
+    }
+
+    #[test]
+    fn navigation_keys_do_not_emit_actions() {
+        let mut view = make_view(&[("prod", &["prod/A"]), ("staging", &["staging/B"])]);
+        assert_eq!(view.on_key(press(KeyCode::Down)), DashboardAction::None);
+        assert_eq!(view.env_state.selected(), Some(1));
     }
 }

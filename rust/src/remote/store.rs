@@ -108,6 +108,8 @@ pub struct SecretEnvelope {
 #[derive(Debug, Clone, Default)]
 pub struct SecretMeta {
     pub created_at: Option<String>,
+    pub lastmodified: Option<String>,
+    pub recipients: Vec<String>,
     pub version: Option<u64>,
 }
 
@@ -221,6 +223,13 @@ pub fn read_secret_meta(store: &Path, secret_path: &str) -> Result<SecretMeta> {
         let envelope = read_envelope(&yaml_path)?;
         return Ok(SecretMeta {
             created_at: Some(envelope.himitsu.created_at),
+            lastmodified: Some(envelope.himitsu.lastmodified),
+            recipients: envelope
+                .himitsu
+                .age
+                .into_iter()
+                .map(|r| r.recipient)
+                .collect(),
             version: None,
         });
     }
