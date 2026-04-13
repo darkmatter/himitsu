@@ -22,7 +22,19 @@ pub struct SetArgs {
 }
 
 pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
-    let secret_ref = SecretRef::parse(&args.path)?;
+    let secret_path = set_plaintext(ctx, &args.path, args.value.as_bytes(), args.no_push)?;
+    println!("Set {secret_path}");
+    Ok(())
+}
+
+/// Encrypt `plaintext` and persist it at `path`, returning the resolved secret path.
+pub fn set_plaintext(
+    ctx: &Context,
+    path: &str,
+    plaintext: &[u8],
+    no_push: bool,
+) -> Result<String> {
+    let secret_ref = SecretRef::parse(path)?;
     let (effective_store, secret_path, recipients_path_override) = if secret_ref.is_qualified() {
         let resolved = secret_ref.resolve_store()?;
         let path = secret_ref.path.ok_or_else(|| {
@@ -30,7 +42,6 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
                 "qualified reference must include a secret path after org/repo".into(),
             )
         })?;
-        // For cross-store writes, use the target store's default recipients layout.
         (resolved, path, None)
     } else {
         let path = secret_ref.path.expect("bare SecretRef always has a path");
@@ -44,13 +55,12 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let ciphertext = age::encrypt(args.value.as_bytes(), &recipients)?;
+    let ciphertext = age::encrypt(plaintext, &recipients)?;
     store::write_secret(&effective_store, &secret_path, &ciphertext)?;
 
-    if !args.no_push {
+    if !no_push {
         ctx.commit_and_push(&format!("himitsu: set {secret_path}"));
     }
 
-    println!("Set {secret_path}");
-    Ok(())
+    Ok(secret_path)
 }

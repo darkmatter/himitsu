@@ -2194,3 +2194,57 @@ fn test_check_offline_skips_fetch() {
         .success()
         .stdout(predicate::str::contains("myorg/offline"));
 }
+
+// ============ read / write tests ============
+
+#[test]
+fn write_and_read_roundtrip() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "write", "prod/TOKEN", "abc123"])
+        .assert()
+        .success()
+        .stdout("");
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "read", "prod/TOKEN"])
+        .assert()
+        .success()
+        .stdout("abc123");
+}
+
+#[test]
+fn write_reads_from_stdin_when_no_value() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "write", "prod/FROM_STDIN"])
+        .write_stdin("piped-value")
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "read", "prod/FROM_STDIN"])
+        .assert()
+        .success()
+        .stdout("piped-value");
+}
+
+// ============ completions tests ============
+
+#[test]
+fn completions_bash_outputs_script() {
+    himitsu()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("himitsu"));
+}
+

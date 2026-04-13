@@ -12,6 +12,7 @@ path = "rust/src/main.rs"
 [dependencies]
 age = { version = "0.11", features = ["armor"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 dirs = "5"
 pbjson-types = "0.7"
 prost = "0.13"

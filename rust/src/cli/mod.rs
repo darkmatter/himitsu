@@ -1,5 +1,6 @@
 pub mod check;
 pub mod codegen;
+pub mod completions;
 pub mod context;
 pub mod decrypt;
 pub mod encrypt;
@@ -11,6 +12,7 @@ pub mod import;
 pub mod inbox;
 pub mod init;
 pub mod ls;
+pub mod read;
 pub mod recipient;
 pub mod rekey;
 pub mod remote;
@@ -19,6 +21,7 @@ pub mod search;
 pub mod set;
 pub mod share;
 pub mod sync;
+pub mod write;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -131,6 +134,12 @@ pub enum Command {
     /// Get a secret value.
     Get(get::GetArgs),
 
+    /// Read a secret's plaintext to stdout with no decoration (scripting).
+    Read(read::ReadArgs),
+
+    /// Write a secret's plaintext from argument or stdin with no decoration (scripting).
+    Write(write::WriteArgs),
+
     /// List secrets in the store (or all stores if none resolved).
     Ls(ls::LsArgs),
 
@@ -183,6 +192,9 @@ pub enum Command {
     /// Print version information.
     Version,
 
+    /// Generate shell completion scripts.
+    Completions(completions::CompletionsArgs),
+
     // ── Hidden commands (not yet implemented) ─────────────────────
     /// Share secrets with external recipients.
     #[command(hide = true)]
@@ -214,8 +226,9 @@ impl Cli {
         let is_init = matches!(&command, Command::Init(_));
         let is_git = matches!(&command, Command::Git(_));
         let is_version = matches!(&command, Command::Version);
+        let is_completions = matches!(&command, Command::Completions(_));
 
-        if !is_init && !is_git && !is_version && !data_dir.join("key").exists() {
+        if !is_init && !is_git && !is_version && !is_completions && !data_dir.join("key").exists() {
             eprintln!("First run — initializing himitsu...");
             let ctx = Context {
                 data_dir: data_dir.clone(),
@@ -250,6 +263,8 @@ impl Cli {
             &command,
             Command::Set(_)
                 | Command::Get(_)
+                | Command::Read(_)
+                | Command::Write(_)
                 | Command::Rekey(_)
                 | Command::Recipient(_)
                 | Command::Group(_)
@@ -288,6 +303,8 @@ impl Cli {
             Command::Init(args) => init::run(args, &ctx),
             Command::Set(args) => set::run(args, &ctx),
             Command::Get(args) => get::run(args, &ctx),
+            Command::Read(args) => read::run(args, &ctx),
+            Command::Write(args) => write::run(args, &ctx),
             Command::Ls(args) => ls::run(args, &ctx),
             Command::Rekey(args) => rekey::run(args, &ctx),
             Command::Encrypt(args) => encrypt::run(args, &ctx),
@@ -308,6 +325,7 @@ impl Cli {
                 println!("{}", crate::build_info::VERSION_LINE);
                 Ok(())
             }
+            Command::Completions(args) => completions::run(args),
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
@@ -345,6 +363,8 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
         command,
         Command::Set(_)
             | Command::Get(_)
+            | Command::Read(_)
+            | Command::Write(_)
             | Command::Ls(_)
             | Command::Rekey(_)
             | Command::Encrypt(_)
