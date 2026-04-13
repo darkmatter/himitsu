@@ -5,7 +5,7 @@
 //! secret (e.g. `prod/DATABASE_URL` → env `prod`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -14,22 +14,40 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use crate::cli::search::SearchResult;
 use crate::cli::Context;
 use crate::remote::store;
 
-/// Outcome of handling a key — lets the app router decide where to go next.
+/// Which of the two lists has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardFocus {
+    Envs,
+    Secrets,
+}
+
+/// Outcome of handling a key — lets the app router decide where to go next.
+#[derive(Debug, Clone)]
 pub enum DashboardAction {
     None,
     Quit,
     EnterSearch,
+    /// Enter was pressed on a secret in the right-hand list — open the viewer.
+    ///
+    /// The payload mirrors [`crate::tui::views::search::SearchAction::OpenViewer`]
+    /// so the app router can route both identically.
+    OpenViewer(SearchResult),
 }
 
 pub struct DashboardView {
     store_slug: String,
+    /// Absolute path to the store that backs this dashboard — needed so the
+    /// viewer can decrypt / rekey the selected secret.
+    store_path: PathBuf,
     envs: Vec<String>,
     secrets_by_env: BTreeMap<String, Vec<String>>,
     env_state: ListState,
+    secret_state: ListState,
+    focus: DashboardFocus,
 }
 
 impl DashboardView {
@@ -40,11 +58,25 @@ impl DashboardView {
         if !envs.is_empty() {
             env_state.select(Some(0));
         }
+        let mut secret_state = ListState::default();
+        // Pre-select the first secret of the first env so pressing Tab and
+        // then Enter "just works" without an extra j/k.
+        if let Some(first_env) = envs.first() {
+            if secrets_by_env
+                .get(first_env)
+                .is_some_and(|v: &Vec<String>| !v.is_empty())
+            {
+                secret_state.select(Some(0));
+            }
+        }
         Self {
             store_slug,
+            store_path: ctx.store.clone(),
             envs,
             secrets_by_env,
             env_state,
+            secret_state,
+            focus: DashboardFocus::Envs,
         }
     }
 
@@ -55,6 +87,20 @@ impl DashboardView {
             (KeyCode::Char('/'), _) => DashboardAction::EnterSearch,
             // Esc has no parent view to return to from the dashboard — swallow it.
             (KeyCode::Esc, _) => DashboardAction::None,
+            (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
+                self.toggle_focus();
+                DashboardAction::None
+            }
+            (KeyCode::Right | KeyCode::Char('l'), _) => {
+                // h/l also cycle focus — feels natural for vim users and
+                // doesn't clash with any other dashboard binding.
+                self.set_focus(DashboardFocus::Secrets);
+                DashboardAction::None
+            }
+            (KeyCode::Left | KeyCode::Char('h'), _) => {
+                self.set_focus(DashboardFocus::Envs);
+                DashboardAction::None
+            }
             (KeyCode::Up | KeyCode::Char('k'), _) => {
                 self.select_prev();
                 DashboardAction::None
@@ -63,26 +109,116 @@ impl DashboardView {
                 self.select_next();
                 DashboardAction::None
             }
+            (KeyCode::Enter, _) => self.on_enter(),
             _ => DashboardAction::None,
         }
     }
 
+    fn on_enter(&mut self) -> DashboardAction {
+        // Enter on the envs list is a no-op: drilling into an env is what
+        // Tab/focus is for. Only the Secrets focus opens the viewer.
+        if self.focus != DashboardFocus::Secrets {
+            return DashboardAction::None;
+        }
+        let Some(secret_path) = self.selected_secret_path().map(str::to_string) else {
+            return DashboardAction::None;
+        };
+        DashboardAction::OpenViewer(SearchResult {
+            store: self.store_slug.clone(),
+            store_path: self.store_path.clone(),
+            path: secret_path,
+            created_at: None,
+        })
+    }
+
+    fn toggle_focus(&mut self) {
+        let next = match self.focus {
+            DashboardFocus::Envs => DashboardFocus::Secrets,
+            DashboardFocus::Secrets => DashboardFocus::Envs,
+        };
+        self.set_focus(next);
+    }
+
+    fn set_focus(&mut self, focus: DashboardFocus) {
+        self.focus = focus;
+        // When entering the Secrets pane, make sure it has a valid selection
+        // (or None if the list is empty).
+        if focus == DashboardFocus::Secrets {
+            let len = self.selected_secrets().len();
+            match self.secret_state.selected() {
+                Some(i) if i < len => {}
+                _ => {
+                    if len == 0 {
+                        self.secret_state.select(None);
+                    } else {
+                        self.secret_state.select(Some(0));
+                    }
+                }
+            }
+        }
+    }
+
     fn select_prev(&mut self) {
+        match self.focus {
+            DashboardFocus::Envs => self.env_prev(),
+            DashboardFocus::Secrets => self.secret_prev(),
+        }
+    }
+
+    fn select_next(&mut self) {
+        match self.focus {
+            DashboardFocus::Envs => self.env_next(),
+            DashboardFocus::Secrets => self.secret_next(),
+        }
+    }
+
+    fn env_prev(&mut self) {
         if self.envs.is_empty() {
             return;
         }
         let i = self.env_state.selected().unwrap_or(0);
         let next = if i == 0 { self.envs.len() - 1 } else { i - 1 };
         self.env_state.select(Some(next));
+        self.reset_secret_selection();
     }
 
-    fn select_next(&mut self) {
+    fn env_next(&mut self) {
         if self.envs.is_empty() {
             return;
         }
         let i = self.env_state.selected().unwrap_or(0);
         let next = (i + 1) % self.envs.len();
         self.env_state.select(Some(next));
+        self.reset_secret_selection();
+    }
+
+    fn secret_prev(&mut self) {
+        let len = self.selected_secrets().len();
+        if len == 0 {
+            return;
+        }
+        let i = self.secret_state.selected().unwrap_or(0);
+        let next = if i == 0 { len - 1 } else { i - 1 };
+        self.secret_state.select(Some(next));
+    }
+
+    fn secret_next(&mut self) {
+        let len = self.selected_secrets().len();
+        if len == 0 {
+            return;
+        }
+        let i = self.secret_state.selected().unwrap_or(0);
+        let next = (i + 1) % len;
+        self.secret_state.select(Some(next));
+    }
+
+    fn reset_secret_selection(&mut self) {
+        let len = self.selected_secrets().len();
+        if len == 0 {
+            self.secret_state.select(None);
+        } else {
+            self.secret_state.select(Some(0));
+        }
     }
 
     fn selected_secrets(&self) -> &[String] {
@@ -92,6 +228,14 @@ impl DashboardView {
             .and_then(|env| self.secrets_by_env.get(env))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn selected_secret_path(&self) -> Option<&str> {
+        let secrets = self.selected_secrets();
+        self.secret_state
+            .selected()
+            .and_then(|i| secrets.get(i))
+            .map(String::as_str)
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -148,7 +292,11 @@ impl DashboardView {
     }
 
     fn draw_envs(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" envs ");
+        let focused = self.focus == DashboardFocus::Envs;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" envs ")
+            .border_style(border_style(focused));
 
         if self.envs.is_empty() {
             let msg = Paragraph::new(Line::from(Span::styled(
@@ -166,25 +314,27 @@ impl DashboardView {
             .map(|e| ListItem::new(Line::from(Span::raw(e.clone()))))
             .collect();
 
-        let list = List::new(items).block(block).highlight_style(
-            Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        );
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(highlight_style(focused))
+            .style(body_style(focused));
 
         frame.render_stateful_widget(list, area, &mut self.env_state);
     }
 
-    fn draw_secrets(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn draw_secrets(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let focused = self.focus == DashboardFocus::Secrets;
         let title = match self.env_state.selected().and_then(|i| self.envs.get(i)) {
             Some(env) => format!(" secrets · {env} "),
             None => " secrets ".to_string(),
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
-        let secrets = self.selected_secrets();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(border_style(focused));
+        let secrets_len = self.selected_secrets().len();
 
-        if secrets.is_empty() {
+        if secrets_len == 0 {
             let empty_msg = if self.envs.is_empty() {
                 "  no secrets in this store"
             } else {
@@ -199,22 +349,29 @@ impl DashboardView {
             return;
         }
 
-        let items: Vec<ListItem> = secrets
+        let items: Vec<ListItem> = self
+            .selected_secrets()
             .iter()
             .map(|p| ListItem::new(Line::from(Span::raw(p.clone()))))
             .collect();
-        frame.render_widget(List::new(items).block(block), area);
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(highlight_style(focused))
+            .style(body_style(focused));
+        frame.render_stateful_widget(list, area, &mut self.secret_state);
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let footer = Line::from(vec![
             Span::styled("↑/↓ j/k", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
+            Span::styled("tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" focus  "),
+            Span::styled("enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" open  "),
             Span::styled("/", Style::default().fg(Color::Cyan)),
             Span::raw(" search  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit  "),
-            Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
         ]);
         frame.render_widget(Paragraph::new(footer), area);
@@ -228,16 +385,48 @@ impl DashboardView {
 impl DashboardView {
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
-            ("↑/↓ j/k", "navigate envs"),
+            ("tab / h l", "switch focus (envs ↔ secrets)"),
+            ("↑/↓ j/k", "navigate focused list"),
+            ("enter", "open selected secret"),
             ("/", "search"),
             ("?", "toggle this help"),
-            ("q", "quit"),
-            ("ctrl-c", "quit"),
+            ("q / ctrl-c", "quit"),
         ]
     }
 
     pub fn help_title() -> &'static str {
         "dashboard · keys"
+    }
+}
+
+fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn body_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn highlight_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        // Greyed-out highlight so the user still sees *where* the selection
+        // will be if they re-focus this pane, but it's clearly inactive.
+        Style::default()
+            .bg(Color::DarkGray)
+            .fg(Color::Black)
     }
 }
 
@@ -282,6 +471,7 @@ fn derive_store_slug(ctx: &Context) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn make_view(envs: &[(&str, &[&str])]) -> DashboardView {
         let mut secrets_by_env = BTreeMap::new();
@@ -294,14 +484,26 @@ mod tests {
             );
         }
         let mut env_state = ListState::default();
+        let mut secret_state = ListState::default();
         if !env_list.is_empty() {
             env_state.select(Some(0));
+            if let Some(first) = env_list.first() {
+                if secrets_by_env
+                    .get(first)
+                    .is_some_and(|v: &Vec<String>| !v.is_empty())
+                {
+                    secret_state.select(Some(0));
+                }
+            }
         }
         DashboardView {
             store_slug: "test/store".to_string(),
+            store_path: PathBuf::from("/tmp/test/store"),
             envs: env_list,
             secrets_by_env,
             env_state,
+            secret_state,
+            focus: DashboardFocus::Envs,
         }
     }
 
@@ -373,34 +575,139 @@ mod tests {
     #[test]
     fn slash_emits_enter_search_action() {
         let mut view = make_view(&[("prod", &["prod/A"])]);
-        assert_eq!(
+        assert!(matches!(
             view.on_key(press(KeyCode::Char('/'))),
             DashboardAction::EnterSearch
-        );
+        ));
     }
 
     #[test]
     fn q_emits_quit_action() {
         let mut view = make_view(&[("prod", &["prod/A"])]);
-        assert_eq!(view.on_key(press(KeyCode::Char('q'))), DashboardAction::Quit);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Char('q'))),
+            DashboardAction::Quit
+        ));
     }
 
     #[test]
     fn ctrl_c_emits_quit_action() {
         let mut view = make_view(&[("prod", &["prod/A"])]);
-        assert_eq!(view.on_key(ctrl('c')), DashboardAction::Quit);
+        assert!(matches!(view.on_key(ctrl('c')), DashboardAction::Quit));
     }
 
     #[test]
     fn esc_is_swallowed_on_dashboard() {
         let mut view = make_view(&[("prod", &["prod/A"])]);
-        assert_eq!(view.on_key(press(KeyCode::Esc)), DashboardAction::None);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Esc)),
+            DashboardAction::None
+        ));
     }
 
     #[test]
     fn navigation_keys_do_not_emit_actions() {
         let mut view = make_view(&[("prod", &["prod/A"]), ("staging", &["staging/B"])]);
-        assert_eq!(view.on_key(press(KeyCode::Down)), DashboardAction::None);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Down)),
+            DashboardAction::None
+        ));
         assert_eq!(view.env_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn tab_cycles_focus_between_envs_and_secrets() {
+        let mut view = make_view(&[("prod", &["prod/A", "prod/B"])]);
+        assert_eq!(view.focus, DashboardFocus::Envs);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Tab)),
+            DashboardAction::None
+        ));
+        assert_eq!(view.focus, DashboardFocus::Secrets);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Tab)),
+            DashboardAction::None
+        ));
+        assert_eq!(view.focus, DashboardFocus::Envs);
+        // Shift-Tab (BackTab) also cycles.
+        assert!(matches!(
+            view.on_key(press(KeyCode::BackTab)),
+            DashboardAction::None
+        ));
+        assert_eq!(view.focus, DashboardFocus::Secrets);
+    }
+
+    #[test]
+    fn jk_on_secrets_list_moves_secret_selection() {
+        let mut view = make_view(&[("prod", &["prod/A", "prod/B", "prod/C"])]);
+        view.on_key(press(KeyCode::Tab));
+        assert_eq!(view.focus, DashboardFocus::Secrets);
+        assert_eq!(view.secret_state.selected(), Some(0));
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.secret_state.selected(), Some(1));
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.secret_state.selected(), Some(2));
+        // wraps
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.secret_state.selected(), Some(0));
+        view.on_key(press(KeyCode::Char('k')));
+        assert_eq!(view.secret_state.selected(), Some(2));
+        // env selection unchanged.
+        assert_eq!(view.env_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn enter_on_secrets_focus_emits_open_viewer_with_payload() {
+        let mut view = make_view(&[("prod", &["prod/A", "prod/B"])]);
+        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Char('j'))); // select prod/B
+        match view.on_key(press(KeyCode::Enter)) {
+            DashboardAction::OpenViewer(r) => {
+                assert_eq!(r.path, "prod/B");
+                assert_eq!(r.store, "test/store");
+                assert_eq!(r.store_path, PathBuf::from("/tmp/test/store"));
+            }
+            other => panic!("expected OpenViewer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_envs_focus_is_swallowed() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(view.focus, DashboardFocus::Envs);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Enter)),
+            DashboardAction::None
+        ));
+    }
+
+    #[test]
+    fn enter_on_empty_secrets_list_is_noop() {
+        let mut view = make_view(&[("prod", &[])]);
+        view.on_key(press(KeyCode::Tab));
+        assert_eq!(view.focus, DashboardFocus::Secrets);
+        assert!(matches!(
+            view.on_key(press(KeyCode::Enter)),
+            DashboardAction::None
+        ));
+    }
+
+    #[test]
+    fn switching_env_resets_secret_selection() {
+        let mut view = make_view(&[
+            ("prod", &["prod/A", "prod/B"]),
+            ("staging", &["staging/X"]),
+        ]);
+        // Focus secrets, move to B.
+        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.secret_state.selected(), Some(1));
+        // Switch back to envs and move down.
+        view.on_key(press(KeyCode::Tab));
+        assert_eq!(view.focus, DashboardFocus::Envs);
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.env_state.selected(), Some(1));
+        // Secret selection reset to 0 so we don't dangle off the new list.
+        assert_eq!(view.secret_state.selected(), Some(0));
     }
 }
