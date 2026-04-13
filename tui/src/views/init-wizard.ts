@@ -109,9 +109,9 @@ export function InitWizard(
       step = 1;
       renderStep();
     });
+    input.focus();
 
     body.add(input);
-    input.focus();
 
     body.add(
       new TextRenderable(renderer, {
@@ -159,9 +159,9 @@ export function InitWizard(
       step = 2;
       renderStep();
     });
+    input.focus();
 
     body.add(input);
-    input.focus();
 
     body.add(
       new TextRenderable(renderer, {
@@ -248,9 +248,9 @@ export function InitWizard(
         renderStep();
       },
     );
+    select.focus();
 
     body.add(select);
-    select.focus();
 
     body.add(
       new TextRenderable(renderer, {
