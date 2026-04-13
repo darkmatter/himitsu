@@ -35,33 +35,28 @@ pub enum DashboardAction {
     None,
     Quit,
     EnterSearch,
-    /// Enter was pressed on a secret in the right-hand list — open the viewer.
-    ///
-    /// The payload mirrors [`crate::tui::views::search::SearchAction::OpenViewer`]
-    /// so the app router can route both identically.
     OpenViewer(SearchResult),
-    /// Rebuild the dashboard against a new store checkout at this path
-    /// (US-013). The caller is responsible for constructing a fresh
-    /// `Context` and dashboard view. The switch is in-memory only — no
-    /// config file is written.
     SwitchStore(PathBuf),
+    NewSecret,
 }
 
 pub struct DashboardView {
     store_slug: String,
-    /// Absolute path to the store that backs this dashboard — needed so the
-    /// viewer can decrypt / rekey the selected secret.
     store_path: PathBuf,
     envs: Vec<String>,
     secrets_by_env: BTreeMap<String, Vec<String>>,
     env_state: ListState,
     secret_state: ListState,
     focus: DashboardFocus,
-    /// Cached `ctx.stores_dir()` so the store picker can enumerate checkouts
-    /// without needing a live `Context` reference.
     stores_dir: PathBuf,
-    /// Store picker overlay, `Some` when open.
     picker: Option<StorePicker>,
+    status: Option<(String, StatusKind)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StatusKind {
+    Info,
+    Error,
 }
 
 impl DashboardView {
@@ -93,7 +88,48 @@ impl DashboardView {
             focus: DashboardFocus::Envs,
             stores_dir: ctx.stores_dir(),
             picker: None,
+            status: None,
         }
+    }
+
+    /// Env segment currently highlighted in the env pane, if any. Used by
+    /// the router to pre-fill the new-secret form.
+    pub fn selected_env(&self) -> Option<String> {
+        self.env_state
+            .selected()
+            .and_then(|i| self.envs.get(i).cloned())
+    }
+
+    /// Re-read the store from disk and (when possible) re-select the secret
+    /// path that was just created. Called after the new-secret form submits.
+    pub fn refresh_and_select(&mut self, created_path: Option<&str>) {
+        let (envs, secrets_by_env) = load_envs(&self.store_path);
+        self.envs = envs;
+        self.secrets_by_env = secrets_by_env;
+
+        if let Some(path) = created_path {
+            if let Some((env, _)) = path.split_once('/') {
+                if let Some(idx) = self.envs.iter().position(|e| e == env) {
+                    self.env_state.select(Some(idx));
+                    return;
+                }
+            }
+        }
+        if self.envs.is_empty() {
+            self.env_state.select(None);
+        } else if self.env_state.selected().is_none() {
+            self.env_state.select(Some(0));
+        }
+    }
+
+    /// Surface a one-line status message below the body. Cleared on the next
+    /// navigation keypress.
+    pub fn set_status_info(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), StatusKind::Info));
+    }
+
+    pub fn set_status_error(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), StatusKind::Error));
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> DashboardAction {
@@ -116,6 +152,10 @@ impl DashboardView {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => DashboardAction::Quit,
             (KeyCode::Char('q'), _) => DashboardAction::Quit,
             (KeyCode::Char('/'), _) => DashboardAction::EnterSearch,
+            (KeyCode::Char('n'), _) => {
+                self.status = None;
+                DashboardAction::NewSecret
+            }
             // Esc has no parent view to return to from the dashboard — swallow it.
             (KeyCode::Esc, _) => DashboardAction::None,
             (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
@@ -133,10 +173,12 @@ impl DashboardView {
                 DashboardAction::None
             }
             (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.status = None;
                 self.select_prev();
                 DashboardAction::None
             }
             (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.status = None;
                 self.select_next();
                 DashboardAction::None
             }
@@ -403,21 +445,31 @@ impl DashboardView {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let footer = Line::from(vec![
-            Span::styled("↑/↓ j/k", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("tab", Style::default().fg(Color::Cyan)),
-            Span::raw(" focus  "),
-            Span::styled("enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" open  "),
-            Span::styled("/", Style::default().fg(Color::Cyan)),
-            Span::raw(" search  "),
-            Span::styled("s", Style::default().fg(Color::Cyan)),
-            Span::raw(" switch store  "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]);
-        frame.render_widget(Paragraph::new(footer), area);
+        let line = if let Some((msg, kind)) = &self.status {
+            let color = match kind {
+                StatusKind::Info => Color::Green,
+                StatusKind::Error => Color::Red,
+            };
+            Line::from(Span::styled(msg.clone(), Style::default().fg(color)))
+        } else {
+            Line::from(vec![
+                Span::styled("↑/↓ j/k", Style::default().fg(Color::Cyan)),
+                Span::raw(" navigate  "),
+                Span::styled("tab", Style::default().fg(Color::Cyan)),
+                Span::raw(" focus  "),
+                Span::styled("enter", Style::default().fg(Color::Cyan)),
+                Span::raw(" open  "),
+                Span::styled("/", Style::default().fg(Color::Cyan)),
+                Span::raw(" search  "),
+                Span::styled("n", Style::default().fg(Color::Cyan)),
+                Span::raw(" new  "),
+                Span::styled("s", Style::default().fg(Color::Cyan)),
+                Span::raw(" switch store  "),
+                Span::styled("q", Style::default().fg(Color::Cyan)),
+                Span::raw(" quit"),
+            ])
+        };
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 
@@ -550,6 +602,7 @@ mod tests {
             focus: DashboardFocus::Envs,
             stores_dir: PathBuf::from("/tmp/himitsu-test-stores"),
             picker: None,
+            status: None,
         }
     }
 
@@ -616,6 +669,23 @@ mod tests {
         view.select_next();
         view.select_prev();
         assert_eq!(view.env_state.selected(), None);
+    }
+
+    #[test]
+    fn n_emits_new_secret_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert_eq!(
+            view.on_key(press(KeyCode::Char('n'))),
+            DashboardAction::NewSecret
+        );
+    }
+
+    #[test]
+    fn selected_env_returns_highlighted_env_name() {
+        let mut view = make_view(&[("prod", &["prod/A"]), ("staging", &["staging/B"])]);
+        assert_eq!(view.selected_env().as_deref(), Some("prod"));
+        view.select_next();
+        assert_eq!(view.selected_env().as_deref(), Some("staging"));
     }
 
     #[test]

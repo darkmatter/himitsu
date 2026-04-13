@@ -10,6 +10,7 @@ use ratatui::Frame;
 use crate::cli::Context;
 use crate::tui::views::dashboard::{DashboardAction, DashboardView};
 use crate::tui::views::help::{HelpAction, HelpView};
+use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
 
@@ -17,6 +18,7 @@ enum View {
     Dashboard(DashboardView),
     Search(SearchView),
     SecretViewer(SecretViewerView),
+    NewSecret(NewSecretView),
 }
 
 /// Which view the user was on before opening the secret viewer — controls
@@ -96,6 +98,11 @@ impl App {
                     self.ctx.store = path;
                     self.view = View::Dashboard(DashboardView::new(&self.ctx));
                 }
+                DashboardAction::NewSecret => {
+                    let default_env = dash.selected_env();
+                    self.view =
+                        View::NewSecret(NewSecretView::new(&self.ctx, default_env));
+                }
             },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
@@ -139,6 +146,26 @@ impl App {
                     };
                 }
             },
+            View::NewSecret(form) => match form.on_key(key) {
+                NewSecretAction::None => {}
+                NewSecretAction::Quit => self.should_quit = true,
+                NewSecretAction::Cancel => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.set_status_info("create cancelled");
+                    self.view = View::Dashboard(dash);
+                }
+                NewSecretAction::Created(path) => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.refresh_and_select(Some(&path));
+                    dash.set_status_info(format!("created {path}"));
+                    self.view = View::Dashboard(dash);
+                }
+                NewSecretAction::Failed(err) => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.set_status_error(format!("create failed: {err}"));
+                    self.view = View::Dashboard(dash);
+                }
+            },
         }
         None
     }
@@ -156,6 +183,7 @@ impl App {
             View::Dashboard(dash) => dash.draw(frame),
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
+            View::NewSecret(form) => form.draw(frame),
         }
         // Help overlay is drawn last so it paints over the underlying view.
         if let Some(help) = self.help.as_ref() {
@@ -177,6 +205,9 @@ impl App {
                 SecretViewerView::help_entries(),
                 SecretViewerView::help_title(),
             ),
+            View::NewSecret(_) => {
+                HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
+            }
         }
     }
 }
