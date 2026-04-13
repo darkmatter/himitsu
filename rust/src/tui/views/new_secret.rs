@@ -25,7 +25,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::cli::Context;
-use crate::crypto::age;
+use crate::crypto::{age, secret_value};
+use crate::proto::SecretValue;
 use crate::remote::store;
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
@@ -246,7 +247,17 @@ impl NewSecretView {
             }
         };
 
-        let ciphertext = match age::encrypt(self.value.as_bytes(), &recipients) {
+        let sv = SecretValue {
+            data: self.value.as_bytes().to_vec(),
+            content_type: String::new(),
+            annotations: Default::default(),
+            totp: String::new(),
+            url: String::new(),
+            expires_at: None,
+            description: String::new(),
+        };
+        let wire = secret_value::encode(&sv);
+        let ciphertext = match age::encrypt(&wire, &recipients) {
             Ok(ct) => ct,
             Err(e) => {
                 let msg = format!("{e}");

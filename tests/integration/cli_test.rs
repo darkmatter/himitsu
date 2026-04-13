@@ -103,6 +103,74 @@ fn set_get_roundtrip() {
 }
 
 #[test]
+fn set_get_with_metadata_roundtrip() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store",
+            &s,
+            "set",
+            "prod/DB_PW",
+            "s3cret",
+            "--url",
+            "https://db.example.com",
+            "--totp",
+            "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+            "--description",
+            "Primary prod database",
+            "--expires-at",
+            "30d",
+        ])
+        .assert()
+        .success();
+
+    // stdout must still be the bare value for piping.
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args(["--store", &s, "get", "prod/DB_PW"])
+        .assert()
+        .success()
+        .stdout("s3cret")
+        .stderr(predicate::str::contains("url:         https://db.example.com"))
+        .stderr(predicate::str::contains("totp:        JBSWY3DPEHPK3PXP"))
+        .stderr(predicate::str::contains("description: Primary prod database"))
+        .stderr(predicate::str::contains("expires"));
+}
+
+#[test]
+fn set_rejects_invalid_totp() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store", &s, "set", "prod/BAD", "value", "--totp", "abc",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("totp"));
+}
+
+#[test]
+fn set_rejects_invalid_expires_at() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .args([
+            "--store", &s, "set", "prod/BAD", "value", "--expires-at", "30x",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown duration unit"));
+}
+
+#[test]
 fn set_normalizes_leading_slash() {
     // /dev/hello is valid — leading / is stripped to give path dev/hello
     let (home, store) = setup();
