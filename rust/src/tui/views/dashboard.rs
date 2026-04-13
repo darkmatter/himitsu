@@ -221,6 +221,26 @@ impl DashboardView {
     }
 }
 
+// ── Help overlay integration (US-012) ─────────────────────────────────
+//
+// Kept in its own impl block so parallel branches adding new bindings can
+// extend `help_entries` without colliding with the main impl.
+impl DashboardView {
+    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("↑/↓ j/k", "navigate envs"),
+            ("/", "search"),
+            ("?", "toggle this help"),
+            ("q", "quit"),
+            ("ctrl-c", "quit"),
+        ]
+    }
+
+    pub fn help_title() -> &'static str {
+        "dashboard · keys"
+    }
+}
+
 fn load_envs(store: &Path) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
     if store.as_os_str().is_empty() {
         return (Vec::new(), BTreeMap::new());

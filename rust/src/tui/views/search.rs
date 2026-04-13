@@ -245,6 +245,28 @@ impl SearchView {
     }
 }
 
+// ── Help overlay integration (US-012) ─────────────────────────────────
+//
+// In its own impl block so parallel branches adding new bindings can extend
+// `help_entries` without colliding with the main impl.
+impl SearchView {
+    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("type", "filter results"),
+            ("↑/↓", "navigate"),
+            ("enter", "open selection"),
+            ("backspace", "delete char"),
+            ("?", "toggle this help"),
+            ("esc", "back to dashboard"),
+            ("ctrl-c", "quit"),
+        ]
+    }
+
+    pub fn help_title() -> &'static str {
+        "search · keys"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
