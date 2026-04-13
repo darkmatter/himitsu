@@ -1,0 +1,44 @@
+#!/usr/bin/env expect -f
+# Drives the himitsu TUI to demonstrate deleting a secret with the
+# confirm prompt (US-009).
+# Recorded via: asciinema rec -c ./demo/tui-us-009.exp demo/tui-us-009.cast
+#
+# Expects HIMITSU_BIN and DEMO_STORE in the environment (set by the
+# parent script via demo/tui-demo-setup.sh).
+
+set timeout 10
+set bin $env(HIMITSU_BIN)
+
+log_user 1
+spawn -noecho $bin
+
+# Dashboard paints — give it a moment.
+sleep 1.2
+
+# Move env selection from `prod` to `staging`.
+send "j"
+sleep 0.6
+
+# Tab into the secrets pane (selection lands on staging/API_KEY).
+send "\t"
+sleep 0.4
+
+# Move down to staging/DEBUG_TOKEN.
+send "j"
+sleep 0.4
+
+# Open the secret viewer.
+send "\r"
+sleep 1.0
+
+# Enter ConfirmDelete mode.
+send "d"
+sleep 1.0
+
+# Confirm with lowercase `y`. Viewer pops; DEBUG_TOKEN is gone.
+send "y"
+sleep 1.2
+
+# Quit.
+send "q"
+expect eof

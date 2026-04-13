@@ -1,0 +1,60 @@
+#!/usr/bin/env expect -f
+# Drives the himitsu TUI to demonstrate drilling into a secret from
+# the dashboard (US-011).
+# Recorded via: asciinema rec -c ./demo/tui-us-011.exp demo/tui-us-011.cast
+#
+# Expects HIMITSU_BIN and DEMO_STORE in the environment (set by the
+# parent script via demo/tui-demo-setup.sh).
+
+set timeout 10
+set bin $env(HIMITSU_BIN)
+
+log_user 1
+spawn -noecho $bin
+
+# Dashboard paints — envs pane focused, `prod` selected.
+sleep 1.2
+
+# Tab into the secrets pane. Selection: prod/API_KEY.
+send "\t"
+sleep 0.6
+
+# j — move to prod/DATABASE_URL.
+send "j"
+sleep 0.5
+
+# k — back up to prod/API_KEY.
+send "k"
+sleep 0.5
+
+# Enter — open the secret viewer for prod/API_KEY.
+send "\r"
+sleep 2.0
+
+# Escape back to the dashboard (secrets pane focus preserved).
+send "\x1b"
+sleep 0.8
+
+# h — focus back to the envs pane.
+send "h"
+sleep 0.5
+
+# j — select `staging`; right pane swaps to staging's secrets.
+send "j"
+sleep 0.7
+
+# l — focus back to the secrets pane.
+send "l"
+sleep 0.5
+
+# Enter — open the viewer for staging/API_KEY.
+send "\r"
+sleep 1.5
+
+# Escape back to the dashboard.
+send "\x1b"
+sleep 0.4
+
+# Quit.
+send "q"
+expect eof

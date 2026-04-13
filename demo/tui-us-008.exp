@@ -1,0 +1,43 @@
+#!/usr/bin/env expect -f
+# Drives the himitsu TUI to demonstrate creating a new secret from
+# the dashboard (US-008).
+# Recorded via: asciinema rec -c ./demo/tui-us-008.exp demo/tui-us-008.cast
+#
+# Expects HIMITSU_BIN and DEMO_STORE in the environment (set by the
+# parent script via demo/tui-demo-setup.sh).
+
+set timeout 10
+set bin $env(HIMITSU_BIN)
+
+log_user 1
+spawn -noecho $bin
+
+# Dashboard paints — give it a moment.
+sleep 1.2
+
+# Open the new-secret form. Env field is pre-filled with `prod`.
+send "n"
+sleep 0.8
+
+# Leave env as `prod`; advance to the path field.
+send "\r"
+sleep 0.6
+
+# Type the new secret path.
+send "NEW_API_KEY"
+sleep 0.6
+
+# Advance to the value field.
+send "\r"
+sleep 0.6
+
+# Type the secret value. Enter inserts a newline on the value field,
+# so we save with Ctrl-S (\x13).
+send "sk_new_value_123"
+sleep 0.6
+send "\x13"
+sleep 1.4
+
+# Quit.
+send "q"
+expect eof

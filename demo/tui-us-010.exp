@@ -1,0 +1,43 @@
+#!/usr/bin/env expect -f
+# Drives the himitsu TUI to demonstrate editing a secret value in-TUI (US-010).
+# Recorded via: asciinema rec -c ./demo/tui-us-010.exp demo/tui-us-010.cast
+#
+# Expects HIMITSU_BIN and DEMO_STORE in the environment (set by the
+# parent script via demo/tui-demo-setup.sh). Also sets EDITOR to a
+# fake-editor helper that rewrites the temp file and exits so the
+# recording is fully non-interactive. asciinema is launched from the
+# project root, so the relative path resolves correctly.
+
+set timeout 10
+set bin $env(HIMITSU_BIN)
+set env(EDITOR) "demo/tui-us-010-editor.sh"
+
+log_user 1
+spawn -noecho $bin
+
+# Dashboard paints — give it a moment.
+sleep 1.2
+
+# Focus secrets pane.
+send "\t"
+sleep 0.4
+
+# Open the viewer for the highlighted secret.
+send "\r"
+sleep 1.2
+
+# Trigger edit: TUI suspends, $EDITOR runs, value is rewritten,
+# TUI resumes showing the re-encrypted value.
+send "e"
+sleep 1.8
+
+# Linger on the edited state so the frame is captured.
+sleep 1.2
+
+# Back out of the viewer.
+send "\x1b"
+sleep 0.4
+
+# Quit.
+send "q"
+expect eof

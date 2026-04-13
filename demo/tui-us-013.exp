@@ -1,0 +1,52 @@
+#!/usr/bin/env expect -f
+# Drives the himitsu TUI to demonstrate the store picker / switch-store
+# flow (US-013).
+# Recorded via: asciinema rec -c ./demo/tui-us-013.exp demo/tui-us-013.cast
+#
+# Expects HIMITSU_BIN and DEMO_STORE in the environment (set by the
+# parent script via demo/tui-demo-setup.sh, plus a call to
+# tui_demo_register_second_store so both `demo/main` and `acme/infra`
+# exist under stores_dir).
+
+set timeout 10
+set bin $env(HIMITSU_BIN)
+
+log_user 1
+spawn -noecho $bin
+
+# Dashboard paints on `demo/main` — give it a moment.
+sleep 1.2
+
+# Open the store picker. The list is alphabetical:
+#   0: acme/infra
+#   1: demo/main  (current, cursor starts here)
+send "s"
+sleep 1.2
+
+# Move cursor UP to acme/infra.
+send "k"
+sleep 0.6
+
+# Select — picker closes, dashboard switches to acme/infra.
+send "\r"
+sleep 2.0
+
+# Reopen the picker; cursor starts on the current store (acme/infra).
+send "s"
+sleep 1.0
+
+# Move DOWN to demo/main and select.
+send "j"
+sleep 0.5
+send "\r"
+sleep 1.0
+
+# Open the picker one more time and cancel with Esc — no change.
+send "s"
+sleep 0.8
+send "\x1b"
+sleep 0.8
+
+# Quit.
+send "q"
+expect eof
