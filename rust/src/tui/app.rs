@@ -92,6 +92,10 @@ impl App {
                         r.path,
                     ));
                 }
+                DashboardAction::SwitchStore(path) => {
+                    self.ctx.store = path;
+                    self.view = View::Dashboard(DashboardView::new(&self.ctx));
+                }
             },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
