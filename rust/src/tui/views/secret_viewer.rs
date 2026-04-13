@@ -7,9 +7,11 @@
 //! - `y` — copy the (already-revealed or freshly-decrypted) value to the
 //!   system clipboard via [`arboard`]. Falls back to a status message if
 //!   the clipboard backend is unavailable (e.g. headless CI).
-//! - `e` — decrypt the secret, open it in `$EDITOR`, and re-encrypt the
-//!   edited plaintext for the current recipients. The TUI suspends its
-//!   alternate screen while the editor runs.
+//! - `e` — decrypt the secret, open a `$EDITOR` buffer containing both its
+//!   metadata (`description`, `url`, `totp`, `expires_at`, `env_key`) and
+//!   the raw value, then re-encrypt for the current recipients. The TUI
+//!   suspends its alternate screen while the editor runs. See
+//!   [`render_edit_doc`] / [`parse_edit_doc`] for the buffer format.
 //! - `R` — re-encrypt this one secret for the current recipient set via
 //!   [`crate::cli::rekey::rekey_store`] (no value change).
 //! - `Esc` — emit `SecretViewerAction::Back` so the router pops to the
@@ -24,8 +26,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::cli::{rekey, Context};
+use crate::cli::{duration, rekey, Context};
 use crate::crypto::{age, secret_value};
+use crate::error::HimitsuError;
 use crate::proto::SecretValue;
 use crate::remote::store::{self, SecretMeta};
 
@@ -150,14 +153,16 @@ impl SecretViewerView {
         }
     }
 
-    /// Decrypt the current value and ask the event loop to run `$EDITOR`.
+    /// Decrypt the current secret, render it as an editable document
+    /// (metadata header + `---` separator + raw value) and ask the event
+    /// loop to run `$EDITOR`.
     ///
-    /// Returns [`SecretViewerAction::EditValue`] with the plaintext on
+    /// Returns [`SecretViewerAction::EditValue`] with the full document on
     /// success, or [`SecretViewerAction::None`] with a status message set on
     /// decrypt failure (so the user sees *why* the edit did not happen).
     fn begin_edit(&mut self) -> SecretViewerAction {
-        match self.decrypt() {
-            Ok(plain) => SecretViewerAction::EditValue(plain),
+        match self.read_decoded() {
+            Ok(decoded) => SecretViewerAction::EditValue(render_edit_doc(&decoded)),
             Err(e) => {
                 self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
                 SecretViewerAction::None
@@ -199,7 +204,7 @@ impl SecretViewerView {
     }
 
     /// Handle the result of an external edit. Called by the event loop
-    /// after `$EDITOR` exits. `result` is `Ok(Some(new_plaintext))` on a
+    /// after `$EDITOR` exits. `result` is `Ok(Some(new_document))` on a
     /// real change, `Ok(None)` for "no change / cancelled", and
     /// `Err(msg)` for a terminal failure (spawn error, non-zero exit).
     pub fn finish_edit(&mut self, result: std::result::Result<Option<String>, String>) {
@@ -210,11 +215,11 @@ impl SecretViewerView {
                     StatusKind::Info,
                 ));
             }
-            Ok(Some(plain)) => match self.persist_edited(&plain) {
-                Ok(()) => {
+            Ok(Some(doc)) => match self.persist_edited(&doc) {
+                Ok(new_value) => {
                     // Keep the new value visible so the user sees what they
                     // just committed.
-                    self.value = ValueState::Revealed(plain);
+                    self.value = ValueState::Revealed(new_value);
                     self.status = Some(("edited".to_string(), StatusKind::Info));
                 }
                 Err(e) => {
@@ -227,22 +232,32 @@ impl SecretViewerView {
         }
     }
 
-    fn persist_edited(&mut self, plaintext: &str) -> crate::error::Result<()> {
+    /// Parse an edited document, re-encrypt, and write it to disk. Returns
+    /// the raw plaintext value so the caller can refresh the revealed state.
+    fn persist_edited(&mut self, doc: &str) -> crate::error::Result<String> {
+        let parsed = parse_edit_doc(doc)
+            .map_err(|e| HimitsuError::InvalidReference(format!("edit: {e}")))?;
+
+        let expires_at = if parsed.expires_at.trim().is_empty() {
+            None
+        } else {
+            match duration::parse(&parsed.expires_at)? {
+                duration::ExpiresAt::Never => None,
+                duration::ExpiresAt::At(dt) => Some(duration::to_proto_timestamp(dt)),
+            }
+        };
+
         let recipients =
             age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
-        // Preserve existing metadata (totp/url/description/env_key/expires_at)
-        // when the user edits only the value. Fall back to a bare SecretValue
-        // if the original envelope was a legacy raw payload.
-        let existing = self.read_decoded().unwrap_or_default();
         let sv = SecretValue {
-            data: plaintext.as_bytes().to_vec(),
+            data: parsed.value.as_bytes().to_vec(),
             content_type: String::new(),
             annotations: Default::default(),
-            totp: existing.totp,
-            url: existing.url,
-            expires_at: existing.expires_at,
-            description: existing.description,
-            env_key: existing.env_key,
+            totp: parsed.totp,
+            url: parsed.url,
+            expires_at,
+            description: parsed.description,
+            env_key: parsed.env_key,
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
@@ -250,7 +265,7 @@ impl SecretViewerView {
         if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
             self.meta = meta;
         }
-        Ok(())
+        Ok(parsed.value)
     }
 
     fn delete_secret(&mut self) -> crate::error::Result<()> {
@@ -481,6 +496,106 @@ impl SecretViewerView {
     }
 }
 
+// ── Edit document round-trip ───────────────────────────────────────────
+//
+// The `e` action opens a plain-text document in `$EDITOR` so the user can
+// change both metadata and the secret value in one place. Layout:
+//
+//     # himitsu edit — metadata above, secret value below the `---` line.
+//     # Leave a field blank to clear it. Lines starting with `#` are ignored.
+//     # expires_at accepts: 30d / 6mo / 1y / never / RFC 3339 timestamp.
+//
+//     description: my db password
+//     url: https://example.com
+//     totp:
+//     expires_at: 2026-12-31T00:00:00+00:00
+//     env_key: DATABASE_URL
+//     ---
+//     hunter2
+//
+// Everything after the first line that is exactly `---` becomes the raw
+// secret value. Trailing newlines introduced by editors are dropped via
+// `str::lines`, which drops the final line terminator.
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ParsedEdit {
+    description: String,
+    url: String,
+    totp: String,
+    expires_at: String,
+    env_key: String,
+    value: String,
+}
+
+const EDIT_DOC_HEADER: &str = "# himitsu edit — metadata above, secret value below the `---` line.
+# Leave a field blank to clear it. Lines starting with `#` are ignored.
+# expires_at accepts: 30d / 6mo / 1y / never / RFC 3339 timestamp.
+
+";
+
+fn render_edit_doc(decoded: &secret_value::Decoded) -> String {
+    let expires = decoded
+        .expires_at
+        .as_ref()
+        .and_then(|ts| {
+            if duration::is_unset(ts) {
+                None
+            } else {
+                duration::from_proto_timestamp(ts).map(|dt| dt.to_rfc3339())
+            }
+        })
+        .unwrap_or_default();
+    let value = String::from_utf8_lossy(&decoded.data);
+    format!(
+        "{EDIT_DOC_HEADER}description: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}\n---\n{value}",
+        desc = decoded.description,
+        url = decoded.url,
+        totp = decoded.totp,
+        exp = expires,
+        env = decoded.env_key,
+    )
+}
+
+fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
+    let mut parsed = ParsedEdit::default();
+    let mut value_lines: Vec<&str> = Vec::new();
+    let mut in_value = false;
+    for line in doc.lines() {
+        if in_value {
+            value_lines.push(line);
+            continue;
+        }
+        if line.trim() == "---" {
+            in_value = true;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (k, v) = line
+            .split_once(':')
+            .ok_or_else(|| format!("expected `key: value`, got `{line}`"))?;
+        let key = k.trim();
+        // Strip at most one space after the colon so `description:  hi ` keeps
+        // the user's trailing whitespace.
+        let val = v.strip_prefix(' ').unwrap_or(v).to_string();
+        match key {
+            "description" => parsed.description = val,
+            "url" => parsed.url = val,
+            "totp" => parsed.totp = val,
+            "expires_at" => parsed.expires_at = val,
+            "env_key" => parsed.env_key = val,
+            other => return Err(format!("unknown field `{other}`")),
+        }
+    }
+    if !in_value {
+        return Err("missing `---` separator before secret value".to_string());
+    }
+    parsed.value = value_lines.join("\n");
+    Ok(parsed)
+}
+
 fn labeled_line<'a>(label: &'a str, value: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
@@ -512,7 +627,7 @@ impl SecretViewerView {
         &[
             ("r", "reveal / hide value"),
             ("y", "copy value to clipboard"),
-            ("e", "edit value in $EDITOR"),
+            ("e", "edit value + metadata in $EDITOR"),
             ("R", "rekey for current recipients"),
             ("d", "delete secret (with confirm)"),
             ("?", "toggle this help"),
@@ -724,12 +839,17 @@ mod tests {
     }
 
     #[test]
-    fn e_emits_edit_value_action_with_plaintext() {
+    fn e_emits_edit_value_action_with_document() {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         match view.on_key(press(KeyCode::Char('e'))) {
-            SecretViewerAction::EditValue(plain) => assert_eq!(plain, "s3cret"),
+            SecretViewerAction::EditValue(doc) => {
+                assert!(doc.contains("description:"), "doc missing header: {doc}");
+                assert!(doc.contains("expires_at:"), "doc missing expires_at: {doc}");
+                assert!(doc.contains("\n---\n"), "doc missing separator: {doc}");
+                assert!(doc.ends_with("s3cret"), "doc should end with plaintext: {doc}");
+            }
             other => panic!("expected EditValue, got {other:?}"),
         }
     }
@@ -739,7 +859,8 @@ mod tests {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.finish_edit(Ok(Some("rotated".to_string())));
+        let doc = "description:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nrotated";
+        view.finish_edit(Ok(Some(doc.to_string())));
         match &view.status {
             Some((msg, StatusKind::Info)) => assert_eq!(msg, "edited"),
             other => panic!("expected info 'edited', got {other:?}"),
@@ -747,6 +868,144 @@ mod tests {
         // Round-trip: decrypt again and confirm the new ciphertext.
         let plain = view.decrypt().unwrap();
         assert_eq!(plain, "rotated");
+    }
+
+    #[test]
+    fn finish_edit_applies_metadata_fields() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let doc = "\
+description: prod database password
+url: https://db.example.com
+totp:
+expires_at: 2099-01-01T00:00:00+00:00
+env_key: DATABASE_URL
+---
+hunter2";
+        view.finish_edit(Ok(Some(doc.to_string())));
+        assert!(
+            matches!(&view.status, Some((m, StatusKind::Info)) if m == "edited"),
+            "expected info 'edited', got {:?}",
+            view.status
+        );
+        let decoded = view.read_decoded().unwrap();
+        assert_eq!(decoded.description, "prod database password");
+        assert_eq!(decoded.url, "https://db.example.com");
+        assert_eq!(decoded.env_key, "DATABASE_URL");
+        assert_eq!(String::from_utf8(decoded.data).unwrap(), "hunter2");
+        let ts = decoded.expires_at.expect("expires_at set");
+        assert!(!duration::is_unset(&ts));
+    }
+
+    #[test]
+    fn finish_edit_clears_expires_when_blank() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        // First set an expiry.
+        let with_exp = "\
+description:
+url:
+totp:
+expires_at: 1y
+env_key:
+---
+s3cret";
+        view.finish_edit(Ok(Some(with_exp.to_string())));
+        assert!(view.read_decoded().unwrap().expires_at.is_some());
+
+        // Now clear it.
+        let cleared = "\
+description:
+url:
+totp:
+expires_at:
+env_key:
+---
+s3cret";
+        view.finish_edit(Ok(Some(cleared.to_string())));
+        let decoded = view.read_decoded().unwrap();
+        assert!(
+            decoded
+                .expires_at
+                .as_ref()
+                .map(duration::is_unset)
+                .unwrap_or(true),
+            "expires_at should be cleared"
+        );
+    }
+
+    #[test]
+    fn finish_edit_with_invalid_expires_sets_error_status() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let doc = "\
+description:
+url:
+totp:
+expires_at: not-a-duration
+env_key:
+---
+s3cret";
+        view.finish_edit(Ok(Some(doc.to_string())));
+        match &view.status {
+            Some((msg, StatusKind::Error)) => {
+                assert!(msg.contains("edit failed"), "got {msg}");
+            }
+            other => panic!("expected error status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finish_edit_with_missing_separator_errors() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        view.finish_edit(Ok(Some("description: oops\n".to_string())));
+        assert!(matches!(view.status, Some((_, StatusKind::Error))));
+    }
+
+    #[test]
+    fn parse_edit_doc_round_trips_all_fields() {
+        let decoded = secret_value::Decoded {
+            data: b"pw".to_vec(),
+            description: "d".to_string(),
+            url: "https://x".to_string(),
+            totp: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP".to_string(),
+            env_key: "API".to_string(),
+            expires_at: None,
+        };
+        let doc = render_edit_doc(&decoded);
+        let parsed = parse_edit_doc(&doc).unwrap();
+        assert_eq!(parsed.description, "d");
+        assert_eq!(parsed.url, "https://x");
+        assert_eq!(parsed.totp, "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP");
+        assert_eq!(parsed.env_key, "API");
+        assert_eq!(parsed.value, "pw");
+    }
+
+    #[test]
+    fn parse_edit_doc_rejects_unknown_field() {
+        let doc = "bogus: value\n---\n";
+        let err = parse_edit_doc(doc).unwrap_err();
+        assert!(err.contains("unknown field"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_edit_doc_ignores_comments_and_blank_lines() {
+        let doc = "\
+# comment
+#another
+   # indented comment
+
+description: hi
+---
+body";
+        let parsed = parse_edit_doc(doc).unwrap();
+        assert_eq!(parsed.description, "hi");
+        assert_eq!(parsed.value, "body");
     }
 
     #[test]
