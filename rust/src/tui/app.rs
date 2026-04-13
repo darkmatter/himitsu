@@ -124,6 +124,16 @@ impl App {
                 SecretViewerAction::EditValue(plain) => {
                     return Some(AppIntent::EditSecretValue(plain));
                 }
+                SecretViewerAction::Deleted => {
+                    // Pop back to whichever view opened the viewer, fresh so
+                    // the (now missing) secret drops out of listings.
+                    self.view = match self.viewer_parent {
+                        ViewerParent::Dashboard => {
+                            View::Dashboard(DashboardView::new(&self.ctx))
+                        }
+                        ViewerParent::Search => View::Search(SearchView::new(&self.ctx)),
+                    };
+                }
             },
         }
         None

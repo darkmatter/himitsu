@@ -38,12 +38,24 @@ pub enum SecretViewerAction {
     /// carried plaintext, then hand the result back via
     /// [`SecretViewerView::finish_edit`].
     EditValue(String),
+    /// The displayed secret was deleted — the router should pop back to
+    /// whichever view opened the viewer (refreshed).
+    Deleted,
 }
 
 #[derive(Debug, Clone)]
 enum ValueState {
     Hidden,
     Revealed(String),
+}
+
+/// UX mode for the viewer. In [`Mode::ConfirmDelete`], the normal key
+/// bindings are suspended and only `y` / `n` / `Esc` are accepted; the
+/// underlying view is still rendered, with a confirmation overlay on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Normal,
+    ConfirmDelete,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +76,7 @@ pub struct SecretViewerView {
     meta: SecretMeta,
     value: ValueState,
     status: Option<(String, StatusKind)>,
+    mode: Mode,
     /// Context needed to call into `rekey::rekey_store` on `e`.
     ///
     /// Cloned from the app router so the view owns its data.
@@ -94,6 +107,7 @@ impl SecretViewerView {
             meta,
             value: ValueState::Hidden,
             status: None,
+            mode: Mode::Normal,
             ctx: ctx_owned,
         }
     }
@@ -105,6 +119,11 @@ impl SecretViewerView {
             (KeyCode::Char('c'), KeyModifiers::CONTROL)
         ) {
             return SecretViewerAction::Quit;
+        }
+
+        // Confirm-delete mode intercepts all keys except Ctrl-C.
+        if self.mode == Mode::ConfirmDelete {
+            return self.on_key_confirm_delete(key);
         }
 
         match (key.code, key.modifiers) {
@@ -122,6 +141,10 @@ impl SecretViewerView {
                 SecretViewerAction::None
             }
             (KeyCode::Char('e'), _) => self.begin_edit(),
+            (KeyCode::Char('d'), _) => {
+                self.enter_confirm_delete();
+                SecretViewerAction::None
+            }
             _ => SecretViewerAction::None,
         }
     }
@@ -136,6 +159,39 @@ impl SecretViewerView {
             Ok(plain) => SecretViewerAction::EditValue(plain),
             Err(e) => {
                 self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
+                SecretViewerAction::None
+            }
+        }
+    }
+
+    /// Transition into the confirm-delete mode. Pure state change so tests
+    /// can exercise confirm/cancel without touching the filesystem.
+    fn enter_confirm_delete(&mut self) {
+        self.mode = Mode::ConfirmDelete;
+        // Clear any stale status line so the overlay is unambiguous.
+        self.status = None;
+    }
+
+    fn cancel_confirm_delete(&mut self) {
+        self.mode = Mode::Normal;
+    }
+
+    fn on_key_confirm_delete(&mut self, key: KeyEvent) -> SecretViewerAction {
+        match (key.code, key.modifiers) {
+            // Only an explicit lowercase 'y' confirms. Any other key —
+            // including 'n', Esc, arrows, typos — cancels and returns to
+            // the normal view. This is the least surprising behaviour for
+            // a destructive default-no prompt.
+            (KeyCode::Char('y'), _) => match self.delete_secret() {
+                Ok(()) => SecretViewerAction::Deleted,
+                Err(e) => {
+                    self.status = Some((format!("delete failed: {e}"), StatusKind::Error));
+                    self.mode = Mode::Normal;
+                    SecretViewerAction::None
+                }
+            },
+            _ => {
+                self.cancel_confirm_delete();
                 SecretViewerAction::None
             }
         }
@@ -179,6 +235,10 @@ impl SecretViewerView {
             self.meta = meta;
         }
         Ok(())
+    }
+
+    fn delete_secret(&mut self) -> crate::error::Result<()> {
+        store::delete_secret(&self.store_path, &self.path)
     }
 
     // ── Actions ────────────────────────────────────────────────────────
@@ -268,6 +328,39 @@ impl SecretViewerView {
         self.draw_header(frame, chunks[0]);
         self.draw_body(frame, chunks[1]);
         self.draw_footer(frame, chunks[2]);
+
+        if self.mode == Mode::ConfirmDelete {
+            self.draw_confirm_delete(frame, area);
+        }
+    }
+
+    fn draw_confirm_delete(&self, frame: &mut Frame<'_>, area: Rect) {
+        // Center a small prompt box over the existing view. The underlying
+        // layout has already been rendered, so this acts as an overlay.
+        let prompt = format!(" Delete {}/{}? (y/N) ", self.env, self.path);
+        let width = (prompt.len() as u16 + 4).min(area.width.saturating_sub(2));
+        let height: u16 = 3;
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" confirm delete ")
+            .style(Style::default().fg(Color::Red));
+        let line = Line::from(vec![Span::styled(
+            prompt,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )]);
+        frame.render_widget(ratatui::widgets::Clear, rect);
+        frame.render_widget(Paragraph::new(line).block(block), rect);
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -355,6 +448,8 @@ impl SecretViewerView {
                 Span::raw(" edit  "),
                 Span::styled("R", Style::default().fg(Color::Cyan)),
                 Span::raw(" rekey  "),
+                Span::styled("d", Style::default().fg(Color::Cyan)),
+                Span::raw(" delete  "),
                 Span::styled("esc", Style::default().fg(Color::Cyan)),
                 Span::raw(" back  "),
                 Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
@@ -398,6 +493,7 @@ impl SecretViewerView {
             ("y", "copy value to clipboard"),
             ("e", "edit value in $EDITOR"),
             ("R", "rekey for current recipients"),
+            ("d", "delete secret (with confirm)"),
             ("?", "toggle this help"),
             ("esc", "back"),
             ("ctrl-c", "quit"),
@@ -515,6 +611,79 @@ mod tests {
         assert!(view.status.is_some(), "y should set a status message");
         // Value state is an implementation detail — either hidden or kept as
         // an in-memory cache is fine. We only require the UI survived.
+    }
+
+    #[test]
+    fn d_enters_confirm_delete_mode_without_deleting() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        let action = view.on_key(press(KeyCode::Char('d')));
+        assert_eq!(action, SecretViewerAction::None);
+        assert_eq!(view.mode, Mode::ConfirmDelete);
+        // Secret file must still exist — 'd' alone must not delete.
+        assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
+    }
+
+    #[test]
+    fn y_in_confirm_mode_deletes_and_returns_deleted() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.on_key(press(KeyCode::Char('d')));
+        assert_eq!(view.mode, Mode::ConfirmDelete);
+        let action = view.on_key(press(KeyCode::Char('y')));
+        assert_eq!(action, SecretViewerAction::Deleted);
+        // Underlying store should no longer contain the secret.
+        assert!(store::list_secrets(&ctx.store, None)
+            .unwrap()
+            .iter()
+            .all(|p| p != &path));
+    }
+
+    #[test]
+    fn n_in_confirm_mode_cancels_without_deleting() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.on_key(press(KeyCode::Char('d')));
+        let action = view.on_key(press(KeyCode::Char('n')));
+        assert_eq!(action, SecretViewerAction::None);
+        assert_eq!(view.mode, Mode::Normal);
+        assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
+    }
+
+    #[test]
+    fn esc_in_confirm_mode_cancels_without_deleting() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.on_key(press(KeyCode::Char('d')));
+        let action = view.on_key(press(KeyCode::Esc));
+        assert_eq!(action, SecretViewerAction::None);
+        assert_eq!(view.mode, Mode::Normal);
+        assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
+    }
+
+    #[test]
+    fn other_keys_in_confirm_mode_cancel() {
+        // Documented choice: any non-'y' key cancels the delete. Safer for
+        // a destructive default-no prompt than staying in confirm mode.
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        view.on_key(press(KeyCode::Char('d')));
+        view.on_key(press(KeyCode::Char('q')));
+        assert_eq!(view.mode, Mode::Normal);
+        assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
+    }
+
+    #[test]
+    fn ctrl_c_in_confirm_mode_still_quits() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        view.on_key(press(KeyCode::Char('d')));
+        assert_eq!(view.on_key(ctrl('c')), SecretViewerAction::Quit);
     }
 
     #[test]
