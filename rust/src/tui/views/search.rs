@@ -2,6 +2,12 @@
 //!
 //! Data comes from [`crate::cli::search::search_core`] — the same function
 //! that powers the `himitsu search` CLI, so both views stay in sync.
+//!
+//! Search is the TUI root: Esc quits, and the bindings that used to live on
+//! the dashboard (new secret, switch store) are hosted here behind Ctrl
+//! modifiers so the query field can keep eating ordinary letters.
+
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -12,23 +18,27 @@ use ratatui::Frame;
 
 use crate::cli::search::{search_core, SearchResult};
 use crate::cli::Context;
+use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
 #[derive(Debug, Clone)]
 pub enum SearchAction {
     /// Stay in the search view.
     None,
-    /// User pressed Esc — return to dashboard.
-    Back,
     /// User hit Enter on a result — open the secret viewer for this selection.
-    ///
-    /// The payload is consumed once US-006 wires up the viewer; until then the
-    /// router treats it as "go back to dashboard".
-    #[allow(dead_code)]
     OpenViewer(SearchResult),
-    /// User pressed q outside of any input (not expected here; kept for
-    /// completeness with the global router).
+    /// User requested the new-secret form (Ctrl+N).
+    NewSecret,
+    /// User picked a new active store via the embedded picker overlay.
+    SwitchStore(PathBuf),
+    /// User pressed Esc / Ctrl-C — root view, so quit the app.
     Quit,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StatusKind {
+    Info,
+    Error,
 }
 
 pub struct SearchView {
@@ -40,6 +50,10 @@ pub struct SearchView {
     /// We clone the bits we actually need (`store`, `state_dir`) so the view
     /// owns its own data — keeping borrow lifetimes simple in the app router.
     ctx: Context,
+    /// Embedded store-picker overlay. When `Some`, it intercepts every key.
+    picker: Option<StorePicker>,
+    /// One-line status surfaced in the footer area; cleared on next keypress.
+    status: Option<(String, StatusKind)>,
 }
 
 impl SearchView {
@@ -55,34 +69,78 @@ impl SearchView {
             results: Vec::new(),
             list_state: ListState::default(),
             ctx: ctx_owned,
+            picker: None,
+            status: None,
         };
         view.refresh_results();
         view
     }
 
+    /// Surface a one-line info message in the footer. Cleared on the next
+    /// keypress that isn't absorbed by the picker.
+    pub fn set_status_info(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), StatusKind::Info));
+    }
+
+    /// Surface a one-line error message in the footer.
+    pub fn set_status_error(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), StatusKind::Error));
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> SearchAction {
+        // Picker overlay swallows every key while open.
+        if let Some(picker) = self.picker.as_mut() {
+            match picker.on_key(key) {
+                StorePickerOutcome::Pending => return SearchAction::None,
+                StorePickerOutcome::Cancelled => {
+                    self.picker = None;
+                    return SearchAction::None;
+                }
+                StorePickerOutcome::Selected(path) => {
+                    self.picker = None;
+                    return SearchAction::SwitchStore(path);
+                }
+            }
+        }
+
         match (key.code, key.modifiers) {
-            (KeyCode::Esc, _) => SearchAction::Back,
+            (KeyCode::Esc, _) => SearchAction::Quit,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => SearchAction::Quit,
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.status = None;
+                SearchAction::NewSecret
+            }
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                self.status = None;
+                self.picker = Some(StorePicker::new(
+                    &self.ctx.stores_dir(),
+                    self.ctx.store.clone(),
+                ));
+                SearchAction::None
+            }
             (KeyCode::Enter, _) => match self.selected_result().cloned() {
                 Some(r) => SearchAction::OpenViewer(r),
                 None => SearchAction::None,
             },
             (KeyCode::Up, _) => {
+                self.status = None;
                 self.select_prev();
                 SearchAction::None
             }
             (KeyCode::Down, _) => {
+                self.status = None;
                 self.select_next();
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
+                self.status = None;
                 if self.query.pop().is_some() {
                     self.refresh_results();
                 }
                 SearchAction::None
             }
-            (KeyCode::Char(ch), _) => {
+            (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
+                self.status = None;
                 self.query.push(ch);
                 self.refresh_results();
                 SearchAction::None
@@ -138,6 +196,11 @@ impl SearchView {
         self.draw_input(frame, chunks[1]);
         self.draw_results(frame, chunks[2]);
         self.draw_footer(frame, chunks[3]);
+
+        // Render the picker overlay last so it sits on top of the rest.
+        if let Some(picker) = self.picker.as_mut() {
+            picker.draw(frame);
+        }
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -231,17 +294,29 @@ impl SearchView {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let footer = Line::from(vec![
-            Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" open  "),
-            Span::styled("esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back  "),
-            Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]);
-        frame.render_widget(Paragraph::new(footer), area);
+        let line = if let Some((msg, kind)) = &self.status {
+            let color = match kind {
+                StatusKind::Info => Color::Green,
+                StatusKind::Error => Color::Red,
+            };
+            Line::from(Span::styled(msg.clone(), Style::default().fg(color)))
+        } else {
+            Line::from(vec![
+                Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
+                Span::raw(" navigate  "),
+                Span::styled("enter", Style::default().fg(Color::Cyan)),
+                Span::raw(" open  "),
+                Span::styled("ctrl-n", Style::default().fg(Color::Cyan)),
+                Span::raw(" new  "),
+                Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
+                Span::raw(" switch store  "),
+                Span::styled("?", Style::default().fg(Color::Cyan)),
+                Span::raw(" help  "),
+                Span::styled("esc", Style::default().fg(Color::Cyan)),
+                Span::raw(" quit"),
+            ])
+        };
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 
@@ -256,9 +331,10 @@ impl SearchView {
             ("↑/↓", "navigate"),
             ("enter", "open selection"),
             ("backspace", "delete char"),
+            ("ctrl-n", "new secret"),
+            ("ctrl-s", "switch store"),
             ("?", "toggle this help"),
-            ("esc", "back to dashboard"),
-            ("ctrl-c", "quit"),
+            ("esc / ctrl-c", "quit"),
         ]
     }
 
@@ -285,6 +361,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 
     fn seeded_store() -> TempDir {
@@ -354,11 +434,11 @@ mod tests {
     }
 
     #[test]
-    fn esc_emits_back_action() {
+    fn esc_emits_quit_action() {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        assert!(matches!(view.on_key(key(KeyCode::Esc)), SearchAction::Back));
+        assert!(matches!(view.on_key(key(KeyCode::Esc)), SearchAction::Quit));
     }
 
     #[test]
@@ -398,5 +478,27 @@ mod tests {
         assert_eq!(view.list_state.selected(), Some(2));
         view.on_key(key(KeyCode::Down));
         assert_eq!(view.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_n_emits_new_secret_action() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        assert!(matches!(
+            view.on_key(ctrl('n')),
+            SearchAction::NewSecret
+        ));
+    }
+
+    #[test]
+    fn ctrl_s_opens_store_picker_overlay() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        assert!(view.picker.is_none());
+        let action = view.on_key(ctrl('s'));
+        assert!(matches!(action, SearchAction::None));
+        assert!(view.picker.is_some());
     }
 }

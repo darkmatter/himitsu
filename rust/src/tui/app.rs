@@ -1,32 +1,25 @@
-//! Top-level TUI router for the dashboard loop.
+//! Top-level TUI router for the main loop.
 //!
 //! The init wizard has its own standalone event loop in [`crate::tui::run_init_flow`];
-//! this [`App`] wraps the post-init views (dashboard, search) and routes key
-//! events between them based on the action each view returns.
+//! this [`App`] wraps the post-init views (search, viewer, new-secret) and
+//! routes key events between them based on the action each view returns.
+//!
+//! Search is the root view: Esc quits, every non-search view pops back to a
+//! fresh search view.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 
 use crate::cli::Context;
-use crate::tui::views::dashboard::{DashboardAction, DashboardView};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
 
 enum View {
-    Dashboard(DashboardView),
     Search(SearchView),
     SecretViewer(SecretViewerView),
     NewSecret(NewSecretView),
-}
-
-/// Which view the user was on before opening the secret viewer — controls
-/// where `Esc` from the viewer pops them back to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewerParent {
-    Dashboard,
-    Search,
 }
 
 /// Intent emitted by [`App::on_key`] when a view needs the outer event
@@ -43,7 +36,6 @@ pub struct App {
     pub should_quit: bool,
     ctx: Context,
     view: View,
-    viewer_parent: ViewerParent,
     /// Modal help overlay. When `Some`, it swallows all key events until
     /// dismissed (Esc or `?`). See [`crate::tui::views::help`].
     help: Option<HelpView>,
@@ -54,9 +46,8 @@ impl App {
         let ctx_owned = clone_ctx(ctx);
         Self {
             should_quit: false,
-            view: View::Dashboard(DashboardView::new(&ctx_owned)),
+            view: View::Search(SearchView::new(&ctx_owned)),
             ctx: ctx_owned,
-            viewer_parent: ViewerParent::Search,
             help: None,
         }
     }
@@ -79,91 +70,57 @@ impl App {
         }
 
         match &mut self.view {
-            View::Dashboard(dash) => match dash.on_key(key) {
-                DashboardAction::None => {}
-                DashboardAction::Quit => self.should_quit = true,
-                DashboardAction::EnterSearch => {
-                    self.view = View::Search(SearchView::new(&self.ctx));
-                }
-                DashboardAction::OpenViewer(r) => {
-                    self.viewer_parent = ViewerParent::Dashboard;
-                    self.view = View::SecretViewer(SecretViewerView::new(
-                        &self.ctx,
-                        r.store,
-                        r.store_path,
-                        r.path,
-                    ));
-                }
-                DashboardAction::SwitchStore(path) => {
-                    self.ctx.store = path;
-                    self.view = View::Dashboard(DashboardView::new(&self.ctx));
-                }
-                DashboardAction::NewSecret => {
-                    let default_env = dash.selected_env();
-                    self.view =
-                        View::NewSecret(NewSecretView::new(&self.ctx, default_env));
-                }
-            },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
                 SearchAction::Quit => self.should_quit = true,
-                SearchAction::Back => {
-                    self.view = View::Dashboard(DashboardView::new(&self.ctx));
-                }
                 SearchAction::OpenViewer(r) => {
-                    self.viewer_parent = ViewerParent::Search;
                     self.view = View::SecretViewer(SecretViewerView::new(
                         &self.ctx,
                         r.store,
                         r.store_path,
                         r.path,
                     ));
+                }
+                SearchAction::NewSecret => {
+                    self.view = View::NewSecret(NewSecretView::new(&self.ctx, None));
+                }
+                SearchAction::SwitchStore(path) => {
+                    self.ctx.store = path;
+                    self.view = View::Search(SearchView::new(&self.ctx));
                 }
             },
             View::SecretViewer(viewer) => match viewer.on_key(key) {
                 SecretViewerAction::None => {}
                 SecretViewerAction::Quit => self.should_quit = true,
                 SecretViewerAction::Back => {
-                    // Pop back to whichever view opened the viewer.
-                    self.view = match self.viewer_parent {
-                        ViewerParent::Dashboard => {
-                            View::Dashboard(DashboardView::new(&self.ctx))
-                        }
-                        ViewerParent::Search => View::Search(SearchView::new(&self.ctx)),
-                    };
+                    self.view = View::Search(SearchView::new(&self.ctx));
                 }
                 SecretViewerAction::EditValue(plain) => {
                     return Some(AppIntent::EditSecretValue(plain));
                 }
                 SecretViewerAction::Deleted => {
-                    // Pop back to whichever view opened the viewer, fresh so
-                    // the (now missing) secret drops out of listings.
-                    self.view = match self.viewer_parent {
-                        ViewerParent::Dashboard => {
-                            View::Dashboard(DashboardView::new(&self.ctx))
-                        }
-                        ViewerParent::Search => View::Search(SearchView::new(&self.ctx)),
-                    };
+                    // Rebuild search fresh so the (now missing) secret
+                    // drops out of listings.
+                    self.view = View::Search(SearchView::new(&self.ctx));
                 }
             },
             View::NewSecret(form) => match form.on_key(key) {
                 NewSecretAction::None => {}
                 NewSecretAction::Quit => self.should_quit = true,
                 NewSecretAction::Cancel => {
-                    let mut dash = DashboardView::new(&self.ctx);
-                    dash.set_status_info("create cancelled");
-                    self.view = View::Dashboard(dash);
+                    let mut search = SearchView::new(&self.ctx);
+                    search.set_status_info("create cancelled");
+                    self.view = View::Search(search);
                 }
                 NewSecretAction::Created(path) => {
-                    let mut dash = DashboardView::new(&self.ctx);
-                    dash.refresh_and_select(Some(&path));
-                    dash.set_status_info(format!("created {path}"));
-                    self.view = View::Dashboard(dash);
+                    let mut search = SearchView::new(&self.ctx);
+                    search.set_status_info(format!("created {path}"));
+                    self.view = View::Search(search);
                 }
                 NewSecretAction::Failed(err) => {
-                    let mut dash = DashboardView::new(&self.ctx);
-                    dash.set_status_error(format!("create failed: {err}"));
-                    self.view = View::Dashboard(dash);
+                    let mut search = SearchView::new(&self.ctx);
+                    search.set_status_error(format!("create failed: {err}"));
+                    self.view = View::Search(search);
                 }
             },
         }
@@ -180,7 +137,6 @@ impl App {
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
         match &mut self.view {
-            View::Dashboard(dash) => dash.draw(frame),
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
             View::NewSecret(form) => form.draw(frame),
@@ -195,9 +151,6 @@ impl App {
     /// currently active.
     fn help_for_current_view(&self) -> HelpView {
         match &self.view {
-            View::Dashboard(_) => {
-                HelpView::new(DashboardView::help_entries(), DashboardView::help_title())
-            }
             View::Search(_) => {
                 HelpView::new(SearchView::help_entries(), SearchView::help_title())
             }

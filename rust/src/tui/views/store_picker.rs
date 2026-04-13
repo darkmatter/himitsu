@@ -15,7 +15,7 @@
 //! or a full multi-context UX is a separate, larger effort and is out of
 //! scope for this bead (see US-013 notes).
 //!
-//! The picker is a self-contained state machine, hosted by `DashboardView`
+//! The picker is a self-contained state machine, hosted by `SearchView`
 //! as an optional overlay. Tests exercise the state machine directly without
 //! spinning up a real terminal — see the `tests` module below.
 
