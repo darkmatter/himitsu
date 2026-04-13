@@ -18,10 +18,19 @@ enum View {
     SecretViewer(SecretViewerView),
 }
 
+/// Which view the user was on before opening the secret viewer — controls
+/// where `Esc` from the viewer pops them back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewerParent {
+    Dashboard,
+    Search,
+}
+
 pub struct App {
     pub should_quit: bool,
     ctx: Context,
     view: View,
+    viewer_parent: ViewerParent,
 }
 
 impl App {
@@ -31,6 +40,7 @@ impl App {
             should_quit: false,
             view: View::Dashboard(DashboardView::new(&ctx_owned)),
             ctx: ctx_owned,
+            viewer_parent: ViewerParent::Search,
         }
     }
 
@@ -42,6 +52,15 @@ impl App {
                 DashboardAction::EnterSearch => {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
+                DashboardAction::OpenViewer(r) => {
+                    self.viewer_parent = ViewerParent::Dashboard;
+                    self.view = View::SecretViewer(SecretViewerView::new(
+                        &self.ctx,
+                        r.store,
+                        r.store_path,
+                        r.path,
+                    ));
+                }
             },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
@@ -50,6 +69,7 @@ impl App {
                     self.view = View::Dashboard(DashboardView::new(&self.ctx));
                 }
                 SearchAction::OpenViewer(r) => {
+                    self.viewer_parent = ViewerParent::Search;
                     self.view = View::SecretViewer(SecretViewerView::new(
                         &self.ctx,
                         r.store,
@@ -62,9 +82,13 @@ impl App {
                 SecretViewerAction::None => {}
                 SecretViewerAction::Quit => self.should_quit = true,
                 SecretViewerAction::Back => {
-                    // "Previous view" is the search view — rebuild it so the
-                    // query is fresh (we don't retain search state on purpose).
-                    self.view = View::Search(SearchView::new(&self.ctx));
+                    // Pop back to whichever view opened the viewer.
+                    self.view = match self.viewer_parent {
+                        ViewerParent::Dashboard => {
+                            View::Dashboard(DashboardView::new(&self.ctx))
+                        }
+                        ViewerParent::Search => View::Search(SearchView::new(&self.ctx)),
+                    };
                 }
             },
         }
