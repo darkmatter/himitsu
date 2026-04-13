@@ -25,7 +25,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::cli::{rekey, Context};
-use crate::crypto::age;
+use crate::crypto::{age, secret_value};
+use crate::proto::SecretValue;
 use crate::remote::store::{self, SecretMeta};
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
@@ -229,7 +230,21 @@ impl SecretViewerView {
     fn persist_edited(&mut self, plaintext: &str) -> crate::error::Result<()> {
         let recipients =
             age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
-        let ciphertext = age::encrypt(plaintext.as_bytes(), &recipients)?;
+        // Preserve existing metadata (totp/url/description/expires_at) when
+        // the user edits only the value. Fall back to a bare SecretValue if
+        // the original envelope was a legacy raw payload.
+        let existing = self.read_decoded().unwrap_or_default();
+        let sv = SecretValue {
+            data: plaintext.as_bytes().to_vec(),
+            content_type: String::new(),
+            annotations: Default::default(),
+            totp: existing.totp,
+            url: existing.url,
+            expires_at: existing.expires_at,
+            description: existing.description,
+        };
+        let wire = secret_value::encode(&sv);
+        let ciphertext = age::encrypt(&wire, &recipients)?;
         store::write_secret(&self.store_path, &self.path, &ciphertext)?;
         if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
             self.meta = meta;
@@ -306,10 +321,15 @@ impl SecretViewerView {
     }
 
     fn decrypt(&self) -> crate::error::Result<String> {
+        let decoded = self.read_decoded()?;
+        Ok(String::from_utf8_lossy(&decoded.data).into_owned())
+    }
+
+    fn read_decoded(&self) -> crate::error::Result<secret_value::Decoded> {
         let ciphertext = store::read_secret(&self.store_path, &self.path)?;
         let identity = age::read_identity(&self.ctx.key_path())?;
         let plain = age::decrypt(&ciphertext, &identity)?;
-        Ok(String::from_utf8_lossy(&plain).into_owned())
+        Ok(secret_value::decode(&plain))
     }
 
     // ── Drawing ────────────────────────────────────────────────────────

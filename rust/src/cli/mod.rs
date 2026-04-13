@@ -2,6 +2,7 @@ pub mod check;
 pub mod codegen;
 pub mod context;
 pub mod decrypt;
+pub mod duration;
 pub mod encrypt;
 pub mod generate;
 pub mod get;
