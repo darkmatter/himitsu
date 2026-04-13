@@ -41,13 +41,21 @@ enum StatusKind {
     Error,
 }
 
-/// A row in the rendered results list. Folders are visual-only — they group
-/// adjacent secrets that share a top-level path prefix and display a child
-/// count. They are never selectable; navigation steps over them.
+/// A row in the rendered results list. Store and Folder rows are visual-only
+/// headers — they group the secrets that follow and are never selectable;
+/// navigation steps over them. Stores group by origin (`org/repo` slug or
+/// local path); folders group adjacent secrets sharing a top-level path
+/// prefix within a store.
 #[derive(Debug, Clone)]
 enum Row {
+    Store { name: String, count: usize },
     Folder { name: String, count: usize },
-    Secret { result: SearchResult, indent: bool },
+    Secret {
+        result: SearchResult,
+        /// Indentation depth in list-item cells (2 spaces per level). Level
+        /// 0 = flat, 1 = under one header (folder or store), 2 = under both.
+        indent: usize,
+    },
 }
 
 pub struct SearchView {
@@ -172,7 +180,7 @@ impl SearchView {
             .and_then(|i| self.rows.get(i))
             .and_then(|row| match row {
                 Row::Secret { result, .. } => Some(result),
-                Row::Folder { .. } => None,
+                Row::Folder { .. } | Row::Store { .. } => None,
             })
     }
 
@@ -277,7 +285,9 @@ impl SearchView {
     }
 
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" results ");
+        let outer = Block::default().borders(Borders::ALL).title(" results ");
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
 
         if self.rows.is_empty() {
             let msg = if self.query.is_empty() {
@@ -288,37 +298,83 @@ impl SearchView {
             let p = Paragraph::new(Line::from(Span::styled(
                 msg,
                 Style::default().fg(Color::DarkGray),
-            )))
-            .block(block);
-            frame.render_widget(p, area);
+            )));
+            frame.render_widget(p, inner);
             return;
         }
 
+        // When multi-store grouping is active the store name is already in
+        // the header row and we drop the redundant per-row store column.
+        let has_store_headers = self.rows.iter().any(|r| matches!(r, Row::Store { .. }));
+
+        // Column widths are computed against the widest secret row and the
+        // header label itself, so short paths still leave room for "PATH" /
+        // "STORE" to read cleanly.
         let path_w = self
             .rows
             .iter()
             .filter_map(|row| match row {
-                Row::Secret { result, indent } => {
-                    Some(result.path.len() + if *indent { 2 } else { 0 })
-                }
+                Row::Secret { result, indent } => Some(result.path.len() + indent * 2),
                 _ => None,
             })
             .max()
-            .unwrap_or(0);
-        let store_w = self
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                Row::Secret { result, .. } => Some(result.store.len()),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max("PATH".len());
+        let store_w = if has_store_headers {
+            0
+        } else {
+            self.rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Secret { result, .. } => Some(result.store.len()),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .max("STORE".len())
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+
+        let header_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD);
+        let mut header_spans = vec![Span::styled(
+            format!("{:<path_w$}  ", "PATH", path_w = path_w),
+            header_style,
+        )];
+        if !has_store_headers {
+            header_spans.push(Span::styled(
+                format!("{:<store_w$}  ", "STORE", store_w = store_w),
+                header_style,
+            ));
+        }
+        header_spans.push(Span::styled("CREATED", header_style));
+        frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
         let items: Vec<ListItem> = self
             .rows
             .iter()
             .map(|row| match row {
+                Row::Store { name, count } => {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("■ {name}"),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("({count})"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]);
+                    ListItem::new(line)
+                }
                 Row::Folder { name, count } => {
                     let line = Line::from(vec![
                         Span::styled(
@@ -336,29 +392,32 @@ impl SearchView {
                     ListItem::new(line)
                 }
                 Row::Secret { result, indent } => {
-                    let prefix = if *indent { "  " } else { "" };
+                    let prefix = "  ".repeat(*indent);
                     let created = result.created_at.as_deref().unwrap_or("-");
                     let padded_path = format!("{prefix}{}", result.path);
-                    let line = Line::from(vec![
-                        Span::raw(format!("{padded_path:<path_w$}  ")),
-                        Span::styled(
+                    let mut spans = vec![Span::raw(format!("{padded_path:<path_w$}  "))];
+                    if !has_store_headers {
+                        spans.push(Span::styled(
                             format!("{:<store_w$}  ", result.store, store_w = store_w),
                             Style::default().fg(Color::Cyan),
-                        ),
-                        Span::styled(created.to_string(), Style::default().fg(Color::DarkGray)),
-                    ]);
-                    ListItem::new(line)
+                        ));
+                    }
+                    spans.push(Span::styled(
+                        created.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    ListItem::new(Line::from(spans))
                 }
             })
             .collect();
 
-        let list = List::new(items).block(block).highlight_style(
+        let list = List::new(items).highlight_style(
             Style::default()
                 .bg(Color::Cyan)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         );
-        frame.render_stateful_widget(list, area, &mut self.list_state);
+        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -388,16 +447,56 @@ impl SearchView {
     }
 }
 
-/// Group a flat list of results into rows with folder headers, where a
-/// "folder" is any top-level path segment that contains ≥ 2 leaves. Single
+/// Group a flat list of results into rows.
+///
+/// When results span **multiple stores**, rows are partitioned per-store with
+/// a `Store` header row per bucket; within each bucket we apply path-prefix
+/// folder grouping. When only one store is present we fall back to the
+/// single-store layout (no store header, flat path-prefix grouping).
+///
+/// A "folder" is any top-level path segment that contains ≥ 2 leaves. Single
 /// leaves render flat. Folders always sort before singles; within each group
 /// entries are alphabetized so the layout is stable regardless of input order.
 fn build_rows(results: &[SearchResult]) -> Vec<Row> {
+    use std::collections::BTreeMap;
+
+    // Bucket by store, preserving deterministic alphabetical order so the
+    // rendering is stable across calls.
+    let mut by_store: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
+    for r in results {
+        by_store.entry(r.store.clone()).or_default().push(r.clone());
+    }
+
+    let multi_store = by_store.len() > 1;
+    let mut rows = Vec::new();
+    for (store_name, bucket) in by_store {
+        if multi_store {
+            rows.push(Row::Store {
+                name: store_name,
+                count: bucket.len(),
+            });
+        }
+        append_folder_grouped_rows(&mut rows, bucket, multi_store);
+    }
+    rows
+}
+
+/// Append `bucket` rows to `rows` applying path-prefix folder grouping.
+///
+/// When `under_store_header` is true, every row gets an extra level of
+/// indentation so the store header visually owns its children.
+fn append_folder_grouped_rows(
+    rows: &mut Vec<Row>,
+    bucket: Vec<SearchResult>,
+    under_store_header: bool,
+) {
     use std::collections::HashMap;
+
+    let store_indent: usize = if under_store_header { 1 } else { 0 };
 
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
-    for r in results {
+    for r in bucket {
         let prefix = match r.path.split_once('/') {
             Some((head, _)) => head.to_string(),
             None => r.path.clone(),
@@ -405,7 +504,7 @@ fn build_rows(results: &[SearchResult]) -> Vec<Row> {
         if !groups.contains_key(&prefix) {
             order.push(prefix.clone());
         }
-        groups.entry(prefix).or_default().push(r.clone());
+        groups.entry(prefix).or_default().push(r);
     }
 
     let mut folders: Vec<(String, Vec<SearchResult>)> = Vec::new();
@@ -421,21 +520,25 @@ fn build_rows(results: &[SearchResult]) -> Vec<Row> {
     folders.sort_by(|a, b| a.0.cmp(&b.0));
     singles.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut rows = Vec::new();
     for (name, mut items) in folders {
         let count = items.len();
         rows.push(Row::Folder { name, count });
         items.sort_by(|a, b| a.path.cmp(&b.path));
         for result in items {
-            rows.push(Row::Secret { result, indent: true });
+            rows.push(Row::Secret {
+                result,
+                indent: store_indent + 1,
+            });
         }
     }
     for (_, items) in singles {
         for result in items {
-            rows.push(Row::Secret { result, indent: false });
+            rows.push(Row::Secret {
+                result,
+                indent: store_indent,
+            });
         }
     }
-    rows
 }
 
 // ── Help overlay integration (US-012) ─────────────────────────────────
@@ -531,9 +634,10 @@ mod tests {
             .rows
             .iter()
             .map(|r| match r {
+                Row::Store { .. } => "store",
                 Row::Folder { .. } => "folder",
-                Row::Secret { indent: true, .. } => "child",
-                Row::Secret { indent: false, .. } => "leaf",
+                Row::Secret { indent, .. } if *indent > 0 => "child",
+                Row::Secret { .. } => "leaf",
             })
             .collect();
         assert_eq!(kinds, vec!["folder", "child", "child", "leaf"]);
@@ -634,6 +738,132 @@ mod tests {
             view.on_key(ctrl('n')),
             SearchAction::NewSecret
         ));
+    }
+
+    #[test]
+    fn column_headers_are_rendered_above_results() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| view.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
+        assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
+        assert!(
+            rendered.contains("CREATED"),
+            "missing CREATED header: {rendered}"
+        );
+    }
+
+    /// Seed two stores under `<tmp>/state/stores/<org>/<repo>/.himitsu/secrets/`
+    /// so `collect_stores()` walks `stores_dir` and returns both.
+    fn seeded_multi_store() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let state = dir.path().join("state");
+        let stores = state.join("stores");
+
+        let alpha = stores.join("acme/alpha");
+        let beta = stores.join("acme/beta");
+        std::fs::create_dir_all(alpha.join(".himitsu/secrets/prod")).unwrap();
+        std::fs::create_dir_all(beta.join(".himitsu/secrets/prod")).unwrap();
+
+        let envelope = "value: ENC[age,placeholder]\nhimitsu:\n  created_at: '2026-01-01'\n  lastmodified: '2026-01-01T00:00:00Z'\n  age: []\n  history: []\n";
+        std::fs::write(alpha.join(".himitsu/secrets/prod/API_KEY.yaml"), envelope).unwrap();
+        std::fs::write(
+            alpha.join(".himitsu/secrets/prod/DATABASE_URL.yaml"),
+            envelope,
+        )
+        .unwrap();
+        std::fs::write(beta.join(".himitsu/secrets/prod/API_KEY.yaml"), envelope).unwrap();
+
+        // ctx.store will point at an empty dir so the explicit-store bucket
+        // adds nothing and we rely entirely on the stores_dir scan.
+        std::fs::create_dir_all(state.join("empty")).unwrap();
+        dir
+    }
+
+    fn multi_ctx(root: &std::path::Path) -> Context {
+        let state = root.join("state");
+        Context {
+            data_dir: PathBuf::new(),
+            state_dir: state.clone(),
+            store: state.join("empty"),
+            recipients_path: None,
+        }
+    }
+
+    #[test]
+    fn multi_store_grouped_by_store_header() {
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
+        let view = SearchView::new(&ctx);
+
+        // Three results across two stores: alpha(2) + beta(1).
+        assert_eq!(view.results.len(), 3);
+
+        // Row 0: store header for acme/alpha (alphabetically first).
+        match &view.rows[0] {
+            Row::Store { name, count } => {
+                assert_eq!(name, "acme/alpha");
+                assert_eq!(*count, 2);
+            }
+            other => panic!("row 0 expected Store, got {other:?}"),
+        }
+
+        // Next: folder header "prod/" + two children under alpha (indented).
+        assert!(matches!(view.rows[1], Row::Folder { ref name, count: 2 } if name == "prod"));
+        match &view.rows[2] {
+            Row::Secret { result, indent } => {
+                assert_eq!(result.store, "acme/alpha");
+                assert!(*indent >= 2, "alpha child indent >= 2 (got {indent})");
+            }
+            other => panic!("row 2 expected Secret, got {other:?}"),
+        }
+
+        // Beta store header appears later; its secret is indented >= 1.
+        let beta_idx = view
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Store { name, .. } if name == "acme/beta"))
+            .expect("acme/beta store header missing");
+        match &view.rows[beta_idx + 1] {
+            Row::Secret { result, indent } => {
+                assert_eq!(result.store, "acme/beta");
+                assert!(*indent >= 1);
+            }
+            other => panic!("row after beta header expected Secret, got {other:?}"),
+        }
+
+        // Initial selection lands on a secret, not a header.
+        let sel = view.list_state.selected().unwrap();
+        assert!(matches!(view.rows[sel], Row::Secret { .. }));
+    }
+
+    #[test]
+    fn multi_store_nav_skips_headers() {
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
+        let mut view = SearchView::new(&ctx);
+        for _ in 0..view.rows.len() * 2 {
+            view.on_key(key(KeyCode::Down));
+            let sel = view.list_state.selected().unwrap();
+            assert!(
+                matches!(view.rows[sel], Row::Secret { .. }),
+                "Down landed on non-secret row {sel}"
+            );
+        }
     }
 
     #[test]
