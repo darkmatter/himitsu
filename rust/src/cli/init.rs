@@ -36,10 +36,10 @@ pub struct InitArgs {
 
 pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
     // ── TUI wizard mode ───────────────────────────────────────────────────
-    // Launch the interactive TUI when stdout is a terminal and the caller
-    // hasn't opted out via --json or --no-tui.
+    // Launch the interactive ratatui wizard when stdout is a terminal and the
+    // caller hasn't opted out via --json or --no-tui.
     if !args.json && !args.no_tui && std::io::stdout().is_terminal() {
-        return run_wizard(ctx);
+        return crate::tui::run_init_flow();
     }
 
     // ── Handle --home override ────────────────────────────────────────────
@@ -66,7 +66,7 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
 
 /// Core init logic, separated so the `--home` override path can call it with
 /// a patched [`Context`].
-fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
+pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
     let data_dir = &ctx.data_dir;
     let state_dir = &ctx.state_dir;
 
@@ -219,107 +219,18 @@ fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-// ── Interactive wizard ─────────────────────────────────────────────────────
+// ── Interactive wizard helpers ─────────────────────────────────────────────
 
-/// Run the interactive setup wizard using cliclack prompts.
-fn run_wizard(ctx: &Context) -> Result<()> {
-    cliclack::intro(" himitsu setup ")?;
-
-    // ── 1. Himitsu home ───────────────────────────────────────────────────
-    let default_home = ctx.data_dir.to_string_lossy().to_string();
-    let home: String = cliclack::input("Data directory")
-        .placeholder(&default_home)
-        .default_input(&default_home)
-        .validate(|s: &String| {
-            if s.trim().is_empty() {
-                Err("Please enter a directory path.")
-            } else {
-                Ok(())
-            }
-        })
-        .interact()?;
-
-    // ── 2. Remote store ───────────────────────────────────────────────────
-    let suggested = detect_github_username()
+/// Build a default remote slug suggestion for the init wizard.
+///
+/// Resolution order: GitHub org from the current repo's `origin` remote →
+/// `git config github.user` → `$USER`. Returns an empty string if nothing
+/// plausible can be discovered.
+pub(crate) fn suggested_remote_slug() -> String {
+    detect_github_username()
         .or_else(|| std::env::var("USER").ok().filter(|u| !u.is_empty()))
         .map(|u| format!("{u}/secrets"))
-        .unwrap_or_default();
-
-    let remote: String = cliclack::input("Default store on GitHub (blank to skip)")
-        .placeholder("org/secrets")
-        .default_input(&suggested)
-        .validate(|s: &String| {
-            let s = s.trim();
-            if s.is_empty() {
-                return Ok(());
-            }
-            config::validate_remote_slug(s)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })
-        .interact()?;
-
-    // ── 3. Key provider ───────────────────────────────────────────────────
-    let key_provider: KeyProvider = if crate::keyring::macos::MacOSKeychain::is_available() {
-        cliclack::select("Key storage backend")
-            .item(
-                KeyProvider::Disk,
-                "Disk",
-                "Keys stored in the data directory",
-            )
-            .item(
-                KeyProvider::MacosKeychain,
-                "macOS Keychain",
-                "Stored via the `security` CLI",
-            )
-            .interact()?
-    } else {
-        KeyProvider::Disk
-    };
-
-    // ── Persist home override if it changed ───────────────────────────────
-    if home.trim() != ctx.data_dir.to_string_lossy().as_ref() {
-        let cfg_path = config::config_path();
-        let mut cfg = config::Config::load(&cfg_path)?;
-        cfg.data_dir = Some(home.trim().to_string());
-        cfg.save(&cfg_path)?;
-    }
-
-    let wizard_ctx = Context {
-        data_dir: config::data_dir(),
-        state_dir: config::state_dir(),
-        store: ctx.store.clone(),
-        recipients_path: ctx.recipients_path.clone(),
-    };
-
-    let name = {
-        let r = remote.trim().to_string();
-        if r.is_empty() {
-            None
-        } else {
-            Some(r)
-        }
-    };
-    let provider = if key_provider == KeyProvider::Disk {
-        None
-    } else {
-        Some(key_provider.to_string())
-    };
-
-    run_init(
-        InitArgs {
-            json: false,
-            name,
-            home: None, // already persisted above
-            key_provider: provider,
-            no_tui: true,
-        },
-        &wizard_ctx,
-    )?;
-
-    cliclack::outro("Ready. Use `himitsu set <env> <key> <value>` to add your first secret.")?;
-
-    Ok(())
+        .unwrap_or_default()
 }
 
 /// Try to discover a GitHub-style username for the default remote suggestion.

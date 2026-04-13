@@ -319,7 +319,23 @@ impl Cli {
                 "stdout is not a terminal — run a subcommand (try `himitsu --help`).".into(),
             ));
         }
-        crate::tui::run()
+
+        let data_dir = crate::config::data_dir();
+        let state_dir = crate::config::state_dir();
+
+        // The dashboard is read-only: if no store resolves (none configured,
+        // ambiguous, etc.) we still open and render an empty state rather
+        // than erroring out.
+        let store = crate::config::resolve_store(None).unwrap_or_default();
+        let recipients_path = load_recipients_path_override(&store);
+
+        let ctx = Context {
+            data_dir,
+            state_dir,
+            store,
+            recipients_path,
+        };
+        crate::tui::run(&ctx)
     }
 }
 

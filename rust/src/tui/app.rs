@@ -1,60 +1,35 @@
-//! Application state and top-level render/input dispatch.
+//! Top-level TUI router for the dashboard loop.
 //!
-//! Individual views live alongside this file; for now the scaffold only
-//! implements a placeholder screen that US-003/US-004/etc. will flesh out.
+//! The init wizard has its own standalone event loop in [`crate::tui::run_init_flow`];
+//! this [`App`] wraps the [`DashboardView`] once himitsu is initialized.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use crossterm::event::KeyEvent;
 use ratatui::Frame;
 
-#[derive(Debug, Default)]
+use crate::cli::Context;
+use crate::tui::views::dashboard::DashboardView;
+
 pub struct App {
     pub should_quit: bool,
+    dashboard: DashboardView,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn on_key(&mut self, key: KeyEvent) {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), _) => self.should_quit = true,
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
-            _ => {}
+    pub fn new(ctx: &Context) -> Self {
+        Self {
+            should_quit: false,
+            dashboard: DashboardView::new(ctx),
         }
     }
 
-    pub fn draw(&self, frame: &mut Frame<'_>) {
-        let area = frame.area();
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
+    pub fn on_key(&mut self, key: KeyEvent) {
+        self.dashboard.on_key(key);
+        if self.dashboard.should_quit {
+            self.should_quit = true;
+        }
+    }
 
-        let header = Paragraph::new(Span::styled(
-            " himitsu ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        frame.render_widget(header, layout[0]);
-
-        let body = Paragraph::new(vec![
-            Line::from(""),
-            Line::from("  ratatui scaffold"),
-            Line::from(""),
-            Line::from("  Views land in US-003..US-007."),
-        ])
-        .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(body, layout[1]);
-
-        let footer = Paragraph::new(Span::raw("q quit  ctrl-c quit")).alignment(Alignment::Left);
-        frame.render_widget(footer, layout[2]);
+    pub fn draw(&mut self, frame: &mut Frame<'_>) {
+        self.dashboard.draw(frame);
     }
 }
