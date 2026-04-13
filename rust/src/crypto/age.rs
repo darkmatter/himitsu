@@ -94,27 +94,17 @@ pub fn read_identity(path: &Path) -> Result<Identity> {
 }
 
 /// Read recipient public keys from a directory.
-/// Reads all .pub files and parses each as an age recipient.
+///
+/// Walks the directory recursively so both the flat layout
+/// (`recipients/<name>.pub`) and any legacy group subdirectories
+/// (`recipients/<group>/<name>.pub`) are collected.
 pub fn read_recipients_from_dir(dir: &Path) -> Result<Vec<Recipient>> {
     let mut recipients = vec![];
-    if !dir.exists() {
-        return Ok(recipients);
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "pub") {
-            let contents = std::fs::read_to_string(&path)?;
-            let trimmed = contents.trim();
-            if !trimmed.is_empty() {
-                recipients.push(parse_recipient(trimmed)?);
-            }
-        }
-    }
+    collect_recipients_recursive(dir, &mut recipients)?;
     Ok(recipients)
 }
 
-/// Collect all recipients across all groups, respecting an optional
+/// Collect all recipients in a store, respecting an optional
 /// `recipients_path` override.
 ///
 /// When `recipients_path` is `Some(p)`, the recipients directory is resolved
@@ -125,34 +115,41 @@ pub fn collect_recipients(
     recipients_path: Option<&str>,
 ) -> Result<Vec<Recipient>> {
     let dir = crate::remote::store::recipients_dir_with_override(store_path, recipients_path);
-    collect_recipients_from_groups(&dir)
+    let mut all = vec![];
+    collect_recipients_recursive(&dir, &mut all)?;
+    // Deduplicate by string representation.
+    all.sort_by_key(|a| a.to_string());
+    all.dedup_by(|a, b| a.to_string() == b.to_string());
+    Ok(all)
 }
 
-/// Collect all recipients across all groups in a store's `.himitsu/recipients/` directory.
-///
-/// This is a backwards-compatible wrapper around [`collect_recipients`] with no
-/// path override.
+/// Collect all recipients in a store's `.himitsu/recipients/` directory.
+#[allow(dead_code)]
 pub fn collect_all_recipients(store_path: &Path) -> Result<Vec<Recipient>> {
     collect_recipients(store_path, None)
 }
 
-/// (Internal) Collect all recipients from group subdirectories inside `recipients_dir`.
-fn collect_recipients_from_groups(recipients_dir: &Path) -> Result<Vec<Recipient>> {
-    let mut all = vec![];
-    if !recipients_dir.exists() {
-        return Ok(all);
+/// (Internal) Walk `dir` recursively and collect every `.pub` file as a
+/// recipient, tolerating both the flat layout and legacy group subdirectories.
+fn collect_recipients_recursive(dir: &Path, out: &mut Vec<Recipient>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
     }
-    for entry in std::fs::read_dir(recipients_dir)? {
+    for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let group_recipients = read_recipients_from_dir(&entry.path())?;
-            all.extend(group_recipients);
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_recipients_recursive(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "pub") {
+            let contents = std::fs::read_to_string(&path)?;
+            let trimmed = contents.trim();
+            if !trimmed.is_empty() {
+                out.push(parse_recipient(trimmed)?);
+            }
         }
     }
-    // Deduplicate by string representation
-    all.sort_by_key(|a| a.to_string());
-    all.dedup_by(|a, b| a.to_string() == b.to_string());
-    Ok(all)
+    Ok(())
 }
 
 /// Resolve the private key for a given scope.
