@@ -9,6 +9,7 @@ use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::tui::views::dashboard::{DashboardAction, DashboardView};
+use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
 
@@ -16,6 +17,7 @@ enum View {
     Dashboard(DashboardView),
     Search(SearchView),
     SecretViewer(SecretViewerView),
+    NewSecret(NewSecretView),
 }
 
 pub struct App {
@@ -42,6 +44,11 @@ impl App {
                 DashboardAction::EnterSearch => {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
+                DashboardAction::NewSecret => {
+                    let default_env = dash.selected_env();
+                    self.view =
+                        View::NewSecret(NewSecretView::new(&self.ctx, default_env));
+                }
             },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
@@ -67,6 +74,26 @@ impl App {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
             },
+            View::NewSecret(form) => match form.on_key(key) {
+                NewSecretAction::None => {}
+                NewSecretAction::Quit => self.should_quit = true,
+                NewSecretAction::Cancel => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.set_status_info("create cancelled");
+                    self.view = View::Dashboard(dash);
+                }
+                NewSecretAction::Created(path) => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.refresh_and_select(Some(&path));
+                    dash.set_status_info(format!("created {path}"));
+                    self.view = View::Dashboard(dash);
+                }
+                NewSecretAction::Failed(err) => {
+                    let mut dash = DashboardView::new(&self.ctx);
+                    dash.set_status_error(format!("create failed: {err}"));
+                    self.view = View::Dashboard(dash);
+                }
+            },
         }
     }
 
@@ -75,6 +102,7 @@ impl App {
             View::Dashboard(dash) => dash.draw(frame),
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
+            View::NewSecret(form) => form.draw(frame),
         }
     }
 }
