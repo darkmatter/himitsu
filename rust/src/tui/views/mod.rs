@@ -4,3 +4,4 @@ pub mod dashboard;
 pub mod init_wizard;
 pub mod search;
 pub mod secret_viewer;
+pub mod store_picker;

@@ -5,7 +5,7 @@
 //! secret (e.g. `prod/DATABASE_URL` → env `prod`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -16,13 +16,21 @@ use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::remote::store;
+use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Note: this is no longer `Copy` — `SwitchStore` carries a `PathBuf`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DashboardAction {
     None,
     Quit,
     EnterSearch,
+    /// Rebuild the dashboard against a new store checkout at this path
+    /// (US-013). The caller is responsible for constructing a fresh
+    /// `Context` and dashboard view. The switch is in-memory only — no
+    /// config file is written.
+    SwitchStore(PathBuf),
 }
 
 pub struct DashboardView {
@@ -30,6 +38,13 @@ pub struct DashboardView {
     envs: Vec<String>,
     secrets_by_env: BTreeMap<String, Vec<String>>,
     env_state: ListState,
+    /// Cached `ctx.stores_dir()` so the store picker can enumerate checkouts
+    /// without needing a live `Context` reference.
+    stores_dir: PathBuf,
+    /// Current store path, used to mark "current" in the picker.
+    store_path: PathBuf,
+    /// Store picker overlay, `Some` when open.
+    picker: Option<StorePicker>,
 }
 
 impl DashboardView {
@@ -45,16 +60,32 @@ impl DashboardView {
             envs,
             secrets_by_env,
             env_state,
+            stores_dir: ctx.stores_dir(),
+            store_path: ctx.store.clone(),
+            picker: None,
         }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> DashboardAction {
+        // When the picker overlay is open, route all keys to it first.
+        if let Some(picker) = self.picker.as_mut() {
+            match picker.on_key(key) {
+                StorePickerOutcome::Pending => return DashboardAction::None,
+                StorePickerOutcome::Cancelled => {
+                    self.picker = None;
+                    return DashboardAction::None;
+                }
+                StorePickerOutcome::Selected(path) => {
+                    self.picker = None;
+                    return DashboardAction::SwitchStore(path);
+                }
+            }
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => DashboardAction::Quit,
             (KeyCode::Char('q'), _) => DashboardAction::Quit,
             (KeyCode::Char('/'), _) => DashboardAction::EnterSearch,
-            // Esc has no parent view to return to from the dashboard — swallow it.
-            (KeyCode::Esc, _) => DashboardAction::None,
             (KeyCode::Up | KeyCode::Char('k'), _) => {
                 self.select_prev();
                 DashboardAction::None
@@ -63,6 +94,13 @@ impl DashboardView {
                 self.select_next();
                 DashboardAction::None
             }
+            // US-013: `s` opens the store picker overlay.
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                self.picker = Some(StorePicker::new(&self.stores_dir, self.store_path.clone()));
+                DashboardAction::None
+            }
+            // Esc has no parent view to return to from the dashboard — swallow it.
+            (KeyCode::Esc, _) => DashboardAction::None,
             _ => DashboardAction::None,
         }
     }
@@ -108,6 +146,11 @@ impl DashboardView {
         self.draw_header(frame, chunks[0]);
         self.draw_body(frame, chunks[1]);
         self.draw_footer(frame, chunks[2]);
+
+        // Render the store picker overlay last so it sits on top.
+        if let Some(picker) = self.picker.as_mut() {
+            picker.draw(frame);
+        }
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -212,6 +255,8 @@ impl DashboardView {
             Span::raw(" navigate  "),
             Span::styled("/", Style::default().fg(Color::Cyan)),
             Span::raw(" search  "),
+            Span::styled("s", Style::default().fg(Color::Cyan)),
+            Span::raw(" switch store  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit  "),
             Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
@@ -282,6 +327,9 @@ mod tests {
             envs: env_list,
             secrets_by_env,
             env_state,
+            stores_dir: PathBuf::from("/tmp/himitsu-test-stores"),
+            store_path: PathBuf::new(),
+            picker: None,
         }
     }
 
@@ -382,5 +430,59 @@ mod tests {
         let mut view = make_view(&[("prod", &["prod/A"]), ("staging", &["staging/B"])]);
         assert_eq!(view.on_key(press(KeyCode::Down)), DashboardAction::None);
         assert_eq!(view.env_state.selected(), Some(1));
+    }
+
+    // ── US-013: store picker routing ─────────────────────────────────────
+
+    #[test]
+    fn s_key_opens_store_picker_without_emitting_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        assert!(view.picker.is_none());
+        let action = view.on_key(press(KeyCode::Char('s')));
+        assert_eq!(action, DashboardAction::None);
+        assert!(view.picker.is_some());
+    }
+
+    #[test]
+    fn picker_esc_closes_overlay_and_swallows_action() {
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        view.on_key(press(KeyCode::Char('s')));
+        assert!(view.picker.is_some());
+        let action = view.on_key(press(KeyCode::Esc));
+        assert_eq!(action, DashboardAction::None);
+        assert!(view.picker.is_none());
+    }
+
+    #[test]
+    fn picker_emits_switch_store_on_valid_selection() {
+        // Build a real store checkout under a tempdir so the picker has
+        // something valid to enumerate and select.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("acme").join("secrets");
+        std::fs::create_dir_all(store.join(".himitsu").join("secrets")).unwrap();
+
+        let mut view = make_view(&[("prod", &["prod/A"])]);
+        view.stores_dir = tmp.path().to_path_buf();
+
+        // Open the picker and submit the first entry.
+        view.on_key(press(KeyCode::Char('s')));
+        assert!(view.picker.is_some());
+        let action = view.on_key(press(KeyCode::Enter));
+        assert_eq!(action, DashboardAction::SwitchStore(store));
+        assert!(view.picker.is_none());
+    }
+
+    #[test]
+    fn picker_intercepts_dashboard_keys_while_open() {
+        let mut view = make_view(&[("prod", &["prod/A"]), ("staging", &["staging/B"])]);
+        let selected_before = view.env_state.selected();
+        view.on_key(press(KeyCode::Char('s')));
+        // 'j' should now go to the picker, not the env list.
+        view.on_key(press(KeyCode::Char('j')));
+        assert_eq!(view.env_state.selected(), selected_before);
+        // 'q' should also be intercepted (not quit).
+        let action = view.on_key(press(KeyCode::Char('q')));
+        assert_eq!(action, DashboardAction::None);
+        assert!(view.picker.is_some());
     }
 }

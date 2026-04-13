@@ -42,6 +42,16 @@ impl App {
                 DashboardAction::EnterSearch => {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
+                // US-013: rebuild the dashboard against a new store path.
+                // We keep data_dir, state_dir, and recipients_path from the
+                // current context — only `store` changes — because the key
+                // material and state directory are per-installation, not
+                // per-store. If the user ever needs to switch those too,
+                // that would be a true multi-context switch (separate bead).
+                DashboardAction::SwitchStore(path) => {
+                    self.ctx.store = path;
+                    self.view = View::Dashboard(DashboardView::new(&self.ctx));
+                }
             },
             View::Search(search) => match search.on_key(key) {
                 SearchAction::None => {}
