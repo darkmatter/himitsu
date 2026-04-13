@@ -78,6 +78,12 @@ pub struct SecretViewerView {
     /// First path segment (e.g. `prod`) — pre-computed for the header.
     env: String,
     meta: SecretMeta,
+    /// Decoded SecretValue envelope — populated eagerly at construction so
+    /// the metadata pane can render description / url / totp / env_key /
+    /// expires_at without revealing the secret value itself. `None` if the
+    /// identity file is missing or the ciphertext failed to parse (e.g. a
+    /// legacy raw payload with no structured metadata).
+    decoded: Option<secret_value::Decoded>,
     value: ValueState,
     status: Option<(String, StatusKind)>,
     mode: Mode,
@@ -103,12 +109,25 @@ impl SecretViewerView {
         let mut ctx_owned = ctx.clone();
         ctx_owned.store = store_path.clone();
 
+        // Best-effort eager decrypt so the metadata pane can show structured
+        // fields. Failures are silent — the viewer still lets the user press
+        // `r` to surface the real error.
+        let decoded = store::read_secret(&store_path, &path)
+            .ok()
+            .and_then(|ct| {
+                age::read_identity(&ctx_owned.key_path())
+                    .and_then(|id| age::decrypt(&ct, &id))
+                    .ok()
+            })
+            .map(|plain| secret_value::decode(&plain));
+
         Self {
             store_label,
             store_path,
             path,
             env,
             meta,
+            decoded,
             value: ValueState::Hidden,
             status: None,
             mode: Mode::Normal,
@@ -265,6 +284,16 @@ impl SecretViewerView {
         if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
             self.meta = meta;
         }
+        // Refresh the decoded snapshot so the metadata pane mirrors what we
+        // just wrote, without an extra decrypt round trip.
+        self.decoded = Some(secret_value::Decoded {
+            data: sv.data,
+            description: sv.description,
+            url: sv.url,
+            totp: sv.totp,
+            env_key: sv.env_key,
+            expires_at: sv.expires_at,
+        });
         Ok(parsed.value)
     }
 
@@ -417,35 +446,67 @@ impl SecretViewerView {
     }
 
     fn draw_body(&self, frame: &mut Frame<'_>, area: Rect) {
+        let lines = self.meta_lines();
+        // Two extra rows for the `metadata` block border.
+        let meta_height = (lines.len() as u16).saturating_add(2);
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(9), Constraint::Min(3)])
+            .constraints([Constraint::Length(meta_height), Constraint::Min(3)])
             .split(area);
 
-        self.draw_meta(frame, rows[0]);
+        let block = Block::default().borders(Borders::ALL).title(" metadata ");
+        let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        frame.render_widget(p, rows[0]);
         self.draw_value(frame, rows[1]);
     }
 
-    fn draw_meta(&self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" metadata ");
-
-        let created = self.meta.created_at.as_deref().unwrap_or("-");
-        let modified = self.meta.lastmodified.as_deref().unwrap_or("-");
+    /// Build the metadata pane lines from both the cleartext SecretMeta
+    /// header (path / env / created_at / lastmodified / recipients) and the
+    /// decrypted SecretValue envelope (description / url / totp / env_key /
+    /// expires_at). Fields that are empty or unset are omitted so short
+    /// secrets don't waste vertical space.
+    fn meta_lines(&self) -> Vec<Line<'static>> {
+        let created = self.meta.created_at.clone().unwrap_or_else(|| "-".into());
+        let modified = self.meta.lastmodified.clone().unwrap_or_else(|| "-".into());
         let recipients = if self.meta.recipients.is_empty() {
             "-".to_string()
         } else {
             self.meta.recipients.join(", ")
         };
 
-        let lines = vec![
-            labeled_line("path        ", &self.path),
-            labeled_line("env         ", &self.env),
+        let mut lines = vec![
+            labeled_line("path        ", self.path.clone()),
+            labeled_line("env         ", self.env.clone()),
             labeled_line("created_at  ", created),
             labeled_line("lastmodified", modified),
-            labeled_line("recipients  ", &recipients),
+            labeled_line("recipients  ", recipients),
         ];
-        let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
-        frame.render_widget(p, area);
+
+        if let Some(d) = &self.decoded {
+            if !d.description.is_empty() {
+                lines.push(labeled_line("description ", d.description.clone()));
+            }
+            if !d.url.is_empty() {
+                lines.push(labeled_line("url         ", d.url.clone()));
+            }
+            if !d.totp.is_empty() {
+                // Never surface the raw TOTP secret alongside the rest of
+                // the metadata — just indicate that one is configured.
+                lines.push(labeled_line("totp        ", "●●●●●●  (set)"));
+            }
+            if !d.env_key.is_empty() {
+                lines.push(labeled_line("env_key     ", d.env_key.clone()));
+            }
+            if let Some(ts) = d.expires_at.as_ref() {
+                if !duration::is_unset(ts) {
+                    if let Some(dt) = duration::from_proto_timestamp(ts) {
+                        lines.push(expires_line(dt));
+                    }
+                }
+            }
+        }
+
+        lines
     }
 
     fn draw_value(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -596,10 +657,30 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
     Ok(parsed)
 }
 
-fn labeled_line<'a>(label: &'a str, value: &'a str) -> Line<'a> {
+fn labeled_line(label: &'static str, value: impl Into<String>) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
-        Span::raw(value.to_string()),
+        Span::raw(value.into()),
+    ])
+}
+
+/// Render the `expires_at` row with severity-based coloring (dim when far
+/// away, yellow when soon, red when already expired) — matches the CLI
+/// `himitsu get` metadata block.
+fn expires_line(dt: chrono::DateTime<chrono::Utc>) -> Line<'static> {
+    let (msg, sev) = duration::describe_remaining(dt, chrono::Utc::now());
+    let text = format!("{}  ({msg})", dt.to_rfc3339());
+    let color = match sev {
+        duration::ExpirySeverity::Distant => Color::Gray,
+        duration::ExpirySeverity::Soon => Color::Yellow,
+        duration::ExpirySeverity::Expired => Color::Red,
+    };
+    Line::from(vec![
+        Span::styled(
+            "  expires_at   ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(text, Style::default().fg(color)),
     ])
 }
 
