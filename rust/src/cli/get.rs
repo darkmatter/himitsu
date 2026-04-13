@@ -16,7 +16,14 @@ pub struct GetArgs {
 }
 
 pub fn run(args: GetArgs, ctx: &Context) -> Result<()> {
-    let secret_ref = SecretRef::parse(&args.path)?;
+    let plaintext = get_plaintext(ctx, &args.path)?;
+    print!("{}", String::from_utf8_lossy(&plaintext));
+    Ok(())
+}
+
+/// Decrypt and return the raw plaintext bytes for a secret reference.
+pub fn get_plaintext(ctx: &Context, path: &str) -> Result<Vec<u8>> {
+    let secret_ref = SecretRef::parse(path)?;
 
     let (effective_store, secret_path) = if secret_ref.is_qualified() {
         let resolved = secret_ref.resolve_store()?;
@@ -33,7 +40,5 @@ pub fn run(args: GetArgs, ctx: &Context) -> Result<()> {
 
     let ciphertext = store::read_secret(&effective_store, &secret_path)?;
     let identity = age::read_identity(&ctx.key_path())?;
-    let plaintext = age::decrypt(&ciphertext, &identity)?;
-    print!("{}", String::from_utf8_lossy(&plaintext));
-    Ok(())
+    age::decrypt(&ciphertext, &identity)
 }
