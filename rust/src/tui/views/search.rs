@@ -18,6 +18,8 @@ use ratatui::Frame;
 
 use crate::cli::search::{search_core, SearchResult};
 use crate::cli::Context;
+use crate::crypto::{age, secret_value};
+use crate::remote::store;
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
@@ -137,6 +139,10 @@ impl SearchView {
                 ));
                 SearchAction::None
             }
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                self.copy_selected_to_clipboard();
+                SearchAction::None
+            }
             (KeyCode::Enter, _) => match self.selected_result().cloned() {
                 Some(r) => SearchAction::OpenViewer(r),
                 None => SearchAction::None,
@@ -165,6 +171,38 @@ impl SearchView {
                 SearchAction::None
             }
             _ => SearchAction::None,
+        }
+    }
+
+    /// Decrypt the currently selected secret and copy its value to the system
+    /// clipboard. Surfaces success/failure on the footer status line; never
+    /// panics on headless/no-selection. Mirrors the viewer's `y` binding so
+    /// users can grab a value without having to step into the detail view.
+    fn copy_selected_to_clipboard(&mut self) {
+        let Some(result) = self.selected_result().cloned() else {
+            self.status = Some((
+                "no selection to copy".to_string(),
+                StatusKind::Error,
+            ));
+            return;
+        };
+        let value = match decrypt_value(&self.ctx, &result) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status = Some((format!("decrypt failed: {e}"), StatusKind::Error));
+                return;
+            }
+        };
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
+            Ok(()) => {
+                self.status = Some((
+                    format!("copied {} to clipboard", result.path),
+                    StatusKind::Info,
+                ));
+            }
+            Err(e) => {
+                self.status = Some((format!("clipboard unavailable: {e}"), StatusKind::Error));
+            }
         }
     }
 
@@ -437,6 +475,8 @@ impl SearchView {
                 Span::raw(" new  "),
                 Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
                 Span::raw(" switch store  "),
+                Span::styled("ctrl-y", Style::default().fg(Color::Cyan)),
+                Span::raw(" copy  "),
                 Span::styled("?", Style::default().fg(Color::Cyan)),
                 Span::raw(" help  "),
                 Span::styled("esc", Style::default().fg(Color::Cyan)),
@@ -445,6 +485,19 @@ impl SearchView {
         };
         frame.render_widget(Paragraph::new(line), area);
     }
+}
+
+/// Decrypt a search result's ciphertext to its UTF-8 value, using the
+/// identity file tied to the result's origin store. Kept as a free function
+/// so it stays trivially testable without the full view state.
+fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<String> {
+    let mut ctx_for_store = ctx.clone();
+    ctx_for_store.store = result.store_path.clone();
+    let ciphertext = store::read_secret(&result.store_path, &result.path)?;
+    let identity = age::read_identity(&ctx_for_store.key_path())?;
+    let plain = age::decrypt(&ciphertext, &identity)?;
+    let decoded = secret_value::decode(&plain);
+    Ok(String::from_utf8_lossy(&decoded.data).into_owned())
 }
 
 /// Group a flat list of results into rows.
@@ -554,6 +607,7 @@ impl SearchView {
             ("backspace", "delete char"),
             ("ctrl-n", "new secret"),
             ("ctrl-s", "switch store"),
+            ("ctrl-y", "copy selection to clipboard"),
             ("?", "toggle this help"),
             ("esc / ctrl-c", "quit"),
         ]
@@ -863,6 +917,73 @@ mod tests {
                 matches!(view.rows[sel], Row::Secret { .. }),
                 "Down landed on non-secret row {sel}"
             );
+        }
+    }
+
+    /// Seed a store with a real age identity + one encrypted secret so the
+    /// search copy path has something decryptable to operate on.
+    fn seeded_store_with_real_secret() -> (TempDir, Context) {
+        use ::age::x25519::Identity;
+        use secrecy::ExposeSecret;
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+        let state_dir = dir.path().join("state");
+        let store = state_dir.join("stores/acme/prod");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(store.join(".himitsu/secrets")).unwrap();
+        std::fs::create_dir_all(store.join(".himitsu/recipients")).unwrap();
+
+        let identity = Identity::generate();
+        let pubkey = identity.to_public().to_string();
+        let secret_key = identity.to_string().expose_secret().to_string();
+        std::fs::write(data_dir.join("key"), &secret_key).unwrap();
+        std::fs::write(
+            store.join(".himitsu/recipients/me.pub"),
+            format!("{pubkey}\n"),
+        )
+        .unwrap();
+
+        let recipients = crate::crypto::age::collect_recipients(&store, None).unwrap();
+        let ct = crate::crypto::age::encrypt(b"copied!", &recipients).unwrap();
+        crate::remote::store::write_secret(&store, "prod/API_KEY", &ct).unwrap();
+
+        let ctx = Context {
+            data_dir,
+            state_dir,
+            store,
+            recipients_path: None,
+        };
+        (dir, ctx)
+    }
+
+    #[test]
+    fn ctrl_y_surfaces_a_status_line_for_copy() {
+        // On headless CI arboard may fail. Either outcome (info or error)
+        // is acceptable — the contract is "never panics, always reports".
+        let (_dir, ctx) = seeded_store_with_real_secret();
+        let mut view = SearchView::new(&ctx);
+        assert!(view.selected_result().is_some());
+        view.on_key(ctrl('y'));
+        assert!(
+            view.status.is_some(),
+            "ctrl-y should always set a status line"
+        );
+    }
+
+    #[test]
+    fn ctrl_y_with_no_selection_reports_error() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        // Narrow to zero results so there's no selection to copy.
+        for ch in "zzzzz".chars() {
+            view.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(view.results.len(), 0);
+        view.on_key(ctrl('y'));
+        match &view.status {
+            Some((_, StatusKind::Error)) => {}
+            other => panic!("expected error status, got {other:?}"),
         }
     }
 
