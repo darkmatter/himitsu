@@ -82,7 +82,7 @@ impl App {
                     ));
                 }
                 SearchAction::NewSecret => {
-                    self.view = View::NewSecret(NewSecretView::new(&self.ctx, None));
+                    self.view = View::NewSecret(NewSecretView::new(&self.ctx));
                 }
                 SearchAction::SwitchStore(path) => {
                     self.ctx.store = path;

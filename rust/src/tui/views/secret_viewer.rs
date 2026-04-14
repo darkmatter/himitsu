@@ -75,8 +75,6 @@ pub struct SecretViewerView {
     store_path: PathBuf,
     /// Secret path within the store (e.g. `prod/API_KEY`).
     path: String,
-    /// First path segment (e.g. `prod`) — pre-computed for the header.
-    env: String,
     meta: SecretMeta,
     /// Decoded SecretValue envelope — populated eagerly at construction so
     /// the metadata pane can render description / url / totp / env_key /
@@ -95,11 +93,6 @@ pub struct SecretViewerView {
 
 impl SecretViewerView {
     pub fn new(ctx: &Context, store_label: String, store_path: PathBuf, path: String) -> Self {
-        let env = path
-            .split_once('/')
-            .map(|(head, _)| head.to_string())
-            .unwrap_or_default();
-
         // Best-effort metadata read — if it fails we still show the path and
         // let the user try to reveal (which will surface the real error).
         let meta = store::read_secret_meta(&store_path, &path).unwrap_or_default();
@@ -125,7 +118,6 @@ impl SecretViewerView {
             store_label,
             store_path,
             path,
-            env,
             meta,
             decoded,
             value: ValueState::Hidden,
@@ -402,7 +394,7 @@ impl SecretViewerView {
     fn draw_confirm_delete(&self, frame: &mut Frame<'_>, area: Rect) {
         // Center a small prompt box over the existing view. The underlying
         // layout has already been rendered, so this acts as an overlay.
-        let prompt = format!(" Delete {}/{}? (y/N) ", self.env, self.path);
+        let prompt = format!(" Delete {}? (y/N) ", self.path);
         let width = (prompt.len() as u16 + 4).min(area.width.saturating_sub(2));
         let height: u16 = 3;
         let x = area.x + area.width.saturating_sub(width) / 2;
@@ -461,7 +453,7 @@ impl SecretViewerView {
     }
 
     /// Build the metadata pane lines from both the cleartext SecretMeta
-    /// header (path / env / created_at / lastmodified / recipients) and the
+    /// header (path / created_at / lastmodified / recipients) and the
     /// decrypted SecretValue envelope (description / url / totp / env_key /
     /// expires_at). Fields that are empty or unset are omitted so short
     /// secrets don't waste vertical space.
@@ -476,7 +468,6 @@ impl SecretViewerView {
 
         let mut lines = vec![
             labeled_line("path        ", self.path.clone()),
-            labeled_line("env         ", self.env.clone()),
             labeled_line("created_at  ", created),
             labeled_line("lastmodified", modified),
             labeled_line("recipients  ", recipients),
@@ -784,7 +775,7 @@ mod tests {
     fn metadata_is_loaded_on_construction() {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        assert_eq!(view.env, "prod");
+        assert_eq!(view.path, "prod/API_KEY");
         assert!(view.meta.created_at.is_some());
         assert!(view.meta.lastmodified.is_some());
         assert_eq!(view.meta.recipients.len(), 1);

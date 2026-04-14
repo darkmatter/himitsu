@@ -1,21 +1,20 @@
 //! New-secret form: in-TUI creation of a secret without shelling out.
 //!
-//! Three-step state machine:
+//! Two-step state machine:
 //!
-//! 1. **Env** — path segment (defaults to the dashboard's currently selected
-//!    env, still editable).
-//! 2. **Path** — secret key within the env (e.g. `API_KEY`). Combined with
-//!    the env it forms `<env>/<path>`.
-//! 3. **Value** — multi-line buffer. `Enter` inserts a newline, `Ctrl+S`
-//!    submits the form.
+//! 1. **Path** — full secret path (e.g. `prod/API_KEY`). Slashes are allowed
+//!    and purely organisational — they show up as folder headers in the
+//!    search view.
+//! 2. **Value** — multi-line buffer. `Enter` inserts a newline; `Ctrl+S` or
+//!    `Ctrl+W` submits the form from any step.
 //!
 //! Submission encrypts via [`crate::crypto::age`] and writes through
 //! [`crate::remote::store::write_secret`], reusing the exact same code path
 //! that `himitsu set` uses. No subprocesses are spawned.
 //!
-//! On success the outer app router refreshes the dashboard; on failure the
-//! view surfaces the error in its status line and stays open so the user
-//! can correct the input.
+//! On success the outer app router refreshes search; on failure the view
+//! surfaces the error in its status line and stays open so the user can
+//! correct the input.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -33,12 +32,12 @@ use crate::remote::store;
 #[derive(Debug, Clone)]
 pub enum NewSecretAction {
     None,
-    /// User cancelled (Esc). Return to the dashboard without creating anything.
+    /// User cancelled (Esc). Return to search without creating anything.
     Cancel,
     /// Ctrl-C quit.
     Quit,
-    /// Secret was created successfully. Carries the full path (`env/key`)
-    /// so the dashboard can select it after refresh.
+    /// Secret was created successfully. Carries the full path so the caller
+    /// can refresh search and surface a confirmation.
     Created(String),
     /// Submission failed but the form should stay open so the user can
     /// edit. Carries the error message to show in the status line.
@@ -48,14 +47,12 @@ pub enum NewSecretAction {
 /// Which field currently has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    Env,
     Path,
     Value,
 }
 
 pub struct NewSecretView {
     step: Step,
-    env: String,
     path: String,
     value: String,
     status: Option<String>,
@@ -63,10 +60,9 @@ pub struct NewSecretView {
 }
 
 impl NewSecretView {
-    pub fn new(ctx: &Context, default_env: Option<String>) -> Self {
+    pub fn new(ctx: &Context) -> Self {
         Self {
-            step: Step::Env,
-            env: default_env.unwrap_or_default(),
+            step: Step::Path,
             path: String::new(),
             value: String::new(),
             status: None,
@@ -77,11 +73,6 @@ impl NewSecretView {
     #[cfg(test)]
     pub fn step(&self) -> Step {
         self.step
-    }
-
-    #[cfg(test)]
-    pub fn env(&self) -> &str {
-        &self.env
     }
 
     #[cfg(test)]
@@ -111,89 +102,57 @@ impl NewSecretView {
             return NewSecretAction::Cancel;
         }
 
-        // Ctrl+S submits from any step (common pattern for multi-line forms).
+        // Save from any step. Ctrl+W is the tmux-safe alternative to Ctrl+S,
+        // which many users rebind as their tmux prefix.
         if matches!(
             (key.code, key.modifiers),
             (KeyCode::Char('s'), KeyModifiers::CONTROL)
+                | (KeyCode::Char('w'), KeyModifiers::CONTROL)
         ) {
             return self.submit();
         }
 
         match self.step {
-            Step::Env => self.handle_line_key(key, true),
-            Step::Path => self.handle_line_key(key, false),
+            Step::Path => self.handle_path_key(key),
             Step::Value => self.handle_value_key(key),
         }
     }
 
-    /// Single-line editor for `env` and `path`. `Enter` advances to the next
+    /// Single-line editor for `path`. `Enter` / `Tab` advances to the value
     /// step (rejecting empty input), `Backspace` erases, other chars append.
-    /// Pressing Shift-Tab or Up returns to the previous step.
-    fn handle_line_key(&mut self, key: KeyEvent, is_env_step: bool) -> NewSecretAction {
+    fn handle_path_key(&mut self, key: KeyEvent) -> NewSecretAction {
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, _) => {
-                if is_env_step {
-                    if self.env.trim().is_empty() {
-                        self.status = Some("env cannot be empty".into());
-                        return NewSecretAction::None;
-                    }
-                    self.status = None;
-                    self.step = Step::Path;
-                } else {
-                    if self.path.trim().is_empty() {
-                        self.status = Some("path cannot be empty".into());
-                        return NewSecretAction::None;
-                    }
-                    self.status = None;
-                    self.step = Step::Value;
+            (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
+                if self.path.trim().is_empty() {
+                    self.status = Some("path cannot be empty".into());
+                    return NewSecretAction::None;
                 }
-                NewSecretAction::None
-            }
-            (KeyCode::Tab, _) => {
-                // Tab always advances (same semantics as Enter).
-                if is_env_step {
-                    self.step = Step::Path;
-                } else {
-                    self.step = Step::Value;
-                }
-                NewSecretAction::None
-            }
-            (KeyCode::BackTab, _) | (KeyCode::Up, _) => {
-                if !is_env_step {
-                    self.step = Step::Env;
-                }
+                self.status = None;
+                self.step = Step::Value;
                 NewSecretAction::None
             }
             (KeyCode::Backspace, _) => {
-                if is_env_step {
-                    self.env.pop();
-                } else {
-                    self.path.pop();
-                }
+                self.path.pop();
                 NewSecretAction::None
             }
             (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
-                if is_env_step {
-                    self.env.push(c);
-                } else {
-                    self.path.push(c);
-                }
+                self.path.push(c);
                 NewSecretAction::None
             }
             _ => NewSecretAction::None,
         }
     }
 
-    /// Multi-line editor for `value`. `Enter` inserts a newline, `Backspace`
-    /// deletes the previous char, `Ctrl+S` submits (handled in `on_key`
-    /// before dispatch).
+    /// Multi-line editor for `value`. `Enter` inserts a newline; `Shift-Tab`
+    /// returns to the path step; `Ctrl+S` / `Ctrl+W` submits (handled in
+    /// `on_key` before dispatch).
     fn handle_value_key(&mut self, key: KeyEvent) -> NewSecretAction {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => {
                 self.value.push('\n');
                 NewSecretAction::None
             }
-            (KeyCode::BackTab, _) => {
+            (KeyCode::BackTab, _) | (KeyCode::Up, _) => {
                 self.step = Step::Path;
                 NewSecretAction::None
             }
@@ -212,11 +171,6 @@ impl NewSecretView {
     /// Validate and persist the secret. On success returns `Created(..)`;
     /// on failure leaves the form untouched and returns `Failed(..)`.
     fn submit(&mut self) -> NewSecretAction {
-        if self.env.trim().is_empty() {
-            self.status = Some("env cannot be empty".into());
-            self.step = Step::Env;
-            return NewSecretAction::None;
-        }
         if self.path.trim().is_empty() {
             self.status = Some("path cannot be empty".into());
             self.step = Step::Path;
@@ -228,7 +182,7 @@ impl NewSecretView {
             return NewSecretAction::None;
         }
 
-        let full = format!("{}/{}", self.env.trim(), self.path.trim());
+        let full = self.path.trim().to_string();
 
         let recipients = match age::collect_recipients(
             &self.ctx.store,
@@ -273,7 +227,6 @@ impl NewSecretView {
             return NewSecretAction::Failed(msg);
         }
 
-        // Best-effort git sync — mirrors the `himitsu set` behaviour.
         self.ctx.commit_and_push(&format!("himitsu: set {full}"));
 
         NewSecretAction::Created(full)
@@ -288,17 +241,15 @@ impl NewSecretView {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Length(3),
-                Constraint::Length(3),
                 Constraint::Min(3),
                 Constraint::Length(1),
             ])
             .split(area);
 
         self.draw_header(frame, chunks[0]);
-        self.draw_env_field(frame, chunks[1]);
-        self.draw_path_field(frame, chunks[2]);
-        self.draw_value_field(frame, chunks[3]);
-        self.draw_footer(frame, chunks[4]);
+        self.draw_path_field(frame, chunks[1]);
+        self.draw_value_field(frame, chunks[2]);
+        self.draw_footer(frame, chunks[3]);
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -314,19 +265,6 @@ impl NewSecretView {
             Span::styled("new secret", Style::default().add_modifier(Modifier::BOLD)),
         ]);
         frame.render_widget(Paragraph::new(header), area);
-    }
-
-    fn draw_env_field(&self, frame: &mut Frame<'_>, area: Rect) {
-        let focused = self.step == Step::Env;
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" env ")
-            .border_style(Self::border_style(focused));
-        let mut text = self.env.clone();
-        if focused {
-            text.push('_');
-        }
-        frame.render_widget(Paragraph::new(text).block(block), area);
     }
 
     fn draw_path_field(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -378,7 +316,7 @@ impl NewSecretView {
                 Span::raw(" next  "),
                 Span::styled("shift-tab", Style::default().fg(Color::Cyan)),
                 Span::raw(" prev  "),
-                Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
+                Span::styled("ctrl-s / ctrl-w", Style::default().fg(Color::Cyan)),
                 Span::raw(" save  "),
                 Span::styled("esc", Style::default().fg(Color::Cyan)),
                 Span::raw(" cancel  "),
@@ -391,10 +329,9 @@ impl NewSecretView {
 
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
-            ("tab / ↓", "next field"),
+            ("tab / enter", "next field"),
             ("shift-tab / ↑", "previous field"),
-            ("enter", "advance · on value step, save"),
-            ("ctrl-s", "save from any step"),
+            ("ctrl-s / ctrl-w", "save from any step"),
             ("esc / ctrl-c", "cancel"),
             ("?", "toggle this help"),
         ]
@@ -436,57 +373,49 @@ mod tests {
     }
 
     #[test]
-    fn new_view_defaults_to_env_step_and_prefills_env() {
-        let view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
-        assert_eq!(view.step(), Step::Env);
-        assert_eq!(view.env(), "prod");
+    fn new_view_starts_on_path_step_with_empty_fields() {
+        let view = NewSecretView::new(&empty_ctx());
+        assert_eq!(view.step(), Step::Path);
         assert_eq!(view.path(), "");
         assert_eq!(view.value(), "");
     }
 
     #[test]
-    fn enter_advances_from_env_to_path_to_value() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
-        assert_eq!(view.step(), Step::Env);
-        view.on_key(press(KeyCode::Enter));
-        assert_eq!(view.step(), Step::Path);
-        typ(&mut view, "API_KEY");
+    fn enter_advances_from_path_to_value() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/API_KEY");
         view.on_key(press(KeyCode::Enter));
         assert_eq!(view.step(), Step::Value);
-        assert_eq!(view.path(), "API_KEY");
-    }
-
-    #[test]
-    fn enter_on_empty_env_is_rejected_with_status() {
-        let mut view = NewSecretView::new(&empty_ctx(), None);
-        view.on_key(press(KeyCode::Enter));
-        assert_eq!(view.step(), Step::Env);
-        assert!(view.status().unwrap().contains("env"));
+        assert_eq!(view.path(), "prod/API_KEY");
     }
 
     #[test]
     fn enter_on_empty_path_is_rejected_with_status() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
-        view.on_key(press(KeyCode::Enter));
-        assert_eq!(view.step(), Step::Path);
+        let mut view = NewSecretView::new(&empty_ctx());
         view.on_key(press(KeyCode::Enter));
         assert_eq!(view.step(), Step::Path);
         assert!(view.status().unwrap().contains("path"));
     }
 
     #[test]
+    fn path_accepts_slashes_as_plain_characters() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "some/nested/path");
+        assert_eq!(view.path(), "some/nested/path");
+    }
+
+    #[test]
     fn backspace_erases_last_char_in_current_field() {
-        let mut view = NewSecretView::new(&empty_ctx(), None);
+        let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod");
         view.on_key(press(KeyCode::Backspace));
-        assert_eq!(view.env(), "pro");
+        assert_eq!(view.path(), "pro");
     }
 
     #[test]
     fn value_step_treats_enter_as_newline() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
-        view.on_key(press(KeyCode::Enter)); // env -> path
-        typ(&mut view, "KEY");
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
         view.on_key(press(KeyCode::Enter)); // path -> value
         typ(&mut view, "line1");
         view.on_key(press(KeyCode::Enter));
@@ -497,15 +426,17 @@ mod tests {
 
     #[test]
     fn shift_tab_goes_back_to_previous_step() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
-        view.on_key(press(KeyCode::Enter)); // -> Path
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Enter));
+        assert_eq!(view.step(), Step::Value);
         view.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-        assert_eq!(view.step(), Step::Env);
+        assert_eq!(view.step(), Step::Path);
     }
 
     #[test]
     fn esc_cancels_the_form() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
+        let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "x");
         assert!(matches!(
             view.on_key(press(KeyCode::Esc)),
@@ -515,17 +446,15 @@ mod tests {
 
     #[test]
     fn ctrl_c_quits_from_any_step() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
+        let mut view = NewSecretView::new(&empty_ctx());
         assert!(matches!(view.on_key(ctrl('c')), NewSecretAction::Quit));
     }
 
     #[test]
     fn submit_with_empty_value_fails_and_refocuses_value_step() {
-        let mut view = NewSecretView::new(&empty_ctx(), Some("prod".into()));
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
         view.on_key(press(KeyCode::Enter));
-        typ(&mut view, "KEY");
-        view.on_key(press(KeyCode::Enter));
-        // Value is empty — Ctrl+S should not submit.
         let out = view.on_key(ctrl('s'));
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Value);
@@ -533,14 +462,26 @@ mod tests {
     }
 
     #[test]
-    fn submit_with_missing_env_refocuses_env_step() {
-        let mut view = NewSecretView::new(&empty_ctx(), None);
-        // Jump forward with Tab even though env is empty — verifies submit()
-        // drags focus back.
-        view.on_key(press(KeyCode::Tab));
+    fn submit_with_missing_path_refocuses_path_step() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        // Jump forward with Tab even though path is empty — submit() should
+        // drag focus back to Path.
         view.on_key(press(KeyCode::Tab));
         let out = view.on_key(ctrl('s'));
         assert!(matches!(out, NewSecretAction::None));
-        assert_eq!(view.step(), Step::Env);
+        assert_eq!(view.step(), Step::Path);
+    }
+
+    #[test]
+    fn ctrl_w_submits_like_ctrl_s() {
+        // hm-y6n: tmux-safe alternative to ctrl+s.
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Enter));
+        let out = view.on_key(ctrl('w'));
+        // Empty value rejects — confirms the chord reached submit().
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.step(), Step::Value);
+        assert!(view.status().unwrap().contains("value"));
     }
 }
