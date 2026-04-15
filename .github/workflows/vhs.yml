@@ -1,0 +1,78 @@
+name: VHS Demo Tapes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'demo/**'
+      - 'rust/**'
+      - '.github/workflows/vhs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'demo/**'
+      - 'rust/**'
+      - '.github/workflows/vhs.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  vhs:
+    name: Render demo tapes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-vhs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-vhs-
+            ${{ runner.os }}-cargo-
+
+      - name: Install VHS runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg ttyd
+
+      - name: Install VHS
+        uses: charmbracelet/vhs-action@v2
+
+      - name: Verify VHS install
+        run: vhs --version
+
+      - name: Build himitsu (release)
+        run: cargo build --release
+
+      - name: Render TUI demo tapes
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p /tmp/vhs-out
+          tapes=(demo/tui-us-00*.tape demo/tui-us-01*.tape)
+          if [ ${#tapes[@]} -eq 0 ]; then
+            echo "error: no tui-us-*.tape files found under demo/" >&2
+            exit 1
+          fi
+          failed=0
+          for tape in "${tapes[@]}"; do
+            echo "::group::vhs $tape"
+            tmp_tape="/tmp/vhs-out/$(basename "$tape")"
+            # Redirect gif output into a scratch dir so we don't dirty the tree.
+            sed -E "s|^Output .*|Output /tmp/vhs-out/$(basename "${tape%.tape}").gif|" \
+              "$tape" > "$tmp_tape"
+            if ! vhs "$tmp_tape"; then
+              echo "::error file=$tape::vhs failed to render $tape"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
