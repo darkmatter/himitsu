@@ -29,6 +29,7 @@ use ratatui::Terminal;
 
 use crate::cli::Context;
 use crate::tui::app::App;
+use crate::tui::keymap::KeyMap;
 
 /// Drives an [`App`] against a [`TestBackend`] terminal.
 ///
@@ -49,10 +50,16 @@ impl TuiHarness {
     }
 
     pub fn with_size(ctx: &Context, width: u16, height: u16) -> Self {
+        Self::with_keymap(ctx, width, height, KeyMap::default())
+    }
+
+    /// Build a harness with a custom [`KeyMap`] — used by integration tests
+    /// that exercise user-overridden bindings.
+    pub fn with_keymap(ctx: &Context, width: u16, height: u16, keymap: KeyMap) -> Self {
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).expect("TestBackend terminal construction");
         let mut h = Self {
-            app: App::new(ctx),
+            app: App::new(ctx, keymap),
             terminal,
         };
         h.tick();
@@ -474,6 +481,78 @@ mod tests {
             h.contains("BETA_ONLY"),
             "beta secret missing after store switch:\n{}",
             h.rendered()
+        );
+    }
+
+    // ── Flow 4: configurable keybindings (hm-3cm) ──────────────────────
+
+    /// The default keymap must preserve the historical behaviour: Ctrl+N
+    /// opens the new-secret form from the search view. This is the "no
+    /// regression" guardrail for every unspecified user config.
+    #[test]
+    fn default_keymap_ctrl_n_opens_new_secret_form() {
+        let fx = Fixture::new();
+        let mut h =
+            TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
+        assert_eq!(h.app.current_view(), "search");
+
+        h.press_ctrl('n');
+
+        assert_eq!(h.app.current_view(), "new_secret");
+        assert!(
+            h.contains("new secret"),
+            "new-secret header missing:\n{}",
+            h.rendered()
+        );
+    }
+
+    /// A user who rebinds `new_secret` to `F2` should be able to press F2
+    /// and land in the new-secret form — and the former default (Ctrl+N)
+    /// must stop working, proving the override fully replaces that action.
+    #[test]
+    fn custom_keymap_remaps_new_secret_to_f2() {
+        let fx = Fixture::new();
+        // Build a keymap where only `new_secret` is overridden; everything
+        // else falls back to the defaults via `..KeyMap::default()`.
+        let yaml = r#"
+new_secret: ["F2"]
+"#;
+        let keymap: KeyMap = serde_yaml::from_str(yaml).expect("parse keymap");
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, keymap);
+
+        // Ctrl+N no longer opens the form — it falls through to search's
+        // text input, which ignores Ctrl-modified chars.
+        h.press_ctrl('n');
+        assert_eq!(
+            h.app.current_view(),
+            "search",
+            "ctrl+n should no longer open the form after remap:\n{}",
+            h.rendered()
+        );
+
+        // F2 opens it.
+        h.press(KeyCode::F(2));
+        assert_eq!(h.app.current_view(), "new_secret");
+        assert!(
+            h.contains("new secret"),
+            "F2 should open the new-secret form:\n{}",
+            h.rendered()
+        );
+    }
+
+    /// A malformed binding string must surface as a parse error at config
+    /// load time, not silently ignore the user's intent.
+    #[test]
+    fn malformed_keybinding_returns_parse_error() {
+        let yaml = r#"
+new_secret: ["ctrl+ctrl+foo"]
+"#;
+        let err = serde_yaml::from_str::<KeyMap>(yaml)
+            .expect_err("expected parse failure for malformed binding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ctrl+ctrl+foo"),
+            "error should mention the offending binding string: {msg}"
         );
     }
 }

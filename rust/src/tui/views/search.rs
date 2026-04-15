@@ -20,6 +20,7 @@ use crate::cli::search::{search_core, SearchResult};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
+use crate::tui::keymap::{Bindings, KeyMap};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
@@ -94,7 +95,7 @@ impl SearchView {
         view
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> SearchAction {
+    pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> SearchAction {
         // Picker overlay swallows every key while open.
         if let Some(picker) = self.picker.as_mut() {
             match picker.on_key(key) {
@@ -110,20 +111,27 @@ impl SearchView {
             }
         }
 
+        // Configurable action bindings take precedence over the fall-through
+        // text-editing keys below. Quit is checked first so a user who rebinds
+        // new_secret to a printable character still has an escape hatch.
+        if keymap.quit.matches(&key) {
+            return SearchAction::Quit;
+        }
+        if keymap.new_secret.matches(&key) {
+            return SearchAction::NewSecret;
+        }
+        if keymap.switch_store.matches(&key) {
+            self.picker = Some(StorePicker::new(
+                &self.ctx.stores_dir(),
+                self.ctx.store.clone(),
+            ));
+            return SearchAction::None;
+        }
+        if keymap.copy_selected.matches(&key) {
+            return self.copy_selected_to_clipboard();
+        }
+
         match (key.code, key.modifiers) {
-            (KeyCode::Esc, _) => SearchAction::Quit,
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => SearchAction::Quit,
-            (KeyCode::Char('n'), KeyModifiers::CONTROL) => SearchAction::NewSecret,
-            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                self.picker = Some(StorePicker::new(
-                    &self.ctx.stores_dir(),
-                    self.ctx.store.clone(),
-                ));
-                SearchAction::None
-            }
-            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                self.copy_selected_to_clipboard()
-            }
             (KeyCode::Enter, _) => match self.selected_result().cloned() {
                 Some(r) => SearchAction::OpenViewer(r),
                 None => SearchAction::None,
@@ -577,6 +585,7 @@ impl SearchView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::keymap::KeyMap;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -659,13 +668,14 @@ mod tests {
 
     #[test]
     fn typing_narrows_results_live() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
 
-        view.on_key(key(KeyCode::Char('d')));
-        view.on_key(key(KeyCode::Char('a')));
-        view.on_key(key(KeyCode::Char('t')));
+        view.on_key(key(KeyCode::Char('d')), &km);
+        view.on_key(key(KeyCode::Char('a')), &km);
+        view.on_key(key(KeyCode::Char('t')), &km);
         assert!(view
             .results
             .iter()
@@ -676,34 +686,37 @@ mod tests {
 
     #[test]
     fn backspace_widens_results() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        view.on_key(key(KeyCode::Char('d')));
-        view.on_key(key(KeyCode::Char('a')));
-        view.on_key(key(KeyCode::Char('t')));
+        view.on_key(key(KeyCode::Char('d')), &km);
+        view.on_key(key(KeyCode::Char('a')), &km);
+        view.on_key(key(KeyCode::Char('t')), &km);
         assert_eq!(view.results.len(), 1);
-        view.on_key(key(KeyCode::Backspace));
-        view.on_key(key(KeyCode::Backspace));
-        view.on_key(key(KeyCode::Backspace));
+        view.on_key(key(KeyCode::Backspace), &km);
+        view.on_key(key(KeyCode::Backspace), &km);
+        view.on_key(key(KeyCode::Backspace), &km);
         assert_eq!(view.results.len(), 3);
     }
 
     #[test]
     fn esc_emits_quit_action() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        assert!(matches!(view.on_key(key(KeyCode::Esc)), SearchAction::Quit));
+        assert!(matches!(view.on_key(key(KeyCode::Esc), &km), SearchAction::Quit));
     }
 
     #[test]
     fn enter_emits_open_viewer_with_selection() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        view.on_key(key(KeyCode::Down));
-        match view.on_key(key(KeyCode::Enter)) {
+        view.on_key(key(KeyCode::Down), &km);
+        match view.on_key(key(KeyCode::Enter), &km) {
             SearchAction::OpenViewer(r) => assert_eq!(r.path, "prod/DATABASE_URL"),
             other => panic!("expected OpenViewer, got {other:?}"),
         }
@@ -711,41 +724,44 @@ mod tests {
 
     #[test]
     fn enter_with_no_results_is_noop() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        view.on_key(key(KeyCode::Char('z')));
-        view.on_key(key(KeyCode::Char('z')));
-        view.on_key(key(KeyCode::Char('z')));
+        view.on_key(key(KeyCode::Char('z')), &km);
+        view.on_key(key(KeyCode::Char('z')), &km);
+        view.on_key(key(KeyCode::Char('z')), &km);
         assert_eq!(view.results.len(), 0);
         assert!(matches!(
-            view.on_key(key(KeyCode::Enter)),
+            view.on_key(key(KeyCode::Enter), &km),
             SearchAction::None
         ));
     }
 
     #[test]
     fn nav_wraps_around() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
         // Row 0 is a Folder header (unselectable); first secret is row 1.
         assert_eq!(view.list_state.selected(), Some(1));
-        view.on_key(key(KeyCode::Up));
+        view.on_key(key(KeyCode::Up), &km);
         // Up skips the folder at row 0 and wraps to the last secret (row 3).
         assert_eq!(view.list_state.selected(), Some(3));
-        view.on_key(key(KeyCode::Down));
+        view.on_key(key(KeyCode::Down), &km);
         // Down from row 3 wraps; row 0 is a folder so lands on row 1.
         assert_eq!(view.list_state.selected(), Some(1));
     }
 
     #[test]
     fn ctrl_n_emits_new_secret_action() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
         assert!(matches!(
-            view.on_key(ctrl('n')),
+            view.on_key(ctrl('n'), &km),
             SearchAction::NewSecret
         ));
     }
@@ -863,11 +879,12 @@ mod tests {
 
     #[test]
     fn multi_store_nav_skips_headers() {
+        let km = KeyMap::default();
         let dir = seeded_multi_store();
         let ctx = multi_ctx(dir.path());
         let mut view = SearchView::new(&ctx);
         for _ in 0..view.rows.len() * 2 {
-            view.on_key(key(KeyCode::Down));
+            view.on_key(key(KeyCode::Down), &km);
             let sel = view.list_state.selected().unwrap();
             assert!(
                 matches!(view.rows[sel], Row::Secret { .. }),
@@ -914,13 +931,11 @@ mod tests {
 
     #[test]
     fn ctrl_y_surfaces_a_status_line_for_copy() {
-        // On headless CI arboard may fail. Either outcome (Copied or
-        // CopyFailed) is acceptable — the contract is "never panics,
-        // always reports via an action the router can turn into a toast".
+        let km = KeyMap::default();
         let (_dir, ctx) = seeded_store_with_real_secret();
         let mut view = SearchView::new(&ctx);
         assert!(view.selected_result().is_some());
-        let action = view.on_key(ctrl('y'));
+        let action = view.on_key(ctrl('y'), &km);
         assert!(
             matches!(action, SearchAction::Copied(_) | SearchAction::CopyFailed(_)),
             "ctrl-y should always emit a copy action, got {action:?}"
@@ -929,15 +944,16 @@ mod tests {
 
     #[test]
     fn ctrl_y_with_no_selection_reports_error() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
         // Narrow to zero results so there's no selection to copy.
         for ch in "zzzzz".chars() {
-            view.on_key(key(KeyCode::Char(ch)));
+            view.on_key(key(KeyCode::Char(ch)), &km);
         }
         assert_eq!(view.results.len(), 0);
-        let action = view.on_key(ctrl('y'));
+        let action = view.on_key(ctrl('y'), &km);
         match action {
             SearchAction::CopyFailed(msg) => {
                 assert!(msg.contains("no selection"), "unexpected msg: {msg}");
@@ -948,11 +964,12 @@ mod tests {
 
     #[test]
     fn ctrl_s_opens_store_picker_overlay() {
+        let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
         assert!(view.picker.is_none());
-        let action = view.on_key(ctrl('s'));
+        let action = view.on_key(ctrl('s'), &km);
         assert!(matches!(action, SearchAction::None));
         assert!(view.picker.is_some());
     }

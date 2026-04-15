@@ -31,6 +31,7 @@ use crate::crypto::{age, secret_value};
 use crate::error::HimitsuError;
 use crate::proto::SecretValue;
 use crate::remote::store::{self, SecretMeta};
+use crate::tui::keymap::{Bindings, KeyMap};
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,8 +132,10 @@ impl SecretViewerView {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> SecretViewerAction {
-        // Ctrl-C is always a quit, regardless of mode.
+    pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> SecretViewerAction {
+        // Ctrl-C is always a quit, regardless of mode. The quit binding is
+        // checked before the confirm-delete intercept so the user is never
+        // trapped in a modal dialog.
         if matches!(
             (key.code, key.modifiers),
             (KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -145,24 +148,31 @@ impl SecretViewerView {
             return self.on_key_confirm_delete(key);
         }
 
-        match (key.code, key.modifiers) {
-            (KeyCode::Esc, _) => SecretViewerAction::Back,
-            (KeyCode::Char('r'), _) => {
-                self.toggle_reveal();
-                SecretViewerAction::None
-            }
-            (KeyCode::Char('y'), _) => self.copy_to_clipboard(),
-            (KeyCode::Char('R'), _) => {
-                self.rekey();
-                SecretViewerAction::None
-            }
-            (KeyCode::Char('e'), _) => self.begin_edit(),
-            (KeyCode::Char('d'), _) => {
-                self.enter_confirm_delete();
-                SecretViewerAction::None
-            }
-            _ => SecretViewerAction::None,
+        // Rekey is checked before reveal/copy because its default binding
+        // (`Shift+R`) overlaps the same `KeyCode::Char('r')` as `reveal`;
+        // matching in this order keeps the existing behaviour exact.
+        if keymap.rekey.matches(&key) {
+            self.rekey();
+            return SecretViewerAction::None;
         }
+        if keymap.reveal.matches(&key) {
+            self.toggle_reveal();
+            return SecretViewerAction::None;
+        }
+        if keymap.copy_value.matches(&key) {
+            return self.copy_to_clipboard();
+        }
+        if keymap.edit.matches(&key) {
+            return self.begin_edit();
+        }
+        if keymap.delete.matches(&key) {
+            self.enter_confirm_delete();
+            return SecretViewerAction::None;
+        }
+        if keymap.back.matches(&key) {
+            return SecretViewerAction::Back;
+        }
+        SecretViewerAction::None
     }
 
     /// Decrypt the current secret, render it as an editable document
@@ -715,6 +725,7 @@ impl SecretViewerView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::keymap::KeyMap;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
@@ -780,40 +791,44 @@ mod tests {
 
     #[test]
     fn esc_returns_back_action() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        assert_eq!(view.on_key(press(KeyCode::Esc)), SecretViewerAction::Back);
+        assert_eq!(view.on_key(press(KeyCode::Esc), &km), SecretViewerAction::Back);
     }
 
     #[test]
     fn ctrl_c_returns_quit() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        assert_eq!(view.on_key(ctrl('c')), SecretViewerAction::Quit);
+        assert_eq!(view.on_key(ctrl('c'), &km), SecretViewerAction::Quit);
     }
 
     #[test]
     fn r_reveals_then_hides_value() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         assert!(matches!(view.value, ValueState::Hidden));
-        view.on_key(press(KeyCode::Char('r')));
+        view.on_key(press(KeyCode::Char('r')), &km);
         match &view.value {
             ValueState::Revealed(v) => assert_eq!(v, "s3cret"),
             _ => panic!("expected Revealed"),
         }
-        view.on_key(press(KeyCode::Char('r')));
+        view.on_key(press(KeyCode::Char('r')), &km);
         assert!(matches!(view.value, ValueState::Hidden));
     }
 
     #[test]
     fn y_copies_without_revealing_display() {
+        let km = KeyMap::default();
         // On headless CI arboard may fail — assert it doesn't crash and
         // emits *some* copy-outcome action (Copied on success, CopyFailed
         // on headless miss). Router turns whichever it is into a toast.
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        let action = view.on_key(press(KeyCode::Char('y')));
+        let action = view.on_key(press(KeyCode::Char('y')), &km);
         assert!(
             matches!(
                 action,
@@ -827,10 +842,11 @@ mod tests {
 
     #[test]
     fn d_enters_confirm_delete_mode_without_deleting() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        let action = view.on_key(press(KeyCode::Char('d')));
+        let action = view.on_key(press(KeyCode::Char('d')), &km);
         assert_eq!(action, SecretViewerAction::None);
         assert_eq!(view.mode, Mode::ConfirmDelete);
         // Secret file must still exist — 'd' alone must not delete.
@@ -839,12 +855,13 @@ mod tests {
 
     #[test]
     fn y_in_confirm_mode_deletes_and_returns_deleted() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(press(KeyCode::Char('d')));
+        view.on_key(press(KeyCode::Char('d')), &km);
         assert_eq!(view.mode, Mode::ConfirmDelete);
-        let action = view.on_key(press(KeyCode::Char('y')));
+        let action = view.on_key(press(KeyCode::Char('y')), &km);
         assert_eq!(action, SecretViewerAction::Deleted);
         // Underlying store should no longer contain the secret.
         assert!(store::list_secrets(&ctx.store, None)
@@ -855,11 +872,12 @@ mod tests {
 
     #[test]
     fn n_in_confirm_mode_cancels_without_deleting() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(press(KeyCode::Char('d')));
-        let action = view.on_key(press(KeyCode::Char('n')));
+        view.on_key(press(KeyCode::Char('d')), &km);
+        let action = view.on_key(press(KeyCode::Char('n')), &km);
         assert_eq!(action, SecretViewerAction::None);
         assert_eq!(view.mode, Mode::Normal);
         assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
@@ -867,11 +885,12 @@ mod tests {
 
     #[test]
     fn esc_in_confirm_mode_cancels_without_deleting() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(press(KeyCode::Char('d')));
-        let action = view.on_key(press(KeyCode::Esc));
+        view.on_key(press(KeyCode::Char('d')), &km);
+        let action = view.on_key(press(KeyCode::Esc), &km);
         assert_eq!(action, SecretViewerAction::None);
         assert_eq!(view.mode, Mode::Normal);
         assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
@@ -879,33 +898,36 @@ mod tests {
 
     #[test]
     fn other_keys_in_confirm_mode_cancel() {
+        let km = KeyMap::default();
         // Documented choice: any non-'y' key cancels the delete. Safer for
         // a destructive default-no prompt than staying in confirm mode.
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(press(KeyCode::Char('d')));
-        view.on_key(press(KeyCode::Char('q')));
+        view.on_key(press(KeyCode::Char('d')), &km);
+        view.on_key(press(KeyCode::Char('q')), &km);
         assert_eq!(view.mode, Mode::Normal);
         assert!(store::read_secret_meta(&ctx.store, &path).is_ok());
     }
 
     #[test]
     fn ctrl_c_in_confirm_mode_still_quits() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        view.on_key(press(KeyCode::Char('d')));
-        assert_eq!(view.on_key(ctrl('c')), SecretViewerAction::Quit);
+        view.on_key(press(KeyCode::Char('d')), &km);
+        assert_eq!(view.on_key(ctrl('c'), &km), SecretViewerAction::Quit);
     }
 
     #[test]
     fn shift_r_rekeys_and_updates_status() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let before = store::read_secret_meta(&ctx.store, &path).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        view.on_key(shift('R'));
+        view.on_key(shift('R'), &km);
         match &view.status {
             Some((msg, StatusKind::Info)) => assert!(msg.contains("rekeyed")),
             other => panic!("expected info status, got {other:?}"),
@@ -916,10 +938,11 @@ mod tests {
 
     #[test]
     fn e_emits_edit_value_action_with_document() {
+        let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        match view.on_key(press(KeyCode::Char('e'))) {
+        match view.on_key(press(KeyCode::Char('e')), &km) {
             SecretViewerAction::EditValue(doc) => {
                 assert!(doc.contains("description:"), "doc missing header: {doc}");
                 assert!(doc.contains("expires_at:"), "doc missing expires_at: {doc}");
