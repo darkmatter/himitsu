@@ -70,6 +70,67 @@ Use `-s <path>` to target a specific store directory instead of the auto-detecte
 himitsu -s /path/to/.himitsu set prod API_KEY "sk_live_xxx"
 ```
 
+## TUI
+
+Launch the in-process ratatui interface with:
+
+```bash
+himitsu tui
+```
+
+Search is the **root view** — the app opens straight into a fuzzy filter over every secret in the active store (grouped by store when more than one is known). Start typing to narrow the list, `↑`/`↓` to move the cursor, and `enter` to open a secret. Every other view pops back to a fresh search on `esc`; `esc` at the root quits.
+
+![browse and drill](demo/tui-us-011.gif)
+
+Press `?` in any view for a modal help overlay populated from that view's own bindings.
+
+### Search (root)
+
+| Key | Action |
+|-----|--------|
+| _type_ | filter results |
+| `↑` / `↓` | move selection |
+| `enter` | open selected secret |
+| `backspace` | delete filter char |
+| `ctrl-n` | new secret (opens form) |
+| `ctrl-s` | switch active store (modal picker) |
+| `ctrl-y` | copy selected secret value to clipboard |
+| `?` | toggle help overlay |
+| `esc` / `ctrl-c` | quit |
+
+The `ctrl-s` store picker is a modal overlay: `↑`/`↓` to select, `enter` to switch, `esc` to dismiss.
+
+### Secret viewer
+
+Opened with `enter` on a search result.
+
+| Key | Action |
+|-----|--------|
+| `r` | reveal / hide value |
+| `y` | copy value to clipboard |
+| `e` | edit value + metadata in `$EDITOR` (single document, `---` separator) |
+| `R` | rekey for current recipients |
+| `d` | delete secret (prompts for `y` to confirm, any other key cancels) |
+| `?` | toggle help overlay |
+| `esc` | back to search |
+| `ctrl-c` | quit |
+
+![secret viewer](demo/tui-us-012.gif)
+
+### New-secret form
+
+Opened with `ctrl-n` from search. Fields in order: `path`, `value`, `description`, `url`, `totp`, `env_key`, `expires_at`.
+
+| Key | Action |
+|-----|--------|
+| `tab` / `enter` | next field (wraps; on `value` `enter` inserts a newline) |
+| `shift-tab` | previous field (wraps) |
+| `ctrl-s` / `ctrl-w` | save from any field |
+| `esc` / `ctrl-c` | cancel |
+| `?` | toggle help overlay |
+
+![create secret](demo/tui-us-008.gif)
+
 ## Store Layout
 
 ```
