@@ -35,12 +35,12 @@ pub enum SearchAction {
     SwitchStore(PathBuf),
     /// User pressed Esc / Ctrl-C — root view, so quit the app.
     Quit,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum StatusKind {
-    Info,
-    Error,
+    /// User pressed Ctrl+Y and we successfully copied the selected secret
+    /// value to the clipboard. Carries the secret path for the toast.
+    Copied(String),
+    /// Ctrl+Y attempted but failed (no selection / decrypt error / no
+    /// clipboard backend). Carries a human-readable error string.
+    CopyFailed(String),
 }
 
 /// A row in the rendered results list. Store and Folder rows are visual-only
@@ -72,8 +72,6 @@ pub struct SearchView {
     ctx: Context,
     /// Embedded store-picker overlay. When `Some`, it intercepts every key.
     picker: Option<StorePicker>,
-    /// One-line status surfaced in the footer area; cleared on next keypress.
-    status: Option<(String, StatusKind)>,
 }
 
 impl SearchView {
@@ -91,21 +89,9 @@ impl SearchView {
             list_state: ListState::default(),
             ctx: ctx_owned,
             picker: None,
-            status: None,
         };
         view.refresh_results();
         view
-    }
-
-    /// Surface a one-line info message in the footer. Cleared on the next
-    /// keypress that isn't absorbed by the picker.
-    pub fn set_status_info(&mut self, msg: impl Into<String>) {
-        self.status = Some((msg.into(), StatusKind::Info));
-    }
-
-    /// Surface a one-line error message in the footer.
-    pub fn set_status_error(&mut self, msg: impl Into<String>) {
-        self.status = Some((msg.into(), StatusKind::Error));
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> SearchAction {
@@ -127,12 +113,8 @@ impl SearchView {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => SearchAction::Quit,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => SearchAction::Quit,
-            (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
-                self.status = None;
-                SearchAction::NewSecret
-            }
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => SearchAction::NewSecret,
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                self.status = None;
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),
                     self.ctx.store.clone(),
@@ -140,32 +122,27 @@ impl SearchView {
                 SearchAction::None
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                self.copy_selected_to_clipboard();
-                SearchAction::None
+                self.copy_selected_to_clipboard()
             }
             (KeyCode::Enter, _) => match self.selected_result().cloned() {
                 Some(r) => SearchAction::OpenViewer(r),
                 None => SearchAction::None,
             },
             (KeyCode::Up, _) => {
-                self.status = None;
                 self.select_prev();
                 SearchAction::None
             }
             (KeyCode::Down, _) => {
-                self.status = None;
                 self.select_next();
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
-                self.status = None;
                 if self.query.pop().is_some() {
                     self.refresh_results();
                 }
                 SearchAction::None
             }
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.status = None;
                 self.query.push(ch);
                 self.refresh_results();
                 SearchAction::None
@@ -175,34 +152,21 @@ impl SearchView {
     }
 
     /// Decrypt the currently selected secret and copy its value to the system
-    /// clipboard. Surfaces success/failure on the footer status line; never
-    /// panics on headless/no-selection. Mirrors the viewer's `y` binding so
-    /// users can grab a value without having to step into the detail view.
-    fn copy_selected_to_clipboard(&mut self) {
+    /// clipboard. Returns a [`SearchAction`] carrying the copy outcome so the
+    /// router can surface it as a toast; never panics on headless/no-selection.
+    /// Mirrors the viewer's `y` binding so users can grab a value without
+    /// having to step into the detail view.
+    fn copy_selected_to_clipboard(&mut self) -> SearchAction {
         let Some(result) = self.selected_result().cloned() else {
-            self.status = Some((
-                "no selection to copy".to_string(),
-                StatusKind::Error,
-            ));
-            return;
+            return SearchAction::CopyFailed("no selection to copy".to_string());
         };
         let value = match decrypt_value(&self.ctx, &result) {
             Ok(v) => v,
-            Err(e) => {
-                self.status = Some((format!("decrypt failed: {e}"), StatusKind::Error));
-                return;
-            }
+            Err(e) => return SearchAction::CopyFailed(format!("decrypt failed: {e}")),
         };
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
-            Ok(()) => {
-                self.status = Some((
-                    format!("copied {} to clipboard", result.path),
-                    StatusKind::Info,
-                ));
-            }
-            Err(e) => {
-                self.status = Some((format!("clipboard unavailable: {e}"), StatusKind::Error));
-            }
+            Ok(()) => SearchAction::Copied(result.path),
+            Err(e) => SearchAction::CopyFailed(format!("clipboard unavailable: {e}")),
         }
     }
 
@@ -459,30 +423,22 @@ impl SearchView {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let line = if let Some((msg, kind)) = &self.status {
-            let color = match kind {
-                StatusKind::Info => Color::Green,
-                StatusKind::Error => Color::Red,
-            };
-            Line::from(Span::styled(msg.clone(), Style::default().fg(color)))
-        } else {
-            Line::from(vec![
-                Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
-                Span::raw(" navigate  "),
-                Span::styled("enter", Style::default().fg(Color::Cyan)),
-                Span::raw(" open  "),
-                Span::styled("ctrl-n", Style::default().fg(Color::Cyan)),
-                Span::raw(" new  "),
-                Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
-                Span::raw(" switch store  "),
-                Span::styled("ctrl-y", Style::default().fg(Color::Cyan)),
-                Span::raw(" copy  "),
-                Span::styled("?", Style::default().fg(Color::Cyan)),
-                Span::raw(" help  "),
-                Span::styled("esc", Style::default().fg(Color::Cyan)),
-                Span::raw(" quit"),
-            ])
-        };
+        let line = Line::from(vec![
+            Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" navigate  "),
+            Span::styled("enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" open  "),
+            Span::styled("ctrl-n", Style::default().fg(Color::Cyan)),
+            Span::raw(" new  "),
+            Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
+            Span::raw(" switch store  "),
+            Span::styled("ctrl-y", Style::default().fg(Color::Cyan)),
+            Span::raw(" copy  "),
+            Span::styled("?", Style::default().fg(Color::Cyan)),
+            Span::raw(" help  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" quit"),
+        ]);
         frame.render_widget(Paragraph::new(line), area);
     }
 }
@@ -958,15 +914,16 @@ mod tests {
 
     #[test]
     fn ctrl_y_surfaces_a_status_line_for_copy() {
-        // On headless CI arboard may fail. Either outcome (info or error)
-        // is acceptable — the contract is "never panics, always reports".
+        // On headless CI arboard may fail. Either outcome (Copied or
+        // CopyFailed) is acceptable — the contract is "never panics,
+        // always reports via an action the router can turn into a toast".
         let (_dir, ctx) = seeded_store_with_real_secret();
         let mut view = SearchView::new(&ctx);
         assert!(view.selected_result().is_some());
-        view.on_key(ctrl('y'));
+        let action = view.on_key(ctrl('y'));
         assert!(
-            view.status.is_some(),
-            "ctrl-y should always set a status line"
+            matches!(action, SearchAction::Copied(_) | SearchAction::CopyFailed(_)),
+            "ctrl-y should always emit a copy action, got {action:?}"
         );
     }
 
@@ -980,10 +937,12 @@ mod tests {
             view.on_key(key(KeyCode::Char(ch)));
         }
         assert_eq!(view.results.len(), 0);
-        view.on_key(ctrl('y'));
-        match &view.status {
-            Some((_, StatusKind::Error)) => {}
-            other => panic!("expected error status, got {other:?}"),
+        let action = view.on_key(ctrl('y'));
+        match action {
+            SearchAction::CopyFailed(msg) => {
+                assert!(msg.contains("no selection"), "unexpected msg: {msg}");
+            }
+            other => panic!("expected CopyFailed, got {other:?}"),
         }
     }
 

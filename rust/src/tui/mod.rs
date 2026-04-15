@@ -11,6 +11,7 @@ mod event;
 #[cfg(test)]
 mod harness;
 mod terminal;
+mod toast;
 mod views;
 
 use std::path::PathBuf;

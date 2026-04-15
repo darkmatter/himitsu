@@ -340,6 +340,104 @@ mod tests {
         );
     }
 
+    // ── Flow 4: Ctrl+Y in search → toast visible in rendered buffer ──
+    //
+    // Exercises the global toast surface (hm-o15). On headless CI the
+    // clipboard backend may be unavailable, so either the success toast
+    // (`copied prod/API_KEY`) or the error toast (`clipboard unavailable`
+    // / `decrypt failed`) is acceptable — the router guarantees one of
+    // them is pushed whenever Ctrl+Y is pressed on a valid selection.
+
+    #[test]
+    fn ctrl_y_in_search_pushes_a_toast_visible_in_buffer() {
+        let fx = Fixture::new();
+        let mut h = TuiHarness::new(&fx.ctx);
+
+        // Narrow to API_KEY so the selection is deterministic.
+        h.type_str("API");
+        assert!(h.contains("API_KEY"));
+
+        h.press_ctrl('y');
+
+        // The App should have stashed a toast regardless of clipboard
+        // backend health.
+        let toast = h.app.toast().expect("ctrl-y should push a toast");
+        match toast.kind {
+            crate::tui::app::ToastKind::Success => {
+                assert!(
+                    toast.message.contains("copied"),
+                    "success toast message: {}",
+                    toast.message
+                );
+                assert!(
+                    h.contains("copied"),
+                    "success toast missing from render:\n{}",
+                    h.rendered()
+                );
+            }
+            crate::tui::app::ToastKind::Error => {
+                // Headless path — still rendered, still visible.
+                assert!(
+                    h.contains("[err]"),
+                    "error toast missing from render:\n{}",
+                    h.rendered()
+                );
+            }
+            crate::tui::app::ToastKind::Info => {
+                panic!("ctrl-y should never produce an Info toast");
+            }
+        }
+    }
+
+    // ── Flow 5: toast expires and clears on next draw ────────────────
+    //
+    // Uses `expire_toast_now` to simulate the 3-second TTL elapsing
+    // without sleeping. After the next draw tick the toast must be gone
+    // and its text must no longer appear in the rendered buffer.
+
+    #[test]
+    fn toast_expires_and_clears_on_next_draw() {
+        let fx = Fixture::new();
+        let mut h = TuiHarness::new(&fx.ctx);
+
+        // Create a secret via the new-secret form so we get a deterministic
+        // "created prod/TOAST_TEST" success toast.
+        h.press_ctrl('n');
+        assert_eq!(h.app.current_view(), "new_secret");
+        h.type_str("prod/TOAST_TEST");
+        h.press(KeyCode::Tab);
+        h.type_str("toast-value");
+        h.press_ctrl('w');
+
+        assert_eq!(h.app.current_view(), "search");
+        let toast = h.app.toast().expect("save should push a toast");
+        assert!(
+            toast.message.contains("created prod/TOAST_TEST"),
+            "unexpected toast: {}",
+            toast.message
+        );
+        assert!(
+            h.contains("created prod/TOAST_TEST"),
+            "toast text missing from initial render:\n{}",
+            h.rendered()
+        );
+
+        // Simulate the TTL elapsing, then drive a no-op key to force a
+        // fresh draw tick so the lazy expiry sweep runs.
+        h.app.expire_toast_now();
+        h.press(KeyCode::Right); // ignored by search; triggers a redraw
+
+        assert!(
+            h.app.toast().is_none(),
+            "toast should have been swept after expiry"
+        );
+        assert!(
+            !h.contains("created prod/TOAST_TEST"),
+            "expired toast text still on screen:\n{}",
+            h.rendered()
+        );
+    }
+
     // ── Flow 3: Ctrl+S → Down → Enter → store switch ─────────────────
 
     #[test]

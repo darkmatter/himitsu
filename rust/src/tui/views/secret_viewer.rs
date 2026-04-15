@@ -45,6 +45,10 @@ pub enum SecretViewerAction {
     /// The displayed secret was deleted — the router should pop back to
     /// whichever view opened the viewer (refreshed).
     Deleted,
+    /// `y` copy succeeded — router should toast "copied to clipboard".
+    Copied,
+    /// `y` copy failed (decrypt error / headless clipboard / …).
+    CopyFailed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -147,10 +151,7 @@ impl SecretViewerView {
                 self.toggle_reveal();
                 SecretViewerAction::None
             }
-            (KeyCode::Char('y'), _) => {
-                self.copy_to_clipboard();
-                SecretViewerAction::None
-            }
+            (KeyCode::Char('y'), _) => self.copy_to_clipboard(),
             (KeyCode::Char('R'), _) => {
                 self.rekey();
                 SecretViewerAction::None
@@ -313,27 +314,23 @@ impl SecretViewerView {
         }
     }
 
-    fn copy_to_clipboard(&mut self) {
+    fn copy_to_clipboard(&mut self) -> SecretViewerAction {
         let value = match &self.value {
             ValueState::Revealed(v) => v.clone(),
             ValueState::Hidden => match self.decrypt() {
                 Ok(v) => v,
                 Err(e) => {
-                    self.status = Some((format!("decrypt failed: {e}"), StatusKind::Error));
-                    return;
+                    return SecretViewerAction::CopyFailed(format!("decrypt failed: {e}"));
                 }
             },
         };
 
         // Graceful no-op: arboard may fail on headless boxes or when no
-        // display server is available. Surface as status rather than crashing.
+        // display server is available. Surface via an action so the router
+        // can turn it into a toast instead of crashing.
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
-            Ok(()) => {
-                self.status = Some(("copied to clipboard".to_string(), StatusKind::Info));
-            }
-            Err(e) => {
-                self.status = Some((format!("clipboard unavailable: {e}"), StatusKind::Error));
-            }
+            Ok(()) => SecretViewerAction::Copied,
+            Err(e) => SecretViewerAction::CopyFailed(format!("clipboard unavailable: {e}")),
         }
     }
 
@@ -812,11 +809,18 @@ mod tests {
     #[test]
     fn y_copies_without_revealing_display() {
         // On headless CI arboard may fail — assert it doesn't crash and
-        // surfaces *some* status message (info on success, error on miss).
+        // emits *some* copy-outcome action (Copied on success, CopyFailed
+        // on headless miss). Router turns whichever it is into a toast.
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        view.on_key(press(KeyCode::Char('y')));
-        assert!(view.status.is_some(), "y should set a status message");
+        let action = view.on_key(press(KeyCode::Char('y')));
+        assert!(
+            matches!(
+                action,
+                SecretViewerAction::Copied | SecretViewerAction::CopyFailed(_)
+            ),
+            "y should emit a copy outcome action, got {action:?}"
+        );
         // Value state is an implementation detail — either hidden or kept as
         // an in-memory cache is fine. We only require the UI survived.
     }
