@@ -1,16 +1,24 @@
 //! New-secret form: in-TUI creation of a secret without shelling out.
 //!
-//! Two-step state machine:
+//! The form walks through a fixed sequence of fields:
 //!
 //! 1. **Path** — full secret path (e.g. `prod/API_KEY`). Slashes are allowed
-//!    and purely organisational — they show up as folder headers in the
+//!    and purely organisational; they show up as folder headers in the
 //!    search view.
-//! 2. **Value** — multi-line buffer. `Enter` inserts a newline; `Ctrl+S` or
-//!    `Ctrl+W` submits the form from any step.
+//! 2. **Value** — multi-line buffer. `Enter` inserts a newline.
+//! 3. **Description** — human-readable note.
+//! 4. **URL** — associated website or API.
+//! 5. **TOTP** — `otpauth://` URI or base32 secret (validated).
+//! 6. **Env key** — default env-var name (validated).
+//! 7. **Expires at** — `never`, relative duration (`30d`/`6mo`/`1y`), or an
+//!    RFC 3339 timestamp.
 //!
-//! Submission encrypts via [`crate::crypto::age`] and writes through
-//! [`crate::remote::store::write_secret`], reusing the exact same code path
-//! that `himitsu set` uses. No subprocesses are spawned.
+//! Tab / Shift-Tab move between fields with wrap-around. `Ctrl+S` or `Ctrl+W`
+//! submits from any field. Submission encrypts via [`crate::crypto::age`]
+//! and writes through [`crate::remote::store::write_secret`], reusing the
+//! exact same code path that `himitsu set` uses. Validation leans on the
+//! `pub(crate)` helpers in [`crate::cli::set`] and [`crate::cli::duration`]
+//! so the TUI and CLI stay in lockstep.
 //!
 //! On success the outer app router refreshes search; on failure the view
 //! surfaces the error in its status line and stays open so the user can
@@ -23,6 +31,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::cli::duration::{self, ExpiresAt};
+use crate::cli::set::{validate_env_key, validate_totp};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::proto::SecretValue;
@@ -49,12 +59,53 @@ pub enum NewSecretAction {
 pub enum Step {
     Path,
     Value,
+    Description,
+    Url,
+    Totp,
+    EnvKey,
+    ExpiresAt,
+}
+
+impl Step {
+    /// All steps in display/tab order. Used for Tab / Shift-Tab cycling
+    /// and for tests asserting the cycle visits every field.
+    const ORDER: [Step; 7] = [
+        Step::Path,
+        Step::Value,
+        Step::Description,
+        Step::Url,
+        Step::Totp,
+        Step::EnvKey,
+        Step::ExpiresAt,
+    ];
+
+    fn index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|s| *s == self)
+            .expect("step is always in ORDER")
+    }
+
+    fn next(self) -> Step {
+        let i = self.index();
+        Self::ORDER[(i + 1) % Self::ORDER.len()]
+    }
+
+    fn prev(self) -> Step {
+        let i = self.index();
+        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
 }
 
 pub struct NewSecretView {
     step: Step,
     path: String,
     value: String,
+    description: String,
+    url: String,
+    totp: String,
+    env_key: String,
+    expires_at: String,
     status: Option<String>,
     ctx: Context,
 }
@@ -65,6 +116,11 @@ impl NewSecretView {
             step: Step::Path,
             path: String::new(),
             value: String::new(),
+            description: String::new(),
+            url: String::new(),
+            totp: String::new(),
+            env_key: String::new(),
+            expires_at: String::new(),
             status: None,
             ctx: ctx.clone(),
         }
@@ -90,6 +146,21 @@ impl NewSecretView {
         self.status.as_deref()
     }
 
+    /// Mutable accessor to the buffer that backs the currently focused step.
+    /// `Value` is multi-line so it lives in its own helper; every other field
+    /// routes through this single-line path.
+    fn field_buffer_mut(&mut self, step: Step) -> Option<&mut String> {
+        match step {
+            Step::Path => Some(&mut self.path),
+            Step::Value => None,
+            Step::Description => Some(&mut self.description),
+            Step::Url => Some(&mut self.url),
+            Step::Totp => Some(&mut self.totp),
+            Step::EnvKey => Some(&mut self.env_key),
+            Step::ExpiresAt => Some(&mut self.expires_at),
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> NewSecretAction {
         // Global escape hatches.
         if matches!(
@@ -112,48 +183,77 @@ impl NewSecretView {
             return self.submit();
         }
 
+        // Shift-Tab wraps backward from any step.
+        if matches!(key.code, KeyCode::BackTab) {
+            self.move_to(self.step.prev());
+            return NewSecretAction::None;
+        }
+
         match self.step {
-            Step::Path => self.handle_path_key(key),
             Step::Value => self.handle_value_key(key),
+            _ => self.handle_single_line_key(key),
         }
     }
 
-    /// Single-line editor for `path`. `Enter` / `Tab` advances to the value
-    /// step (rejecting empty input), `Backspace` erases, other chars append.
-    fn handle_path_key(&mut self, key: KeyEvent) -> NewSecretAction {
+    /// Single-line editor used by every field except `Value`. `Tab` / `Enter`
+    /// advances to the next field (running field-local validation first);
+    /// `Backspace` erases; printable chars append.
+    fn handle_single_line_key(&mut self, key: KeyEvent) -> NewSecretAction {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
-                if self.path.trim().is_empty() {
-                    self.status = Some("path cannot be empty".into());
+                if let Err(msg) = self.validate_current_field() {
+                    self.status = Some(msg);
                     return NewSecretAction::None;
                 }
                 self.status = None;
-                self.step = Step::Value;
+                self.move_to(self.step.next());
+                NewSecretAction::None
+            }
+            (KeyCode::Up, _) => {
+                if let Err(msg) = self.validate_current_field() {
+                    self.status = Some(msg);
+                    return NewSecretAction::None;
+                }
+                self.status = None;
+                self.move_to(self.step.prev());
+                NewSecretAction::None
+            }
+            (KeyCode::Down, _) => {
+                if let Err(msg) = self.validate_current_field() {
+                    self.status = Some(msg);
+                    return NewSecretAction::None;
+                }
+                self.status = None;
+                self.move_to(self.step.next());
                 NewSecretAction::None
             }
             (KeyCode::Backspace, _) => {
-                self.path.pop();
+                if let Some(buf) = self.field_buffer_mut(self.step) {
+                    buf.pop();
+                }
                 NewSecretAction::None
             }
             (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.path.push(c);
+                if let Some(buf) = self.field_buffer_mut(self.step) {
+                    buf.push(c);
+                }
                 NewSecretAction::None
             }
             _ => NewSecretAction::None,
         }
     }
 
-    /// Multi-line editor for `value`. `Enter` inserts a newline; `Shift-Tab`
-    /// returns to the path step; `Ctrl+S` / `Ctrl+W` submits (handled in
-    /// `on_key` before dispatch).
+    /// Multi-line editor for `Value`. `Enter` inserts a newline; `Tab` moves
+    /// to the next field; `Backspace` erases; `Ctrl+S` / `Ctrl+W` submit
+    /// (handled in `on_key` before dispatch).
     fn handle_value_key(&mut self, key: KeyEvent) -> NewSecretAction {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => {
                 self.value.push('\n');
                 NewSecretAction::None
             }
-            (KeyCode::BackTab, _) | (KeyCode::Up, _) => {
-                self.step = Step::Path;
+            (KeyCode::Tab, _) => {
+                self.move_to(self.step.next());
                 NewSecretAction::None
             }
             (KeyCode::Backspace, _) => {
@@ -168,18 +268,108 @@ impl NewSecretView {
         }
     }
 
-    /// Validate and persist the secret. On success returns `Created(..)`;
-    /// on failure leaves the form untouched and returns `Failed(..)`.
-    fn submit(&mut self) -> NewSecretAction {
+    fn move_to(&mut self, step: Step) {
+        self.step = step;
+    }
+
+    /// Validate the field the user is about to leave. Empty optional fields
+    /// are fine — we only complain about required inputs (path) or
+    /// syntactically bad values.
+    fn validate_current_field(&self) -> Result<(), String> {
+        match self.step {
+            Step::Path => {
+                if self.path.trim().is_empty() {
+                    return Err("path cannot be empty".into());
+                }
+                Ok(())
+            }
+            Step::Value => Ok(()),
+            Step::Description | Step::Url => Ok(()),
+            Step::Totp => {
+                if self.totp.trim().is_empty() {
+                    return Ok(());
+                }
+                validate_totp(&self.totp).map_err(|e| format!("{e}"))
+            }
+            Step::EnvKey => {
+                if self.env_key.trim().is_empty() {
+                    return Ok(());
+                }
+                validate_env_key(&self.env_key).map_err(|e| format!("{e}"))
+            }
+            Step::ExpiresAt => {
+                if self.expires_at.trim().is_empty() {
+                    return Ok(());
+                }
+                duration::parse(&self.expires_at)
+                    .map(|_| ())
+                    .map_err(|e| format!("{e}"))
+            }
+        }
+    }
+
+    /// Build a `SecretValue` populated with every entered field. Mirrors
+    /// `cli::set::run`: empty optional fields become empty strings.
+    fn build_secret_value(&self) -> Result<SecretValue, String> {
+        let expires_at_ts = if self.expires_at.trim().is_empty() {
+            None
+        } else {
+            match duration::parse(&self.expires_at).map_err(|e| format!("{e}"))? {
+                ExpiresAt::Never => None,
+                ExpiresAt::At(dt) => Some(duration::to_proto_timestamp(dt)),
+            }
+        };
+
+        Ok(SecretValue {
+            data: self.value.as_bytes().to_vec(),
+            content_type: String::new(),
+            annotations: Default::default(),
+            totp: self.totp.clone(),
+            url: self.url.clone(),
+            expires_at: expires_at_ts,
+            description: self.description.clone(),
+            env_key: self.env_key.clone(),
+        })
+    }
+
+    /// Run every field validator before we attempt to encrypt, pulling focus
+    /// back to the offending field if something is wrong. Reuses the same
+    /// `validate_current_field` path so save-time and leave-time checks stay
+    /// in sync.
+    fn validate_all(&mut self) -> Result<(), NewSecretAction> {
         if self.path.trim().is_empty() {
             self.status = Some("path cannot be empty".into());
             self.step = Step::Path;
-            return NewSecretAction::None;
+            return Err(NewSecretAction::None);
         }
         if self.value.is_empty() {
             self.status = Some("value cannot be empty".into());
             self.step = Step::Value;
-            return NewSecretAction::None;
+            return Err(NewSecretAction::None);
+        }
+
+        for step in [Step::Totp, Step::EnvKey, Step::ExpiresAt] {
+            let saved = self.step;
+            self.step = step;
+            let check = self.validate_current_field();
+            self.step = saved;
+            if let Err(msg) = check {
+                self.status = Some(msg);
+                self.step = step;
+                return Err(NewSecretAction::None);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate every field, encrypt, and persist. On success returns
+    /// `Created(..)`; on failure leaves the form untouched and returns
+    /// either `None` (validation, so the user keeps editing) or
+    /// `Failed(..)` (underlying crypto/store error).
+    fn submit(&mut self) -> NewSecretAction {
+        if let Err(action) = self.validate_all() {
+            return action;
         }
 
         let full = self.path.trim().to_string();
@@ -201,15 +391,12 @@ impl NewSecretView {
             }
         };
 
-        let sv = SecretValue {
-            data: self.value.as_bytes().to_vec(),
-            content_type: String::new(),
-            annotations: Default::default(),
-            totp: String::new(),
-            url: String::new(),
-            expires_at: None,
-            description: String::new(),
-            env_key: String::new(),
+        let sv = match self.build_secret_value() {
+            Ok(sv) => sv,
+            Err(msg) => {
+                self.status = Some(msg.clone());
+                return NewSecretAction::Failed(msg);
+            }
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = match age::encrypt(&wire, &recipients) {
@@ -239,17 +426,39 @@ impl NewSecretView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Length(3),
-                Constraint::Min(3),
-                Constraint::Length(1),
+                Constraint::Length(1), // header
+                Constraint::Length(3), // path
+                Constraint::Min(3),    // value
+                Constraint::Length(3), // description
+                Constraint::Length(3), // url
+                Constraint::Length(3), // totp
+                Constraint::Length(3), // env_key
+                Constraint::Length(3), // expires_at
+                Constraint::Length(1), // footer
             ])
             .split(area);
 
         self.draw_header(frame, chunks[0]);
-        self.draw_path_field(frame, chunks[1]);
+        self.draw_single_line(frame, chunks[1], Step::Path, " path ", &self.path);
         self.draw_value_field(frame, chunks[2]);
-        self.draw_footer(frame, chunks[3]);
+        self.draw_single_line(
+            frame,
+            chunks[3],
+            Step::Description,
+            " description ",
+            &self.description,
+        );
+        self.draw_single_line(frame, chunks[4], Step::Url, " url ", &self.url);
+        self.draw_single_line(frame, chunks[5], Step::Totp, " totp ", &self.totp);
+        self.draw_single_line(frame, chunks[6], Step::EnvKey, " env_key ", &self.env_key);
+        self.draw_single_line(
+            frame,
+            chunks[7],
+            Step::ExpiresAt,
+            " expires_at ",
+            &self.expires_at,
+        );
+        self.draw_footer(frame, chunks[8]);
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -267,13 +476,20 @@ impl NewSecretView {
         frame.render_widget(Paragraph::new(header), area);
     }
 
-    fn draw_path_field(&self, frame: &mut Frame<'_>, area: Rect) {
-        let focused = self.step == Step::Path;
+    fn draw_single_line(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        step: Step,
+        title: &str,
+        content: &str,
+    ) {
+        let focused = self.step == step;
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" path ")
+            .title(title.to_string())
             .border_style(Self::border_style(focused));
-        let mut text = self.path.clone();
+        let mut text = content.to_string();
         if focused {
             text.push('_');
         }
@@ -312,7 +528,7 @@ impl NewSecretView {
             ))
         } else {
             Line::from(vec![
-                Span::styled("enter", Style::default().fg(Color::Cyan)),
+                Span::styled("tab", Style::default().fg(Color::Cyan)),
                 Span::raw(" next  "),
                 Span::styled("shift-tab", Style::default().fg(Color::Cyan)),
                 Span::raw(" prev  "),
@@ -329,9 +545,10 @@ impl NewSecretView {
 
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
-            ("tab / enter", "next field"),
-            ("shift-tab / ↑", "previous field"),
-            ("ctrl-s / ctrl-w", "save from any step"),
+            ("tab / enter", "next field (wraps)"),
+            ("shift-tab", "previous field (wraps)"),
+            ("enter (value)", "insert newline"),
+            ("ctrl-s / ctrl-w", "save from any field"),
             ("esc / ctrl-c", "cancel"),
             ("?", "toggle this help"),
         ]
@@ -364,6 +581,10 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn back_tab() -> KeyEvent {
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)
     }
 
     fn typ(view: &mut NewSecretView, s: &str) {
@@ -425,16 +646,6 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_goes_back_to_previous_step() {
-        let mut view = NewSecretView::new(&empty_ctx());
-        typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Enter));
-        assert_eq!(view.step(), Step::Value);
-        view.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-        assert_eq!(view.step(), Step::Path);
-    }
-
-    #[test]
     fn esc_cancels_the_form() {
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "x");
@@ -483,5 +694,151 @@ mod tests {
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Value);
         assert!(view.status().unwrap().contains("value"));
+    }
+
+    #[test]
+    fn tab_cycle_visits_every_field_and_wraps_to_path() {
+        // hm-r4i: cycling forward must hit every metadata field and wrap.
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        // Value is multi-line, so skip past it explicitly.
+        let expected = [
+            Step::Path,
+            Step::Value,
+            Step::Description,
+            Step::Url,
+            Step::Totp,
+            Step::EnvKey,
+            Step::ExpiresAt,
+            Step::Path, // wrap-around
+        ];
+        let mut seen = vec![view.step()];
+        for _ in 0..expected.len() - 1 {
+            view.on_key(press(KeyCode::Tab));
+            seen.push(view.step());
+        }
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn shift_tab_wraps_backward_from_path_to_expires_at() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        assert_eq!(view.step(), Step::Path);
+        view.on_key(back_tab());
+        assert_eq!(view.step(), Step::ExpiresAt);
+        view.on_key(back_tab());
+        assert_eq!(view.step(), Step::EnvKey);
+    }
+
+    #[test]
+    fn full_metadata_roundtrip_populates_secret_value() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/API_KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "hunter2");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "the prod api key");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "https://api.example.com");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "API_KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "30d");
+
+        let sv = view.build_secret_value().expect("valid build");
+        assert_eq!(sv.data, b"hunter2");
+        assert_eq!(sv.description, "the prod api key");
+        assert_eq!(sv.url, "https://api.example.com");
+        assert_eq!(sv.totp, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
+        assert_eq!(sv.env_key, "API_KEY");
+        assert!(sv.expires_at.is_some());
+    }
+
+    #[test]
+    fn empty_optional_fields_stay_empty_in_secret_value() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "value");
+
+        let sv = view.build_secret_value().expect("valid build");
+        assert_eq!(sv.description, "");
+        assert_eq!(sv.url, "");
+        assert_eq!(sv.totp, "");
+        assert_eq!(sv.env_key, "");
+        assert!(sv.expires_at.is_none());
+    }
+
+    #[test]
+    fn invalid_totp_blocks_submit_and_keeps_focus() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "value");
+        // Walk to the TOTP field.
+        view.on_key(press(KeyCode::Tab)); // value -> description
+        view.on_key(press(KeyCode::Tab)); // -> url
+        view.on_key(press(KeyCode::Tab)); // -> totp
+        assert_eq!(view.step(), Step::Totp);
+        typ(&mut view, "short!!!");
+        let out = view.on_key(ctrl('s'));
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.step(), Step::Totp);
+        assert!(view.status().is_some());
+    }
+
+    #[test]
+    fn invalid_env_key_blocks_submit_and_keeps_focus() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "value");
+        view.on_key(press(KeyCode::Tab)); // -> description
+        view.on_key(press(KeyCode::Tab)); // -> url
+        view.on_key(press(KeyCode::Tab)); // -> totp
+        view.on_key(press(KeyCode::Tab)); // -> env_key
+        assert_eq!(view.step(), Step::EnvKey);
+        typ(&mut view, "1BAD");
+        let out = view.on_key(ctrl('s'));
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.step(), Step::EnvKey);
+        assert!(view.status().unwrap().contains("letter or underscore"));
+    }
+
+    #[test]
+    fn invalid_expires_at_blocks_submit_and_keeps_focus() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "value");
+        view.on_key(press(KeyCode::Tab)); // -> description
+        view.on_key(press(KeyCode::Tab)); // -> url
+        view.on_key(press(KeyCode::Tab)); // -> totp
+        view.on_key(press(KeyCode::Tab)); // -> env_key
+        view.on_key(press(KeyCode::Tab)); // -> expires_at
+        assert_eq!(view.step(), Step::ExpiresAt);
+        typ(&mut view, "not-a-duration");
+        let out = view.on_key(ctrl('s'));
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.step(), Step::ExpiresAt);
+        assert!(view.status().is_some());
+    }
+
+    #[test]
+    fn expires_at_never_keyword_clears_to_none() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab));
+        typ(&mut view, "value");
+        view.on_key(press(KeyCode::Tab)); // description
+        view.on_key(press(KeyCode::Tab)); // url
+        view.on_key(press(KeyCode::Tab)); // totp
+        view.on_key(press(KeyCode::Tab)); // env_key
+        view.on_key(press(KeyCode::Tab)); // expires_at
+        typ(&mut view, "never");
+        let sv = view.build_secret_value().expect("valid build");
+        assert!(sv.expires_at.is_none());
     }
 }
