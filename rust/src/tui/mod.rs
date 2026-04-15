@@ -8,6 +8,8 @@
 
 mod app;
 mod event;
+#[cfg(test)]
+mod harness;
 mod terminal;
 mod views;
 

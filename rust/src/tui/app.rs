@@ -127,6 +127,25 @@ impl App {
         None
     }
 
+    /// Path to the currently active store. Exposed for integration tests
+    /// that drive the App through real key events and need to assert the
+    /// router updated `ctx.store` after a `SwitchStore` action.
+    #[cfg(test)]
+    pub fn active_store(&self) -> &std::path::Path {
+        &self.ctx.store
+    }
+
+    /// Name of the currently active view, for integration-test assertions.
+    /// Returns one of `"search"`, `"secret_viewer"`, `"new_secret"`.
+    #[cfg(test)]
+    pub fn current_view(&self) -> &'static str {
+        match &self.view {
+            View::Search(_) => "search",
+            View::SecretViewer(_) => "secret_viewer",
+            View::NewSecret(_) => "new_secret",
+        }
+    }
+
     /// Deliver the result of an external edit back to the currently-active
     /// secret viewer. No-op if the user has already navigated away.
     pub fn finish_secret_edit(&mut self, result: std::result::Result<Option<String>, String>) {
