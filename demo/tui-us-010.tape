@@ -29,32 +29,32 @@ Sleep 300ms
 Show
 Set TypingSpeed 40ms
 
-# ── US-010: edit secret value in-TUI ─────────────────────
-# Launch the TUI — auto-resolves the seeded store from HIMITSU_HOME.
-# EDITOR is already exported to the fake-editor helper.
+# ── US-010: edit secret value in-TUI via $EDITOR ────────
+# Launch the TUI — EDITOR is exported to the fake-editor helper that
+# rewrites the temp buffer with `sk_edited_in_tui`.
 Type "$HIMITSU_BIN"
 Enter
 Sleep 1.5s
 
-# Tab into the secrets pane.
-Tab
-Sleep 500ms
+# Filter down to prod/API_KEY.
+Type "api"
+Sleep 800ms
 
-# Open the viewer for the highlighted secret (prod/API_KEY).
+# Open the viewer.
 Enter
 Sleep 1.2s
 
-# Press 'e' to edit the decrypted value. The TUI suspends,
-# $EDITOR runs against a temp file (our helper rewrites it
-# with 'sk_edited_in_tui'), and the TUI resumes.
+# Press `e` — the TUI suspends, $EDITOR runs against a temp file with
+# the decrypted value, the helper rewrites it, the TUI resumes and
+# re-encrypts the new value.
 Type "e"
-Sleep 1.5s
+Sleep 1.8s
 
-# Viewer now shows the re-encrypted value with an edited status.
-Sleep 1.5s
+# Viewer now shows the edited value.
+Sleep 1.2s
 
-# Back out of the viewer and quit.
+# Back out and quit.
 Escape
 Sleep 500ms
-Type "q"
+Escape
 Sleep 500ms

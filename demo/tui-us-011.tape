@@ -23,58 +23,48 @@ Sleep 300ms
 Show
 Set TypingSpeed 40ms
 
-# ── US-011: drill into a secret from the dashboard ──────
-# Launch the TUI — auto-resolves the seeded store from HIMITSU_HOME.
-# Dashboard opens with the envs pane focused (cyan border), `prod`
-# selected. The right pane previews prod's secrets with an inactive,
-# greyed-out highlight.
+# ── US-011: browse and drill into a secret from search ──
+# Launch the TUI — search view is the root and lists every secret
+# in the seeded store, folder-grouped by top-level path prefix.
 Type "$HIMITSU_BIN"
-Enter
-Sleep 1.2s
-
-# Tab — focus moves to the secrets pane. Cyan border jumps to the
-# right; the left pane greys out. Selection lands on prod/API_KEY.
-Tab
-Sleep 600ms
-
-# Navigate down to prod/DATABASE_URL.
-Type "j"
-Sleep 500ms
-
-# And back up to prod/API_KEY.
-Type "k"
-Sleep 500ms
-
-# Enter — open the secret viewer for prod/API_KEY. The decrypted
-# value is rendered inside the viewer overlay.
-Enter
-Sleep 2s
-
-# Escape back to the dashboard. Focus is preserved on the secrets
-# pane with the same selection.
-Escape
-Sleep 800ms
-
-# h — focus back to the envs pane.
-Type "h"
-Sleep 500ms
-
-# j — select `staging`. The right pane swaps to staging's secrets.
-Type "j"
-Sleep 700ms
-
-# l — focus back to the secrets pane (now listing staging).
-Type "l"
-Sleep 500ms
-
-# Enter — open the viewer for staging/API_KEY.
 Enter
 Sleep 1.5s
 
-# Escape back to the dashboard.
-Escape
+# Walk the result list with ↓ / ↑. The first selectable row is the
+# first secret under the `prod` folder header.
+Down
+Sleep 500ms
+Down
+Sleep 500ms
+Up
 Sleep 500ms
 
-# Quit.
-Type "q"
+# Live-filter by typing — narrows to anything matching `data`.
+Type "data"
+Sleep 900ms
+
+# Open the secret viewer for prod/DATABASE_URL — the decrypted value
+# and metadata block render in the viewer overlay.
+Enter
+Sleep 2s
+
+# Back out to search; the query and selection are preserved.
+Escape
+Sleep 800ms
+
+# Clear the filter and pick a secret from a different folder.
+Backspace
+Backspace
+Backspace
+Backspace
+Sleep 500ms
+Type "staging"
+Sleep 700ms
+Enter
+Sleep 1.5s
+
+# Back to search and quit.
+Escape
+Sleep 500ms
+Escape
 Sleep 500ms

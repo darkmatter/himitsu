@@ -24,39 +24,29 @@ Show
 Set TypingSpeed 40ms
 
 # ── US-009: delete secret with confirm prompt ──────────
-# Launch the TUI — auto-resolves the seeded store from HIMITSU_HOME.
+# Launch the TUI — search view is the root.
 Type "$HIMITSU_BIN"
 Enter
 Sleep 1.5s
 
-# Move env selection from `prod` down to `staging`. The right pane
-# now lists staging's secrets: API_KEY (top) and DEBUG_TOKEN.
-Type "j"
+# Type to filter down to the deletion target.
+Type "debug"
 Sleep 800ms
 
-# Tab into the secrets pane — selection starts on staging/API_KEY.
-Tab
-Sleep 600ms
-
-# Move down to staging/DEBUG_TOKEN, the deletion target.
-Type "j"
-Sleep 600ms
-
-# Open the secret viewer so the decrypted value + footer are visible.
+# Enter opens the secret viewer for staging/DEBUG_TOKEN.
 Enter
 Sleep 1.2s
 
-# Press `d` to enter ConfirmDelete mode — prompt reads
-# "Delete env/path? (y/N)" in the footer.
+# Press `d` to enter the confirm-delete prompt — footer reads
+# "Delete <path>? (y/N)".
 Type "d"
 Sleep 1.2s
 
-# Confirm with lowercase `y`. The viewer pops back to the dashboard,
-# status line reports success, and staging/DEBUG_TOKEN is gone from
-# the list (staging env remains because staging/API_KEY is still there).
+# Confirm with `y`. The viewer pops back to a refreshed search view
+# with staging/DEBUG_TOKEN gone from the listing.
 Type "y"
 Sleep 1.5s
 
 # Quit.
-Type "q"
+Escape
 Sleep 500ms

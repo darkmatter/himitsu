@@ -23,30 +23,35 @@ Sleep 300ms
 Show
 Set TypingSpeed 40ms
 
-# ── US-012: help overlay ────────────────────────────────
-# Launch the TUI — auto-resolves the seeded store from HIMITSU_HOME.
+# ── US-012: per-view help overlay ───────────────────────
+# Launch the TUI.
 Type "$HIMITSU_BIN"
 Enter
 Sleep 1.5s
 
-# Press '?' from the dashboard to open the help overlay.
+# `?` opens the help overlay scoped to the current view (search).
 Type "?"
 Sleep 2.5s
 
-# Dismiss the overlay with Esc; we're back on the dashboard.
+# Dismiss the overlay with Esc.
 Escape
+Sleep 1s
+
+# Open a secret to demonstrate the overlay re-populates with the
+# secret-viewer bindings.
+Type "api"
+Sleep 600ms
+Enter
 Sleep 1.2s
 
-# Tab into the secrets pane, pop '?' again — the overlay shows the
-# dashboard entries regardless of focus, but we also demonstrate it
-# is still accessible from any state.
-Tab
-Sleep 500ms
+# `?` again — different help, scoped to the secret viewer.
 Type "?"
-Sleep 2s
+Sleep 2.5s
 Escape
-Sleep 500ms
+Sleep 800ms
 
 # Quit.
-Type "q"
+Escape
+Sleep 500ms
+Escape
 Sleep 500ms

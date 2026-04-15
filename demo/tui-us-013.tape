@@ -26,48 +26,44 @@ Sleep 300ms
 Show
 Set TypingSpeed 40ms
 
-# ── US-013: store picker / switch store from dashboard ──
-# Launch the TUI — auto-resolves `demo/main` via default_store config.
-# Header shows `demo/main · 2 envs`, left pane lists prod + staging.
+# ── US-013: store picker / switch store from search ─────
+# Launch the TUI. The search view spans every registered store —
+# results from `demo/main` and `acme/infra` appear together with
+# per-store header rows (multi-store grouping, hm-57k).
 Type "$HIMITSU_BIN"
 Enter
+Sleep 1.8s
+
+# Open the store picker overlay with Ctrl+S. Both stores listed
+# alphabetically: acme/infra and demo/main; the cursor starts on
+# the active store (demo/main).
+Ctrl+S
 Sleep 1.2s
 
-# Press 's' from the dashboard to open the store picker overlay.
-# Both stores are listed alphabetically: acme/infra, then demo/main.
-# The current store (demo/main) is marked with `•` and the cursor
-# starts on it (index 1).
-Type "s"
-Sleep 1.2s
-
-# Move the list cursor UP to acme/infra (index 0).
-Type "k"
+# Move UP to acme/infra.
+Up
 Sleep 600ms
 
-# Select acme/infra — picker closes, dashboard rebuilds against the
-# new store. Header now reads `acme/infra · 1 env`, secrets pane
-# shows `prod/SHARED_KEY` and `prod/SHARED_URL`.
+# Select it — picker closes and the search view rebuilds against
+# the new active store. (Multi-store mode still surfaces the other
+# store's secrets, but acme/infra is now the default for new writes.)
 Enter
-Sleep 2s
+Sleep 1.8s
 
-# Reopen the picker to switch back to demo/main.
-Type "s"
+# Reopen the picker and switch back to demo/main.
+Ctrl+S
 Sleep 1s
-
-# Cursor starts on the current store (acme/infra, index 0); move
-# DOWN to demo/main (index 1) and select it.
-Type "j"
+Down
 Sleep 500ms
 Enter
-Sleep 1s
+Sleep 1.2s
 
-# Demonstrate Esc: open the picker one more time and cancel with
-# Escape — no change, still on demo/main.
-Type "s"
+# One more open and Esc to demonstrate cancel.
+Ctrl+S
 Sleep 800ms
 Escape
 Sleep 800ms
 
 # Quit.
-Type "q"
+Escape
 Sleep 500ms

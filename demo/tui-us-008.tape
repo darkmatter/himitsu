@@ -23,50 +23,61 @@ Sleep 300ms
 Show
 Set TypingSpeed 40ms
 
-# ── US-008: new secret from dashboard ───────────────────
-# Launch the TUI — auto-resolves the seeded store from HIMITSU_HOME.
-# Dashboard renders with `prod` and `staging` envs.
+# ── US-008: create a new secret with metadata ───────────
+# Launch the TUI — the search view is the root, populated with all
+# secrets from the seeded store (folder-grouped by path prefix).
 Type "$HIMITSU_BIN"
 Enter
 Sleep 1.5s
 
-# Press 'n' to open the new-secret form. The env field is
-# pre-filled with the currently-selected env (`prod`) and focused.
-Type "n"
+# Open the new-secret form with Ctrl+N. The form starts focused on
+# the path field; Tab/Shift-Tab cycle through path → value →
+# description → url → totp → env_key → expires_at.
+Ctrl+N
 Sleep 900ms
 
-# Leave env as `prod` and press Enter to advance to the path field.
-Enter
+# Type the secret path.
+Type "prod/STRIPE_KEY"
+Sleep 600ms
+Tab
+Sleep 500ms
+
+# Value field — multi-line buffer, so we use Tab (not Enter) to advance.
+Type "sk_live_51HxYz2"
+Sleep 600ms
+Tab
+Sleep 500ms
+
+# Description.
+Type "Stripe live secret key"
+Sleep 500ms
+Tab
+Sleep 400ms
+
+# URL.
+Type "https://dashboard.stripe.com"
+Sleep 500ms
+Tab
+Sleep 400ms
+
+# TOTP — skip (empty stays unset).
+Tab
+Sleep 400ms
+
+# env_key — the variable name `himitsu exec` will inject this under.
+Type "STRIPE_SECRET_KEY"
+Sleep 500ms
+Tab
+Sleep 400ms
+
+# expires_at — accepts RFC 3339, relative (`30d`, `6mo`, `1y`), or `never`.
+Type "1y"
 Sleep 700ms
 
-# Type the new secret path letter-by-letter.
-Type "N"
-Type "E"
-Type "W"
-Type "_"
-Type "A"
-Type "P"
-Type "I"
-Type "_"
-Type "K"
-Type "E"
-Type "Y"
-Sleep 700ms
-
-# Advance to the value field.
-Enter
-Sleep 700ms
-
-# Type the secret value. Enter on the value field inserts a newline,
-# so we save with Ctrl+S instead.
-Type "sk_new_value_123"
-Sleep 700ms
-
-# Save the new secret. Form closes and dashboard reappears with the
-# new secret highlighted plus a "created prod/NEW_API_KEY" status.
-Ctrl+S
-Sleep 1.5s
+# Save with Ctrl+W (tmux-safe alternative to Ctrl+S).
+Ctrl+W
+Sleep 1.8s
 
 # Quit.
-Type "q"
+Escape
 Sleep 500ms
