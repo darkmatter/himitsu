@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HimitsuError, Result};
+use crate::tui::keymap::KeyMap;
 
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -77,6 +78,26 @@ pub struct Config {
     /// Override: `HIMITSU_DATA_DIR=/custom/path`
     #[serde(default)]
     pub data_dir: Option<String>,
+
+    /// TUI-specific settings — currently just the configurable keymap.
+    /// Users override individual actions under `tui.keys`; anything left
+    /// out falls back to [`KeyMap::default`], which reproduces the
+    /// hardcoded bindings that shipped before this section existed.
+    #[serde(default)]
+    pub tui: TuiConfig,
+}
+
+/// `tui:` section of the global config.
+///
+/// Currently holds a single `keys` field, but is kept in its own struct so
+/// future TUI settings (themes, initial view, double-width handling…) can
+/// land without breaking existing config files.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiConfig {
+    /// User-configurable keybindings. Missing entries fall back to the
+    /// defaults in [`KeyMap::default`].
+    #[serde(default)]
+    pub keys: KeyMap,
 }
 
 /// Per-project config discovered by walking up from the current directory.

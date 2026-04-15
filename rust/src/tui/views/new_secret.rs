@@ -37,6 +37,7 @@ use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::proto::SecretValue;
 use crate::remote::store;
+use crate::tui::keymap::{Bindings, KeyMap};
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
 #[derive(Debug, Clone)]
@@ -161,46 +162,60 @@ impl NewSecretView {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> NewSecretAction {
-        // Global escape hatches.
+    pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
+        // Ctrl-C is always a quit; it is hard-coded rather than remappable
+        // because users need a reliable panic button even if the configured
+        // `quit` binding happens to overlap a printable character the form
+        // is trying to capture.
         if matches!(
             (key.code, key.modifiers),
             (KeyCode::Char('c'), KeyModifiers::CONTROL)
         ) {
             return NewSecretAction::Quit;
         }
-        if matches!(key.code, KeyCode::Esc) {
+        if keymap.cancel.matches(&key) {
             return NewSecretAction::Cancel;
         }
 
-        // Save from any step. Ctrl+W is the tmux-safe alternative to Ctrl+S,
-        // which many users rebind as their tmux prefix.
-        if matches!(
-            (key.code, key.modifiers),
-            (KeyCode::Char('s'), KeyModifiers::CONTROL)
-                | (KeyCode::Char('w'), KeyModifiers::CONTROL)
-        ) {
+        // Save from any step. Default bindings are Ctrl+S and Ctrl+W —
+        // Ctrl+W being the tmux-safe alternative to Ctrl+S for users who
+        // bind tmux's prefix to Ctrl+S.
+        if keymap.save_secret.matches(&key) {
             return self.submit();
         }
 
-        // Shift-Tab wraps backward from any step.
-        if matches!(key.code, KeyCode::BackTab) {
+        // Prev-field wraps backward from any step. Checked before field
+        // dispatch so a keymap override still works inside the multi-line
+        // value editor.
+        if keymap.prev_field.matches(&key) {
             self.move_to(self.step.prev());
             return NewSecretAction::None;
         }
 
         match self.step {
-            Step::Value => self.handle_value_key(key),
-            _ => self.handle_single_line_key(key),
+            Step::Value => self.handle_value_key(key, keymap),
+            _ => self.handle_single_line_key(key, keymap),
         }
     }
 
     /// Single-line editor used by every field except `Value`. `Tab` / `Enter`
     /// advances to the next field (running field-local validation first);
     /// `Backspace` erases; printable chars append.
-    fn handle_single_line_key(&mut self, key: KeyEvent) -> NewSecretAction {
+    fn handle_single_line_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
+        // Configurable "advance to next field" takes precedence over the
+        // raw Enter/Tab fall-through so a custom `next_field` binding can
+        // still steer field navigation.
+        if keymap.next_field.matches(&key) {
+            if let Err(msg) = self.validate_current_field() {
+                self.status = Some(msg);
+                return NewSecretAction::None;
+            }
+            self.status = None;
+            self.move_to(self.step.next());
+            return NewSecretAction::None;
+        }
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
+            (KeyCode::Enter, _) => {
                 if let Err(msg) = self.validate_current_field() {
                     self.status = Some(msg);
                     return NewSecretAction::None;
@@ -246,14 +261,16 @@ impl NewSecretView {
     /// Multi-line editor for `Value`. `Enter` inserts a newline; `Tab` moves
     /// to the next field; `Backspace` erases; `Ctrl+S` / `Ctrl+W` submit
     /// (handled in `on_key` before dispatch).
-    fn handle_value_key(&mut self, key: KeyEvent) -> NewSecretAction {
+    fn handle_value_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
+        // `next_field` is checked before the `Enter` case so a configured
+        // `Tab`/custom binding advances instead of inserting a newline.
+        if keymap.next_field.matches(&key) {
+            self.move_to(self.step.next());
+            return NewSecretAction::None;
+        }
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => {
                 self.value.push('\n');
-                NewSecretAction::None
-            }
-            (KeyCode::Tab, _) => {
-                self.move_to(self.step.next());
                 NewSecretAction::None
             }
             (KeyCode::Backspace, _) => {
@@ -564,6 +581,7 @@ impl NewSecretView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::keymap::KeyMap;
     use std::path::PathBuf;
 
     fn empty_ctx() -> Context {
@@ -588,8 +606,9 @@ mod tests {
     }
 
     fn typ(view: &mut NewSecretView, s: &str) {
+        let km = KeyMap::default();
         for c in s.chars() {
-            view.on_key(press(KeyCode::Char(c)));
+            view.on_key(press(KeyCode::Char(c)), &km);
         }
     }
 
@@ -603,17 +622,19 @@ mod tests {
 
     #[test]
     fn enter_advances_from_path_to_value() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/API_KEY");
-        view.on_key(press(KeyCode::Enter));
+        view.on_key(press(KeyCode::Enter), &km);
         assert_eq!(view.step(), Step::Value);
         assert_eq!(view.path(), "prod/API_KEY");
     }
 
     #[test]
     fn enter_on_empty_path_is_rejected_with_status() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
-        view.on_key(press(KeyCode::Enter));
+        view.on_key(press(KeyCode::Enter), &km);
         assert_eq!(view.step(), Step::Path);
         assert!(view.status().unwrap().contains("path"));
     }
@@ -627,19 +648,21 @@ mod tests {
 
     #[test]
     fn backspace_erases_last_char_in_current_field() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod");
-        view.on_key(press(KeyCode::Backspace));
+        view.on_key(press(KeyCode::Backspace), &km);
         assert_eq!(view.path(), "pro");
     }
 
     #[test]
     fn value_step_treats_enter_as_newline() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Enter)); // path -> value
+        view.on_key(press(KeyCode::Enter), &km); // path -> value
         typ(&mut view, "line1");
-        view.on_key(press(KeyCode::Enter));
+        view.on_key(press(KeyCode::Enter), &km);
         typ(&mut view, "line2");
         assert_eq!(view.value(), "line1\nline2");
         assert_eq!(view.step(), Step::Value);
@@ -647,26 +670,29 @@ mod tests {
 
     #[test]
     fn esc_cancels_the_form() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "x");
         assert!(matches!(
-            view.on_key(press(KeyCode::Esc)),
+            view.on_key(press(KeyCode::Esc), &km),
             NewSecretAction::Cancel
         ));
     }
 
     #[test]
     fn ctrl_c_quits_from_any_step() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
-        assert!(matches!(view.on_key(ctrl('c')), NewSecretAction::Quit));
+        assert!(matches!(view.on_key(ctrl('c'), &km), NewSecretAction::Quit));
     }
 
     #[test]
     fn submit_with_empty_value_fails_and_refocuses_value_step() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Enter));
-        let out = view.on_key(ctrl('s'));
+        view.on_key(press(KeyCode::Enter), &km);
+        let out = view.on_key(ctrl('s'), &km);
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Value);
         assert!(view.status().unwrap().contains("value"));
@@ -674,22 +700,24 @@ mod tests {
 
     #[test]
     fn submit_with_missing_path_refocuses_path_step() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         // Jump forward with Tab even though path is empty — submit() should
         // drag focus back to Path.
-        view.on_key(press(KeyCode::Tab));
-        let out = view.on_key(ctrl('s'));
+        view.on_key(press(KeyCode::Tab), &km);
+        let out = view.on_key(ctrl('s'), &km);
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Path);
     }
 
     #[test]
     fn ctrl_w_submits_like_ctrl_s() {
+        let km = KeyMap::default();
         // hm-y6n: tmux-safe alternative to ctrl+s.
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Enter));
-        let out = view.on_key(ctrl('w'));
+        view.on_key(press(KeyCode::Enter), &km);
+        let out = view.on_key(ctrl('w'), &km);
         // Empty value rejects — confirms the chord reached submit().
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Value);
@@ -698,6 +726,7 @@ mod tests {
 
     #[test]
     fn tab_cycle_visits_every_field_and_wraps_to_path() {
+        let km = KeyMap::default();
         // hm-r4i: cycling forward must hit every metadata field and wrap.
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
@@ -714,7 +743,7 @@ mod tests {
         ];
         let mut seen = vec![view.step()];
         for _ in 0..expected.len() - 1 {
-            view.on_key(press(KeyCode::Tab));
+            view.on_key(press(KeyCode::Tab), &km);
             seen.push(view.step());
         }
         assert_eq!(seen, expected);
@@ -722,29 +751,31 @@ mod tests {
 
     #[test]
     fn shift_tab_wraps_backward_from_path_to_expires_at() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         assert_eq!(view.step(), Step::Path);
-        view.on_key(back_tab());
+        view.on_key(back_tab(), &km);
         assert_eq!(view.step(), Step::ExpiresAt);
-        view.on_key(back_tab());
+        view.on_key(back_tab(), &km);
         assert_eq!(view.step(), Step::EnvKey);
     }
 
     #[test]
     fn full_metadata_roundtrip_populates_secret_value() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/API_KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "hunter2");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "the prod api key");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "https://api.example.com");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "API_KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "30d");
 
         let sv = view.build_secret_value().expect("valid build");
@@ -758,9 +789,10 @@ mod tests {
 
     #[test]
     fn empty_optional_fields_stay_empty_in_secret_value() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
 
         let sv = view.build_secret_value().expect("valid build");
@@ -773,17 +805,18 @@ mod tests {
 
     #[test]
     fn invalid_totp_blocks_submit_and_keeps_focus() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
         // Walk to the TOTP field.
-        view.on_key(press(KeyCode::Tab)); // value -> description
-        view.on_key(press(KeyCode::Tab)); // -> url
-        view.on_key(press(KeyCode::Tab)); // -> totp
+        view.on_key(press(KeyCode::Tab), &km); // value -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> url
+        view.on_key(press(KeyCode::Tab), &km); // -> totp
         assert_eq!(view.step(), Step::Totp);
         typ(&mut view, "short!!!");
-        let out = view.on_key(ctrl('s'));
+        let out = view.on_key(ctrl('s'), &km);
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Totp);
         assert!(view.status().is_some());
@@ -791,17 +824,18 @@ mod tests {
 
     #[test]
     fn invalid_env_key_blocks_submit_and_keeps_focus() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
-        view.on_key(press(KeyCode::Tab)); // -> description
-        view.on_key(press(KeyCode::Tab)); // -> url
-        view.on_key(press(KeyCode::Tab)); // -> totp
-        view.on_key(press(KeyCode::Tab)); // -> env_key
+        view.on_key(press(KeyCode::Tab), &km); // -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> url
+        view.on_key(press(KeyCode::Tab), &km); // -> totp
+        view.on_key(press(KeyCode::Tab), &km); // -> env_key
         assert_eq!(view.step(), Step::EnvKey);
         typ(&mut view, "1BAD");
-        let out = view.on_key(ctrl('s'));
+        let out = view.on_key(ctrl('s'), &km);
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::EnvKey);
         assert!(view.status().unwrap().contains("letter or underscore"));
@@ -809,18 +843,19 @@ mod tests {
 
     #[test]
     fn invalid_expires_at_blocks_submit_and_keeps_focus() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
-        view.on_key(press(KeyCode::Tab)); // -> description
-        view.on_key(press(KeyCode::Tab)); // -> url
-        view.on_key(press(KeyCode::Tab)); // -> totp
-        view.on_key(press(KeyCode::Tab)); // -> env_key
-        view.on_key(press(KeyCode::Tab)); // -> expires_at
+        view.on_key(press(KeyCode::Tab), &km); // -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> url
+        view.on_key(press(KeyCode::Tab), &km); // -> totp
+        view.on_key(press(KeyCode::Tab), &km); // -> env_key
+        view.on_key(press(KeyCode::Tab), &km); // -> expires_at
         assert_eq!(view.step(), Step::ExpiresAt);
         typ(&mut view, "not-a-duration");
-        let out = view.on_key(ctrl('s'));
+        let out = view.on_key(ctrl('s'), &km);
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::ExpiresAt);
         assert!(view.status().is_some());
@@ -828,15 +863,16 @@ mod tests {
 
     #[test]
     fn expires_at_never_keyword_clears_to_none() {
+        let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        view.on_key(press(KeyCode::Tab));
+        view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
-        view.on_key(press(KeyCode::Tab)); // description
-        view.on_key(press(KeyCode::Tab)); // url
-        view.on_key(press(KeyCode::Tab)); // totp
-        view.on_key(press(KeyCode::Tab)); // env_key
-        view.on_key(press(KeyCode::Tab)); // expires_at
+        view.on_key(press(KeyCode::Tab), &km); // description
+        view.on_key(press(KeyCode::Tab), &km); // url
+        view.on_key(press(KeyCode::Tab), &km); // totp
+        view.on_key(press(KeyCode::Tab), &km); // env_key
+        view.on_key(press(KeyCode::Tab), &km); // expires_at
         typ(&mut view, "never");
         let sv = view.build_secret_value().expect("valid build");
         assert!(sv.expires_at.is_none());

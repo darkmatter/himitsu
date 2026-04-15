@@ -7,10 +7,11 @@
 //! Search is the root view: Esc quits, every non-search view pops back to a
 //! fresh search view.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 use ratatui::Frame;
 
 use crate::cli::Context;
+use crate::tui::keymap::{Bindings, KeyMap};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
@@ -36,27 +37,32 @@ pub struct App {
     pub should_quit: bool,
     ctx: Context,
     view: View,
+    /// User-configurable keybindings. Cloned into each view via `&KeyMap`
+    /// on every key dispatch so views never have to own their own copy.
+    keymap: KeyMap,
     /// Modal help overlay. When `Some`, it swallows all key events until
     /// dismissed (Esc or `?`). See [`crate::tui::views::help`].
     help: Option<HelpView>,
 }
 
 impl App {
-    pub fn new(ctx: &Context) -> Self {
+    pub fn new(ctx: &Context, keymap: KeyMap) -> Self {
         let ctx_owned = clone_ctx(ctx);
         Self {
             should_quit: false,
             view: View::Search(SearchView::new(&ctx_owned)),
             ctx: ctx_owned,
+            keymap,
             help: None,
         }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
         // ── Help overlay intercept (US-012) ────────────────────────────
-        // If the overlay is open, route every key to it. Otherwise, a
-        // top-level `?` opens the overlay populated from the current view.
-        // Done before view dispatch so inner views never have to swallow `?`.
+        // If the overlay is open, route every key to it. Otherwise, the
+        // configured `help` chord opens the overlay populated from the
+        // current view. Done before view dispatch so inner views never
+        // have to swallow `?`.
         if let Some(help) = self.help.as_mut() {
             match help.on_key(key) {
                 HelpAction::None => {}
@@ -64,13 +70,13 @@ impl App {
             }
             return None;
         }
-        if matches!(key.code, KeyCode::Char('?')) {
+        if self.keymap.help.matches(&key) {
             self.help = Some(self.help_for_current_view());
             return None;
         }
 
         match &mut self.view {
-            View::Search(search) => match search.on_key(key) {
+            View::Search(search) => match search.on_key(key, &self.keymap) {
                 SearchAction::None => {}
                 SearchAction::Quit => self.should_quit = true,
                 SearchAction::OpenViewer(r) => {
@@ -89,7 +95,7 @@ impl App {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
             },
-            View::SecretViewer(viewer) => match viewer.on_key(key) {
+            View::SecretViewer(viewer) => match viewer.on_key(key, &self.keymap) {
                 SecretViewerAction::None => {}
                 SecretViewerAction::Quit => self.should_quit = true,
                 SecretViewerAction::Back => {
@@ -104,7 +110,7 @@ impl App {
                     self.view = View::Search(SearchView::new(&self.ctx));
                 }
             },
-            View::NewSecret(form) => match form.on_key(key) {
+            View::NewSecret(form) => match form.on_key(key, &self.keymap) {
                 NewSecretAction::None => {}
                 NewSecretAction::Quit => self.should_quit = true,
                 NewSecretAction::Cancel => {

@@ -10,6 +10,7 @@ mod app;
 mod event;
 #[cfg(test)]
 mod harness;
+pub mod keymap;
 mod terminal;
 mod views;
 
@@ -19,6 +20,7 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyEventKind};
 
 use crate::cli::{init, Context};
+use crate::config::{config_path, Config};
 use crate::error::Result;
 use views::init_wizard::{InitWizardView, Outcome};
 
@@ -28,9 +30,17 @@ pub fn run(ctx: &Context) -> Result<()> {
         return run_init_flow();
     }
 
+    // Load the keymap from the user's global config. A missing file yields
+    // the defaults; a malformed `tui.keys` section surfaces as a hard error
+    // so the user sees the typo immediately instead of silently losing a
+    // rebinding.
+    let keymap = Config::load(&config_path())
+        .map(|cfg| cfg.tui.keys)
+        .unwrap_or_default();
+
     let _guard = terminal::install()?;
     let mut terminal = terminal::new()?;
-    let mut app = app::App::new(ctx);
+    let mut app = app::App::new(ctx, keymap);
     event::run_loop(&mut terminal, &mut app)?;
     Ok(())
 }
