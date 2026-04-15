@@ -8,9 +8,12 @@
 //! fresh search view.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Rect;
+use ratatui::widgets::Clear;
 use ratatui::Frame;
 
 use crate::cli::Context;
+pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
@@ -39,6 +42,10 @@ pub struct App {
     /// Modal help overlay. When `Some`, it swallows all key events until
     /// dismissed (Esc or `?`). See [`crate::tui::views::help`].
     help: Option<HelpView>,
+    /// Active toast, if any. Rendered over the bottom row of the view area
+    /// until [`Toast::is_expired`] returns true, at which point `draw`
+    /// clears it. Non-modal: key events still flow to the current view.
+    toast: Option<Toast>,
 }
 
 impl App {
@@ -49,7 +56,14 @@ impl App {
             view: View::Search(SearchView::new(&ctx_owned)),
             ctx: ctx_owned,
             help: None,
+            toast: None,
         }
+    }
+
+    /// Publish a transient status-line message. Replaces any previous
+    /// toast (rapid actions don't stack) and resets the 3-second TTL.
+    pub fn push_toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
+        self.toast = Some(Toast::new(msg, kind));
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
@@ -85,8 +99,19 @@ impl App {
                     self.view = View::NewSecret(NewSecretView::new(&self.ctx));
                 }
                 SearchAction::SwitchStore(path) => {
+                    let label = path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
                     self.ctx.store = path;
                     self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast(format!("switched to {label}"), ToastKind::Info);
+                }
+                SearchAction::Copied(path) => {
+                    self.push_toast(format!("copied {path}"), ToastKind::Success);
+                }
+                SearchAction::CopyFailed(msg) => {
+                    self.push_toast(msg, ToastKind::Error);
                 }
             },
             View::SecretViewer(viewer) => match viewer.on_key(key) {
@@ -98,29 +123,33 @@ impl App {
                 SecretViewerAction::EditValue(plain) => {
                     return Some(AppIntent::EditSecretValue(plain));
                 }
+                SecretViewerAction::Copied => {
+                    self.push_toast("copied to clipboard", ToastKind::Success);
+                }
+                SecretViewerAction::CopyFailed(msg) => {
+                    self.push_toast(msg, ToastKind::Error);
+                }
                 SecretViewerAction::Deleted => {
                     // Rebuild search fresh so the (now missing) secret
                     // drops out of listings.
                     self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast("deleted", ToastKind::Success);
                 }
             },
             View::NewSecret(form) => match form.on_key(key) {
                 NewSecretAction::None => {}
                 NewSecretAction::Quit => self.should_quit = true,
                 NewSecretAction::Cancel => {
-                    let mut search = SearchView::new(&self.ctx);
-                    search.set_status_info("create cancelled");
-                    self.view = View::Search(search);
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast("create cancelled", ToastKind::Info);
                 }
                 NewSecretAction::Created(path) => {
-                    let mut search = SearchView::new(&self.ctx);
-                    search.set_status_info(format!("created {path}"));
-                    self.view = View::Search(search);
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast(format!("created {path}"), ToastKind::Success);
                 }
                 NewSecretAction::Failed(err) => {
-                    let mut search = SearchView::new(&self.ctx);
-                    search.set_status_error(format!("create failed: {err}"));
-                    self.view = View::Search(search);
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast(format!("create failed: {err}"), ToastKind::Error);
                 }
             },
         }
@@ -133,6 +162,23 @@ impl App {
     #[cfg(test)]
     pub fn active_store(&self) -> &std::path::Path {
         &self.ctx.store
+    }
+
+    /// Borrow the active toast for integration-test assertions. `None` once
+    /// the toast has expired (lazily swept during `draw`).
+    #[cfg(test)]
+    pub fn toast(&self) -> Option<&Toast> {
+        self.toast.as_ref()
+    }
+
+    /// Force-expire the active toast by rewinding `expires_at` to the
+    /// current instant. The next `draw` call will then sweep it away, so
+    /// tests can simulate "3 seconds later" without any real sleep.
+    #[cfg(test)]
+    pub fn expire_toast_now(&mut self) {
+        if let Some(t) = self.toast.as_mut() {
+            t.expires_at = std::time::Instant::now();
+        }
     }
 
     /// Name of the currently active view, for integration-test assertions.
@@ -159,6 +205,30 @@ impl App {
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
             View::NewSecret(form) => form.draw(frame),
+        }
+        // Expire-then-paint the toast. Eviction happens lazily at draw time
+        // so we don't need a background tick — any `draw` call (triggered by
+        // a key event, window resize, etc.) sweeps a stale toast.
+        let now = std::time::Instant::now();
+        if let Some(t) = self.toast.as_ref() {
+            if t.is_expired(now) {
+                self.toast = None;
+            }
+        }
+        if let Some(t) = self.toast.as_ref() {
+            let area = frame.area();
+            if area.height > 0 {
+                let strip = Rect {
+                    x: area.x,
+                    y: area.y + area.height - 1,
+                    width: area.width,
+                    height: 1,
+                };
+                // Clear first so the underlying view's footer doesn't bleed
+                // through on rows shorter than the toast.
+                frame.render_widget(Clear, strip);
+                t.render(frame, strip);
+            }
         }
         // Help overlay is drawn last so it paints over the underlying view.
         if let Some(help) = self.help.as_ref() {
