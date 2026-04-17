@@ -48,6 +48,9 @@ pub enum HimitsuError {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("external tool error: {0}")]
+    External(String),
+
     #[error("project config required: {0}")]
     ProjectConfigRequired(String),
 

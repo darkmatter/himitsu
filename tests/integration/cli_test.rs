@@ -649,7 +649,7 @@ fn help_shows_all_commands() {
 fn help_does_not_show_hidden_commands() {
     // Hidden commands should not appear in the default --help output.
     // 'encrypt' is deprecated+hidden; 'codegen', 'schema' are demoted to hidden;
-    // 'share', 'inbox', 'import' are not yet implemented.
+    // 'share', 'inbox' are not yet implemented.
     himitsu()
         .arg("--help")
         .assert()
@@ -659,7 +659,6 @@ fn help_does_not_show_hidden_commands() {
         .stdout(predicate::str::contains("  encrypt").not()) // hidden deprecated alias
         .stdout(predicate::str::contains("  share").not())
         .stdout(predicate::str::contains("  inbox").not())
-        .stdout(predicate::str::contains("  import").not())
         .stdout(predicate::str::contains("  decrypt").not());
 }
 

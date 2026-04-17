@@ -41,21 +41,21 @@ cargo build --release
 # 1. Initialize — creates age keypair and scaffolds the store
 himitsu init
 
-# 2. Store secrets  (env  key  value)
-himitsu set prod API_KEY     "sk_live_abc123"
-himitsu set prod DB_PASSWORD "hunter2"
-himitsu set dev  DB_PASSWORD "devpass"
+# 2. Store secrets  (path  value)
+himitsu set prod/API_KEY     "sk_live_abc123"
+himitsu set prod/DB_PASSWORD "hunter2"
+himitsu set dev/DB_PASSWORD  "devpass"
 
 # 3. Read them back
-himitsu get prod API_KEY      # → sk_live_abc123
-himitsu get dev  DB_PASSWORD  # → devpass
+himitsu get prod/API_KEY      # → sk_live_abc123
+himitsu get dev/DB_PASSWORD   # → devpass
 
-# 4. List environments / keys
-himitsu ls        # → dev, prod
+# 4. List secrets (directory-style)
+himitsu ls        # → dev/, prod/
 himitsu ls prod   # → API_KEY, DB_PASSWORD
 
 # 5. Re-encrypt for all current recipients
-himitsu encrypt
+himitsu rekey
 
 # 6. Generate typed stubs
 himitsu codegen --lang typescript --env prod --stdout
@@ -67,7 +67,7 @@ himitsu search DB --refresh
 Use `-s <path>` to target a specific store directory instead of the auto-detected one:
 
 ```bash
-himitsu -s /path/to/.himitsu set prod API_KEY "sk_live_xxx"
+himitsu -s /path/to/.himitsu set prod/API_KEY "sk_live_xxx"
 ```
 
 ## TUI
@@ -167,41 +167,45 @@ The keyring lives separately in `$HIMITSU_HOME` (default: `~/.himitsu`):
 
 Scaffold the store directory and generate a local age keypair. Adds `self` to the `common` recipient group automatically.
 
-### `himitsu set <env> <key> <value>`
+### `himitsu set <path> <value>`
 
-Encrypt a secret and write it to `secrets/<env>/<key>.age`.
+Encrypt a secret and write it to `secrets/<path>.age`. The path is a
+slash-delimited string; any `env/key` grouping is just a convention —
+himitsu treats the store like a directory tree, not a fixed
+environment model.
 
 ```bash
-himitsu set prod API_KEY "sk_live_abc123"
-himitsu set dev  DB_PASSWORD "devpass" --no-push
+himitsu set prod/API_KEY "sk_live_abc123"
+himitsu set dev/DB_PASSWORD "devpass" --no-push
 ```
 
 `--no-push` skips the automatic git commit + push.
 
-### `himitsu get <env> <key>`
+### `himitsu get <path>`
 
 Decrypt and print a single secret value.
 
 ```bash
-himitsu get prod API_KEY
+himitsu get prod/API_KEY
 ```
 
-### `himitsu ls [env]`
+### `himitsu ls [prefix]`
 
-List environments, or list key names within an environment.
+Browse the store like a directory. With no argument, lists top-level
+items across every known store. Pass a path prefix to descend.
 
 ```bash
-himitsu ls         # → dev, prod
+himitsu ls         # → dev/, prod/
 himitsu ls prod    # → API_KEY, DB_PASSWORD
 ```
 
-### `himitsu encrypt [env]`
+### `himitsu rekey [prefix]`
 
 Re-encrypt secrets for the current recipient set. Run after adding or removing recipients.
 
 ```bash
-himitsu encrypt        # re-encrypt all environments
-himitsu encrypt prod   # re-encrypt one environment
+himitsu rekey         # re-encrypt everything
+himitsu rekey prod    # re-encrypt one subtree
 ```
 
 ### `himitsu search <query>`

@@ -196,6 +196,11 @@ pub enum Command {
     /// Generate shell completion scripts.
     Completions(completions::CompletionsArgs),
 
+    /// (Internal) Print secret paths for shell completion. Used by the
+    /// generated completion scripts — not intended for direct use.
+    #[command(name = "__complete-paths", hide = true)]
+    CompletePaths(completions::CompletePathsArgs),
+
     // ── Hidden commands (not yet implemented) ─────────────────────
     /// Share secrets with external recipients.
     #[command(hide = true)]
@@ -205,8 +210,7 @@ pub enum Command {
     #[command(hide = true)]
     Inbox(inbox::InboxArgs),
 
-    /// Import secrets from external stores.
-    #[command(hide = true)]
+    /// Import secrets from external stores (1Password today; SOPS planned).
     Import(import::ImportArgs),
 }
 
@@ -228,8 +232,15 @@ impl Cli {
         let is_git = matches!(&command, Command::Git(_));
         let is_version = matches!(&command, Command::Version);
         let is_completions = matches!(&command, Command::Completions(_));
+        let is_complete_paths = matches!(&command, Command::CompletePaths(_));
 
-        if !is_init && !is_git && !is_version && !is_completions && !data_dir.join("key").exists() {
+        if !is_init
+            && !is_git
+            && !is_version
+            && !is_completions
+            && !is_complete_paths
+            && !data_dir.join("key").exists()
+        {
             eprintln!("First run — initializing himitsu...");
             let ctx = Context {
                 data_dir: data_dir.clone(),
@@ -280,6 +291,11 @@ impl Cli {
             p.clone()
         } else if needs_store {
             crate::config::resolve_store(None)?
+        } else if is_complete_paths {
+            // Completion helper: best-effort store resolution, never errors.
+            // If nothing resolves we fall back to enumerating stores_dir in
+            // `completions::run_complete_paths`.
+            crate::config::resolve_store(None).unwrap_or_default()
         } else {
             // Init, Ls, Search, Remote, Git, Version: store is optional
             PathBuf::new()
@@ -327,6 +343,7 @@ impl Cli {
                 Ok(())
             }
             Command::Completions(args) => completions::run(args),
+            Command::CompletePaths(args) => completions::run_complete_paths(args, &ctx),
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
