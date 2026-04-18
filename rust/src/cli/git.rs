@@ -42,6 +42,7 @@ pub fn run(args: GitArgs, ctx: &Context) -> Result<()> {
         for slug in &remotes {
             let (org, repo) = config::validate_remote_slug(slug)?;
             let store_path = config::store_checkout(org, repo);
+            super::init::ensure_git_repo(&store_path);
             println!("=== {slug} ===");
             exec_git(&store_path, &git_args)?;
         }
@@ -50,6 +51,7 @@ pub fn run(args: GitArgs, ctx: &Context) -> Result<()> {
 
     // ── Use the resolved ctx.store if non-empty ───────────────────────────────
     if !ctx.store.as_os_str().is_empty() {
+        super::init::ensure_git_repo(&ctx.store);
         let git_root = ctx.git_root().ok_or_else(|| {
             HimitsuError::Git(format!(
                 "store at {} is not a git repository",
@@ -62,6 +64,7 @@ pub fn run(args: GitArgs, ctx: &Context) -> Result<()> {
     // ── Try to resolve a default store ───────────────────────────────────────
     match config::resolve_store(None) {
         Ok(store_path) => {
+            super::init::ensure_git_repo(&store_path);
             let git_root = if store_path.join(".git").exists() {
                 store_path.clone()
             } else {

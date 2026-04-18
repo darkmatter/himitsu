@@ -313,6 +313,13 @@ impl Cli {
             prompt_to_create_store(&store, &data_dir, &state_dir)?;
         }
 
+        // Idempotent: ensure the resolved store is a git repo. Handles stores
+        // created by `init --name` which sets up the directory layout but
+        // didn't previously run `git init`.
+        if !store.as_os_str().is_empty() && init::store_exists(&store) {
+            init::ensure_git_repo(&store);
+        }
+
         let recipients_path = load_recipients_path_override(&store);
         let ctx = Context {
             data_dir,

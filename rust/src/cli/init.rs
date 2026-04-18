@@ -321,7 +321,32 @@ pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
         crate::remote::store::save_store_config(store, &store_cfg)?;
     }
 
+    // Ensure the store is a git repo. Idempotent: skips if .git already exists
+    // (e.g. from `remote add` which clones). Creates an initial commit so HEAD
+    // is valid for commands like `git status` and `check`.
+    ensure_git_repo(store);
+
     Ok(!existed)
+}
+
+/// Idempotent: ensure a store directory is a git repository with at least one
+/// commit. Safe to call on stores that were cloned via `remote add` (no-ops
+/// when `.git` already exists).
+pub(crate) fn ensure_git_repo(store: &Path) {
+    use crate::git;
+
+    if store.as_os_str().is_empty() || store.join(".git").exists() {
+        return;
+    }
+
+    if let Err(e) = git::init(store) {
+        tracing::debug!("git init failed for {}: {e}", store.display());
+        return;
+    }
+
+    // Stage everything and create an initial commit so HEAD exists.
+    let _ = git::run(&["add", "."], store);
+    let _ = git::run(&["commit", "-m", "chore: initialize himitsu store"], store);
 }
 
 fn timestamp() -> String {
