@@ -330,7 +330,7 @@ fn render_table(results: &[SearchResult], use_color: bool, now: DateTime<Utc>) -
 
 /// Parse an ISO 8601 / RFC3339 timestamp or a plain `YYYY-MM-DD` date into
 /// a UTC `DateTime`. Returns `None` if neither format matches.
-fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
     if let Ok(d) = DateTime::parse_from_rfc3339(ts) {
         return Some(d.with_timezone(&Utc));
     }

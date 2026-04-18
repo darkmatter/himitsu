@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::cli::search::{search_core, SearchResult};
+use crate::cli::search::{humanize_age, parse_ts, search_core, SearchResult};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
@@ -317,6 +318,16 @@ impl SearchView {
         // the header row and we drop the redundant per-row store column.
         let has_store_headers = self.rows.iter().any(|r| matches!(r, Row::Store { .. }));
 
+        // Precompute the humanized "n days ago" age once per row so column
+        // widths and cells stay in sync with what's rendered.
+        let now = Utc::now();
+        let age_for = |r: &SearchResult| -> String {
+            let ts = r.updated_at.as_deref().or(r.created_at.as_deref());
+            ts.and_then(parse_ts)
+                .map(|t| humanize_age(now, t))
+                .unwrap_or_else(|| "—".to_string())
+        };
+
         // Column widths are computed against the widest secret row and the
         // header label itself, so short paths still leave room for "PATH" /
         // "STORE" to read cleanly.
@@ -330,6 +341,28 @@ impl SearchView {
             .max()
             .unwrap_or(0)
             .max("PATH".len());
+        let updated_w = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Secret { result, .. } => Some(age_for(result).len()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .max("UPDATED".len());
+        let desc_w = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Secret { result, .. } => {
+                    Some(result.description.as_deref().unwrap_or("").len())
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .max("DESCRIPTION".len());
         let store_w = if has_store_headers {
             0
         } else {
@@ -349,20 +382,28 @@ impl SearchView {
             .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(inner);
 
+        // Column order matches the CLI: PATH | UPDATED | DESCRIPTION | STORE.
+        // STORE is dropped when store-group headers already carry that info.
         let header_style = Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD);
-        let mut header_spans = vec![Span::styled(
-            format!("{:<path_w$}  ", "PATH", path_w = path_w),
-            header_style,
-        )];
-        if !has_store_headers {
-            header_spans.push(Span::styled(
-                format!("{:<store_w$}  ", "STORE", store_w = store_w),
+        let mut header_spans = vec![
+            Span::styled(
+                format!("{:<path_w$}  ", "PATH", path_w = path_w),
                 header_style,
-            ));
+            ),
+            Span::styled(
+                format!("{:<updated_w$}  ", "UPDATED", updated_w = updated_w),
+                header_style,
+            ),
+            Span::styled(
+                format!("{:<desc_w$}  ", "DESCRIPTION", desc_w = desc_w),
+                header_style,
+            ),
+        ];
+        if !has_store_headers {
+            header_spans.push(Span::styled("STORE", header_style));
         }
-        header_spans.push(Span::styled("CREATED", header_style));
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
         let items: Vec<ListItem> = self
@@ -403,19 +444,23 @@ impl SearchView {
                 }
                 Row::Secret { result, indent } => {
                     let prefix = "  ".repeat(*indent);
-                    let created = result.created_at.as_deref().unwrap_or("-");
                     let padded_path = format!("{prefix}{}", result.path);
-                    let mut spans = vec![Span::raw(format!("{padded_path:<path_w$}  "))];
+                    let updated = age_for(result);
+                    let description = result.description.as_deref().unwrap_or("");
+                    let mut spans = vec![
+                        Span::raw(format!("{padded_path:<path_w$}  ")),
+                        Span::styled(
+                            format!("{:<updated_w$}  ", updated, updated_w = updated_w),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::raw(format!("{:<desc_w$}  ", description, desc_w = desc_w)),
+                    ];
                     if !has_store_headers {
                         spans.push(Span::styled(
-                            format!("{:<store_w$}  ", result.store, store_w = store_w),
+                            format!("{:<store_w$}", result.store, store_w = store_w),
                             Style::default().fg(Color::Cyan),
                         ));
                     }
-                    spans.push(Span::styled(
-                        created.to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    ));
                     ListItem::new(Line::from(spans))
                 }
             })
@@ -788,9 +833,19 @@ mod tests {
         assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
         assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
         assert!(
-            rendered.contains("CREATED"),
-            "missing CREATED header: {rendered}"
+            rendered.contains("UPDATED"),
+            "missing UPDATED header: {rendered}"
         );
+        assert!(
+            rendered.contains("DESCRIPTION"),
+            "missing DESCRIPTION header: {rendered}"
+        );
+        // Column order: PATH | UPDATED | DESCRIPTION | STORE.
+        let p = rendered.find("PATH").unwrap();
+        let u = rendered.find("UPDATED").unwrap();
+        let d = rendered.find("DESCRIPTION").unwrap();
+        let s = rendered.find("STORE").unwrap();
+        assert!(p < u && u < d && d < s, "column order wrong: PATH={p} UPDATED={u} DESCRIPTION={d} STORE={s}");
     }
 
     /// Seed two stores under `<tmp>/state/stores/<org>/<repo>/.himitsu/secrets/`
