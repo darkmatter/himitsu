@@ -82,10 +82,7 @@ impl TuiHarness {
     /// Feed `KeyCode::Char(ch) + CONTROL` — the common chord form used by
     /// all the TUI bindings (Ctrl+N, Ctrl+S, Ctrl+W, …).
     pub fn press_ctrl(&mut self, ch: char) {
-        self.press_event(KeyEvent::new(
-            KeyCode::Char(ch),
-            KeyModifiers::CONTROL,
-        ));
+        self.press_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
     }
 
     /// Type a UTF-8 string as a sequence of `KeyCode::Char` presses.
@@ -492,8 +489,7 @@ mod tests {
     #[test]
     fn default_keymap_ctrl_n_opens_new_secret_form() {
         let fx = Fixture::new();
-        let mut h =
-            TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
         assert_eq!(h.app.current_view(), "search");
 
         h.press_ctrl('n');

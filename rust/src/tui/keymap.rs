@@ -62,8 +62,7 @@ impl KeyBinding {
     pub fn matches(&self, key: &KeyEvent) -> bool {
         // Mask away modifiers we don't track (e.g. META) so cross-platform
         // events still match cleanly.
-        let tracked =
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let tracked = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT;
         let event_mods = key.modifiers & tracked;
 
         match (self.code, key.code) {
@@ -212,13 +211,9 @@ impl std::str::FromStr for KeyBinding {
             let normalised = part.trim().to_ascii_lowercase();
             match normalised.as_str() {
                 "ctrl" | "control" | "c" => modifiers |= KeyModifiers::CONTROL,
-                "alt" | "meta" | "opt" | "option" | "a" => {
-                    modifiers |= KeyModifiers::ALT
-                }
+                "alt" | "meta" | "opt" | "option" | "a" => modifiers |= KeyModifiers::ALT,
                 "shift" | "s" => modifiers |= KeyModifiers::SHIFT,
-                "" => {
-                    return Err(KeyBindingParseError::EmptyModifier(input.to_string()))
-                }
+                "" => return Err(KeyBindingParseError::EmptyModifier(input.to_string())),
                 _ => {
                     return Err(KeyBindingParseError::UnknownModifier {
                         input: input.to_string(),
@@ -228,20 +223,19 @@ impl std::str::FromStr for KeyBinding {
             }
         }
 
-        let code = parse_code(code_part).ok_or_else(|| {
-            KeyBindingParseError::UnknownCode {
-                input: input.to_string(),
-                code: code_part.to_string(),
-            }
+        let code = parse_code(code_part).ok_or_else(|| KeyBindingParseError::UnknownCode {
+            input: input.to_string(),
+            code: code_part.to_string(),
         })?;
 
         // A single-character binding like "Y" implicitly carries shift; we
         // prefer the canonical lowercase-char + SHIFT form so later matching
         // is consistent.
         let (code, modifiers) = match code {
-            KeyCode::Char(c) if c.is_ascii_uppercase() => {
-                (KeyCode::Char(c.to_ascii_lowercase()), modifiers | KeyModifiers::SHIFT)
-            }
+            KeyCode::Char(c) if c.is_ascii_uppercase() => (
+                KeyCode::Char(c.to_ascii_lowercase()),
+                modifiers | KeyModifiers::SHIFT,
+            ),
             other => (other, modifiers),
         };
 
@@ -309,10 +303,9 @@ impl fmt::Display for KeyBindingParseError {
                 "unknown modifier '{modifier}' in binding '{input}' \
                  (expected one of: ctrl, alt, shift)"
             ),
-            Self::UnknownCode { input, code } => write!(
-                f,
-                "unknown key code '{code}' in binding '{input}'"
-            ),
+            Self::UnknownCode { input, code } => {
+                write!(f, "unknown key code '{code}' in binding '{input}'")
+            }
         }
     }
 }
@@ -403,10 +396,7 @@ pub struct KeyMap {
 impl Default for KeyMap {
     fn default() -> Self {
         Self {
-            quit: vec![
-                KeyBinding::bare(KeyCode::Esc),
-                KeyBinding::ctrl('c'),
-            ],
+            quit: vec![KeyBinding::bare(KeyCode::Esc), KeyBinding::ctrl('c')],
             help: vec![KeyBinding::bare(KeyCode::Char('?'))],
 
             new_secret: vec![KeyBinding::ctrl('n')],
@@ -415,10 +405,7 @@ impl Default for KeyMap {
 
             reveal: vec![KeyBinding::bare(KeyCode::Char('r'))],
             copy_value: vec![KeyBinding::bare(KeyCode::Char('y'))],
-            rekey: vec![KeyBinding::new(
-                KeyCode::Char('r'),
-                KeyModifiers::SHIFT,
-            )],
+            rekey: vec![KeyBinding::new(KeyCode::Char('r'), KeyModifiers::SHIFT)],
             edit: vec![KeyBinding::bare(KeyCode::Char('e'))],
             delete: vec![KeyBinding::bare(KeyCode::Char('d'))],
             back: vec![KeyBinding::bare(KeyCode::Esc)],
@@ -450,10 +437,7 @@ mod tests {
     #[test]
     fn parses_shift_tab() {
         let b: KeyBinding = "shift+tab".parse().unwrap();
-        assert_eq!(
-            b,
-            KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT)
-        );
+        assert_eq!(b, KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT));
     }
 
     #[test]
@@ -471,10 +455,7 @@ mod tests {
     #[test]
     fn parses_uppercase_char_as_shift() {
         let b: KeyBinding = "Y".parse().unwrap();
-        assert_eq!(
-            b,
-            KeyBinding::new(KeyCode::Char('y'), KeyModifiers::SHIFT)
-        );
+        assert_eq!(b, KeyBinding::new(KeyCode::Char('y'), KeyModifiers::SHIFT));
     }
 
     #[test]
@@ -520,7 +501,9 @@ mod tests {
             .new_secret
             .matches(&key(KeyCode::Char('n'), KeyModifiers::CONTROL)));
         assert!(km.quit.matches(&key(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(km.reveal.matches(&key(KeyCode::Char('r'), KeyModifiers::NONE)));
+        assert!(km
+            .reveal
+            .matches(&key(KeyCode::Char('r'), KeyModifiers::NONE)));
         assert!(km
             .rekey
             .matches(&key(KeyCode::Char('R'), KeyModifiers::SHIFT)));

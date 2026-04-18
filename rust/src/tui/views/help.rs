@@ -31,10 +31,7 @@ pub struct HelpView {
 }
 
 impl HelpView {
-    pub fn new(
-        entries: &'static [(&'static str, &'static str)],
-        title: &'static str,
-    ) -> Self {
+    pub fn new(entries: &'static [(&'static str, &'static str)], title: &'static str) -> Self {
         Self { entries, title }
     }
 
@@ -51,19 +48,12 @@ impl HelpView {
         // Clear the area first so underlying content is blanked out.
         frame.render_widget(Clear, area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                format!(" {} ", self.title),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            format!(" {} ", self.title),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
 
-        let key_w = self
-            .entries
-            .iter()
-            .map(|(k, _)| k.len())
-            .max()
-            .unwrap_or(0);
+        let key_w = self.entries.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
 
         let items: Vec<ListItem> = self
             .entries
@@ -131,10 +121,7 @@ mod tests {
     #[test]
     fn question_mark_closes_overlay() {
         let mut view = HelpView::new(SAMPLE, "help");
-        assert_eq!(
-            view.on_key(press(KeyCode::Char('?'))),
-            HelpAction::Close
-        );
+        assert_eq!(view.on_key(press(KeyCode::Char('?'))), HelpAction::Close);
     }
 
     #[test]

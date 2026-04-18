@@ -131,9 +131,13 @@ fn set_get_with_metadata_roundtrip() {
         .assert()
         .success()
         .stdout("s3cret")
-        .stderr(predicate::str::contains("url:         https://db.example.com"))
+        .stderr(predicate::str::contains(
+            "url:         https://db.example.com",
+        ))
         .stderr(predicate::str::contains("totp:        JBSWY3DPEHPK3PXP"))
-        .stderr(predicate::str::contains("description: Primary prod database"))
+        .stderr(predicate::str::contains(
+            "description: Primary prod database",
+        ))
         .stderr(predicate::str::contains("expires"));
 }
 
@@ -144,9 +148,7 @@ fn set_rejects_invalid_totp() {
 
     himitsu()
         .env("HIMITSU_HOME", home.path())
-        .args([
-            "--store", &s, "set", "prod/BAD", "value", "--totp", "abc",
-        ])
+        .args(["--store", &s, "set", "prod/BAD", "value", "--totp", "abc"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("totp"));
@@ -160,7 +162,13 @@ fn set_rejects_invalid_expires_at() {
     himitsu()
         .env("HIMITSU_HOME", home.path())
         .args([
-            "--store", &s, "set", "prod/BAD", "value", "--expires-at", "30x",
+            "--store",
+            &s,
+            "set",
+            "prod/BAD",
+            "value",
+            "--expires-at",
+            "30x",
         ])
         .assert()
         .failure()
@@ -447,10 +455,7 @@ fn recipient_add_explicit_key() {
         .assert()
         .success();
 
-    assert!(store
-        .path()
-        .join(".himitsu/recipients/bot.pub")
-        .exists());
+    assert!(store.path().join(".himitsu/recipients/bot.pub").exists());
 }
 
 #[test]
@@ -505,7 +510,10 @@ fn group_add_creates_directory() {
 
     // Groups are now mappings in .himitsu/config.yaml, not filesystem dirs.
     let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
-    assert!(cfg.contains("admins"), "config.yaml should list admins: {cfg}");
+    assert!(
+        cfg.contains("admins"),
+        "config.yaml should list admins: {cfg}"
+    );
 }
 
 #[test]
@@ -527,7 +535,10 @@ fn group_rm_removes_directory() {
 
     // Group mapping should be gone from config.yaml.
     let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
-    assert!(!cfg.contains("temp"), "config.yaml should not list temp: {cfg}");
+    assert!(
+        !cfg.contains("temp"),
+        "config.yaml should not list temp: {cfg}"
+    );
 }
 
 #[test]
@@ -2080,10 +2091,7 @@ fn recipient_add_with_custom_recipients_path() {
         .success();
 
     // The new key file should be under the custom path (flat layout).
-    assert!(store
-        .path()
-        .join("my/recipients/extra-key.pub")
-        .exists());
+    assert!(store.path().join("my/recipients/extra-key.pub").exists());
 }
 
 // ============ check tests ============
@@ -2320,4 +2328,3 @@ fn completions_bash_outputs_script() {
         .success()
         .stdout(predicate::str::contains("himitsu"));
 }
-

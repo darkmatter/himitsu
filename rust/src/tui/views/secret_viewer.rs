@@ -232,10 +232,7 @@ impl SecretViewerView {
     pub fn finish_edit(&mut self, result: std::result::Result<Option<String>, String>) {
         match result {
             Ok(None) => {
-                self.status = Some((
-                    "edit cancelled (no changes)".to_string(),
-                    StatusKind::Info,
-                ));
+                self.status = Some(("edit cancelled (no changes)".to_string(), StatusKind::Info));
             }
             Ok(Some(doc)) => match self.persist_edited(&doc) {
                 Ok(new_value) => {
@@ -454,7 +451,9 @@ impl SecretViewerView {
             .split(area);
 
         let block = Block::default().borders(Borders::ALL).title(" metadata ");
-        let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        let p = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(p, rows[0]);
         self.draw_value(frame, rows[1]);
     }
@@ -521,7 +520,9 @@ impl SecretViewerView {
             )),
         };
         frame.render_widget(
-            Paragraph::new(content).block(block).wrap(Wrap { trim: false }),
+            Paragraph::new(content)
+                .block(block)
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -674,10 +675,7 @@ fn expires_line(dt: chrono::DateTime<chrono::Utc>) -> Line<'static> {
         duration::ExpirySeverity::Expired => Color::Red,
     };
     Line::from(vec![
-        Span::styled(
-            "  expires_at   ",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("  expires_at   ", Style::default().fg(Color::DarkGray)),
         Span::styled(text, Style::default().fg(color)),
     ])
 }
@@ -794,7 +792,10 @@ mod tests {
         let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        assert_eq!(view.on_key(press(KeyCode::Esc), &km), SecretViewerAction::Back);
+        assert_eq!(
+            view.on_key(press(KeyCode::Esc), &km),
+            SecretViewerAction::Back
+        );
     }
 
     #[test]
@@ -940,14 +941,16 @@ mod tests {
     fn e_emits_edit_value_action_with_document() {
         let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         match view.on_key(press(KeyCode::Char('e')), &km) {
             SecretViewerAction::EditValue(doc) => {
                 assert!(doc.contains("description:"), "doc missing header: {doc}");
                 assert!(doc.contains("expires_at:"), "doc missing expires_at: {doc}");
                 assert!(doc.contains("\n---\n"), "doc missing separator: {doc}");
-                assert!(doc.ends_with("s3cret"), "doc should end with plaintext: {doc}");
+                assert!(
+                    doc.ends_with("s3cret"),
+                    "doc should end with plaintext: {doc}"
+                );
             }
             other => panic!("expected EditValue, got {other:?}"),
         }
@@ -972,8 +975,7 @@ mod tests {
     #[test]
     fn finish_edit_applies_metadata_fields() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
 description: prod database password
 url: https://db.example.com
@@ -1000,8 +1002,7 @@ hunter2";
     #[test]
     fn finish_edit_clears_expires_when_blank() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         // First set an expiry.
         let with_exp = "\
 description:
@@ -1038,8 +1039,7 @@ s3cret";
     #[test]
     fn finish_edit_with_invalid_expires_sets_error_status() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
 description:
 url:
@@ -1060,8 +1060,7 @@ s3cret";
     #[test]
     fn finish_edit_with_missing_separator_errors() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         view.finish_edit(Ok(Some("description: oops\n".to_string())));
         assert!(matches!(view.status, Some((_, StatusKind::Error))));
     }
@@ -1110,8 +1109,7 @@ body";
     #[test]
     fn finish_edit_with_no_change_reports_cancelled() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         view.finish_edit(Ok(None));
         match &view.status {
             Some((msg, StatusKind::Info)) => {
@@ -1130,8 +1128,7 @@ body";
         use ratatui::Terminal;
 
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let backend = TestBackend::new(120, 20);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| view.draw(f)).unwrap();
@@ -1143,7 +1140,13 @@ body";
             }
             rendered.push('\n');
         }
-        assert!(rendered.contains("e edit"), "missing 'e edit' hint: {rendered}");
-        assert!(rendered.contains("R rekey"), "missing 'R rekey' hint: {rendered}");
+        assert!(
+            rendered.contains("e edit"),
+            "missing 'e edit' hint: {rendered}"
+        );
+        assert!(
+            rendered.contains("R rekey"),
+            "missing 'R rekey' hint: {rendered}"
+        );
     }
 }
