@@ -246,9 +246,7 @@ impl App {
     /// currently active.
     fn help_for_current_view(&self) -> HelpView {
         match &self.view {
-            View::Search(_) => {
-                HelpView::new(SearchView::help_entries(), SearchView::help_title())
-            }
+            View::Search(_) => HelpView::new(SearchView::help_entries(), SearchView::help_title()),
             View::SecretViewer(_) => HelpView::new(
                 SecretViewerView::help_entries(),
                 SecretViewerView::help_title(),
