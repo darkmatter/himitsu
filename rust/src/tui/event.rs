@@ -89,8 +89,8 @@ fn run_editor(plaintext: &str) -> std::result::Result<Option<String>, String> {
         return Ok(None);
     }
 
-    let new_contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("temp file read: {e}"))?;
+    let new_contents = std::fs::read_to_string(&path)
+        .map_err(|e| format!("temp file read: {e}"))?;
 
     if new_contents == plaintext {
         Ok(None)

@@ -40,7 +40,9 @@ pub fn parse_with_now(input: &str, now: DateTime<Utc>) -> Result<ExpiresAt> {
         return DateTime::parse_from_rfc3339(s)
             .map(|dt| ExpiresAt::At(dt.with_timezone(&Utc)))
             .map_err(|e| {
-                HimitsuError::InvalidReference(format!("invalid RFC 3339 timestamp '{s}': {e}"))
+                HimitsuError::InvalidReference(format!(
+                    "invalid RFC 3339 timestamp '{s}': {e}"
+                ))
             });
     }
 
@@ -48,9 +50,11 @@ pub fn parse_with_now(input: &str, now: DateTime<Utc>) -> Result<ExpiresAt> {
     match dur {
         RelativeDuration::Fixed(d) => Ok(ExpiresAt::At(now + d)),
         RelativeDuration::Months(m) => {
-            let bumped = now.checked_add_months(Months::new(m)).ok_or_else(|| {
-                HimitsuError::InvalidReference(format!("duration '{s}' overflows"))
-            })?;
+            let bumped = now
+                .checked_add_months(Months::new(m))
+                .ok_or_else(|| {
+                    HimitsuError::InvalidReference(format!("duration '{s}' overflows"))
+                })?;
             Ok(ExpiresAt::At(bumped))
         }
         RelativeDuration::Years(y) => {
@@ -253,14 +257,8 @@ mod tests {
 
     #[test]
     fn parse_never_literal() {
-        assert_eq!(
-            parse_with_now("never", epoch_plus(0)).unwrap(),
-            ExpiresAt::Never
-        );
-        assert_eq!(
-            parse_with_now("NEVER", epoch_plus(0)).unwrap(),
-            ExpiresAt::Never
-        );
+        assert_eq!(parse_with_now("never", epoch_plus(0)).unwrap(), ExpiresAt::Never);
+        assert_eq!(parse_with_now("NEVER", epoch_plus(0)).unwrap(), ExpiresAt::Never);
     }
 
     #[test]

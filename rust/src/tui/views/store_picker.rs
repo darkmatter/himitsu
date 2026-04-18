@@ -84,7 +84,10 @@ impl StorePicker {
         if !entries.is_empty() {
             // If the current store is one of the enumerated entries, start
             // the cursor on it; otherwise start at the top.
-            let start = entries.iter().position(|e| e.path == current).unwrap_or(0);
+            let start = entries
+                .iter()
+                .position(|e| e.path == current)
+                .unwrap_or(0);
             list_state.select(Some(start));
         }
         // When there are no managed stores, start with focus on the input —
@@ -138,9 +141,7 @@ impl StorePicker {
                 self.input.pop();
                 StorePickerOutcome::Pending
             }
-            (KeyCode::Char(c), mods)
-                if self.focus == Focus::Input && !mods.contains(KeyModifiers::CONTROL) =>
-            {
+            (KeyCode::Char(c), mods) if self.focus == Focus::Input && !mods.contains(KeyModifiers::CONTROL) => {
                 self.input.push(c);
                 StorePickerOutcome::Pending
             }
@@ -162,11 +163,7 @@ impl StorePicker {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
-        let next = if i == 0 {
-            self.entries.len() - 1
-        } else {
-            i - 1
-        };
+        let next = if i == 0 { self.entries.len() - 1 } else { i - 1 };
         self.list_state.select(Some(next));
     }
 
@@ -476,10 +473,7 @@ mod tests {
     fn picker_cancels_on_esc() {
         let tmp = tempdir().unwrap();
         let mut picker = StorePicker::new(tmp.path(), PathBuf::new());
-        assert_eq!(
-            picker.on_key(press(KeyCode::Esc)),
-            StorePickerOutcome::Cancelled
-        );
+        assert_eq!(picker.on_key(press(KeyCode::Esc)), StorePickerOutcome::Cancelled);
     }
 
     #[test]

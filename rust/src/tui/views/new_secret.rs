@@ -391,20 +391,22 @@ impl NewSecretView {
 
         let full = self.path.trim().to_string();
 
-        let recipients =
-            match age::collect_recipients(&self.ctx.store, self.ctx.recipients_path.as_deref()) {
-                Ok(r) if !r.is_empty() => r,
-                Ok(_) => {
-                    let msg = "no recipients configured for this store".to_string();
-                    self.status = Some(msg.clone());
-                    return NewSecretAction::Failed(msg);
-                }
-                Err(e) => {
-                    let msg = format!("{e}");
-                    self.status = Some(msg.clone());
-                    return NewSecretAction::Failed(msg);
-                }
-            };
+        let recipients = match age::collect_recipients(
+            &self.ctx.store,
+            self.ctx.recipients_path.as_deref(),
+        ) {
+            Ok(r) if !r.is_empty() => r,
+            Ok(_) => {
+                let msg = "no recipients configured for this store".to_string();
+                self.status = Some(msg.clone());
+                return NewSecretAction::Failed(msg);
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                self.status = Some(msg.clone());
+                return NewSecretAction::Failed(msg);
+            }
+        };
 
         let sv = match self.build_secret_value() {
             Ok(sv) => sv,
@@ -537,7 +539,10 @@ impl NewSecretView {
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let line = if let Some(msg) = &self.status {
-            Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Red)))
+            Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(Color::Red),
+            ))
         } else {
             Line::from(vec![
                 Span::styled("tab", Style::default().fg(Color::Cyan)),

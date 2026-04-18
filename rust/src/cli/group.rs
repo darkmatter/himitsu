@@ -90,9 +90,11 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
         }
 
         GroupCommand::AddRecipient { group, recipient } => {
-            let pub_file =
-                rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref())
-                    .join(format!("{recipient}.pub"));
+            let pub_file = rstore::recipients_dir_with_override(
+                &ctx.store,
+                ctx.recipients_path.as_deref(),
+            )
+            .join(format!("{recipient}.pub"));
             if !pub_file.exists() {
                 return Err(HimitsuError::Recipient(format!(
                     "recipient '{recipient}' not found (add it first with `recipient add`)"
@@ -141,7 +143,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    const AGE_KEY: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    const AGE_KEY: &str =
+        "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
 
     fn mk_ctx() -> (TempDir, Context) {
         let tmp = TempDir::new().unwrap();
@@ -194,14 +197,18 @@ mod tests {
         let (_tmp, ctx) = mk_ctx();
         run(
             GroupArgs {
-                command: GroupCommand::Add { name: "ops".into() },
+                command: GroupCommand::Add {
+                    name: "ops".into(),
+                },
             },
             &ctx,
         )
         .unwrap();
         let err = run(
             GroupArgs {
-                command: GroupCommand::Add { name: "ops".into() },
+                command: GroupCommand::Add {
+                    name: "ops".into(),
+                },
             },
             &ctx,
         );

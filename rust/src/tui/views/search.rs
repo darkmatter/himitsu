@@ -52,14 +52,8 @@ pub enum SearchAction {
 /// prefix within a store.
 #[derive(Debug, Clone)]
 enum Row {
-    Store {
-        name: String,
-        count: usize,
-    },
-    Folder {
-        name: String,
-        count: usize,
-    },
+    Store { name: String, count: usize },
+    Folder { name: String, count: usize },
     Secret {
         result: SearchResult,
         /// Indentation depth in list-item cells (2 spaces per level). Level
@@ -425,7 +419,10 @@ impl SearchView {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
-                        Span::styled(format!("({count})"), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("({count})"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]);
                     ListItem::new(line)
                 }
@@ -438,7 +435,10 @@ impl SearchView {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
-                        Span::styled(format!("({count})"), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("({count})"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]);
                     ListItem::new(line)
                 }
@@ -751,10 +751,7 @@ mod tests {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        assert!(matches!(
-            view.on_key(key(KeyCode::Esc), &km),
-            SearchAction::Quit
-        ));
+        assert!(matches!(view.on_key(key(KeyCode::Esc), &km), SearchAction::Quit));
     }
 
     #[test]
@@ -834,10 +831,7 @@ mod tests {
             rendered.push('\n');
         }
         assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
-        assert!(
-            rendered.contains("STORE"),
-            "missing STORE header: {rendered}"
-        );
+        assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
         assert!(
             rendered.contains("UPDATED"),
             "missing UPDATED header: {rendered}"
@@ -851,10 +845,7 @@ mod tests {
         let u = rendered.find("UPDATED").unwrap();
         let d = rendered.find("DESCRIPTION").unwrap();
         let s = rendered.find("STORE").unwrap();
-        assert!(
-            p < u && u < d && d < s,
-            "column order wrong: PATH={p} UPDATED={u} DESCRIPTION={d} STORE={s}"
-        );
+        assert!(p < u && u < d && d < s, "column order wrong: PATH={p} UPDATED={u} DESCRIPTION={d} STORE={s}");
     }
 
     /// Seed two stores under `<tmp>/state/stores/<org>/<repo>/.himitsu/secrets/`
@@ -1001,10 +992,7 @@ mod tests {
         assert!(view.selected_result().is_some());
         let action = view.on_key(ctrl('y'), &km);
         assert!(
-            matches!(
-                action,
-                SearchAction::Copied(_) | SearchAction::CopyFailed(_)
-            ),
+            matches!(action, SearchAction::Copied(_) | SearchAction::CopyFailed(_)),
             "ctrl-y should always emit a copy action, got {action:?}"
         );
     }

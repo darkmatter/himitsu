@@ -77,7 +77,10 @@ impl Toast {
             ToastKind::Error => (Color::Red, "[err] "),
         };
         let line = Line::from(vec![
-            Span::styled(tag, Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                tag,
+                Style::default().fg(fg).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(self.message.clone(), Style::default().fg(fg)),
         ]);
         frame.render_widget(Paragraph::new(line), area);

@@ -278,8 +278,13 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
     }
     let cfg = rstore::load_store_config(&ctx.store)?;
 
-    let filter_members: Option<Vec<String>> =
-        group_filter.map(|g| cfg.recipients.groups.get(g).cloned().unwrap_or_default());
+    let filter_members: Option<Vec<String>> = group_filter.map(|g| {
+        cfg.recipients
+            .groups
+            .get(g)
+            .cloned()
+            .unwrap_or_default()
+    });
 
     let mut rows: Vec<(String, String, String, String)> = vec![];
     for entry in std::fs::read_dir(&recipients_dir)? {
@@ -296,7 +301,9 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
                 continue;
             }
         }
-        let key = std::fs::read_to_string(entry.path())?.trim().to_string();
+        let key = std::fs::read_to_string(entry.path())?
+            .trim()
+            .to_string();
         let meta = read_sidecar(&recipients_dir, name);
         let description = meta.description.unwrap_or_default();
         let groups = groups_for(&cfg, name).join(",");
@@ -310,24 +317,9 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
     }
 
     let headers = ("NAME", "DESCRIPTION", "GROUPS", "KEY");
-    let w0 = rows
-        .iter()
-        .map(|r| r.0.len())
-        .max()
-        .unwrap_or(0)
-        .max(headers.0.len());
-    let w1 = rows
-        .iter()
-        .map(|r| r.1.len())
-        .max()
-        .unwrap_or(0)
-        .max(headers.1.len());
-    let w2 = rows
-        .iter()
-        .map(|r| r.2.len())
-        .max()
-        .unwrap_or(0)
-        .max(headers.2.len());
+    let w0 = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max(headers.0.len());
+    let w1 = rows.iter().map(|r| r.1.len()).max().unwrap_or(0).max(headers.1.len());
+    let w2 = rows.iter().map(|r| r.2.len()).max().unwrap_or(0).max(headers.2.len());
     println!(
         "{:<w0$}  {:<w1$}  {:<w2$}  {}",
         headers.0,
@@ -496,7 +488,8 @@ pub fn migrate_legacy_layout(ctx: &Context) -> Result<()> {
                 let existing = std::fs::read_to_string(&dst)?;
                 if existing.trim() != contents.trim() {
                     // Preserve divergent key under a backup name.
-                    let backup = recipients_dir.join(format!("{name}.pub.{group_name}"));
+                    let backup =
+                        recipients_dir.join(format!("{name}.pub.{group_name}"));
                     std::fs::write(&backup, contents)?;
                 }
             } else {
@@ -510,7 +503,11 @@ pub fn migrate_legacy_layout(ctx: &Context) -> Result<()> {
         // Remove the now-empty group dir; ignore if not actually empty.
         let _ = std::fs::remove_dir(dir);
         if !members.is_empty() {
-            let entry = cfg.recipients.groups.entry(group_name.clone()).or_default();
+            let entry = cfg
+                .recipients
+                .groups
+                .entry(group_name.clone())
+                .or_default();
             for m in members {
                 if !entry.contains(&m) {
                     entry.push(m);
@@ -545,8 +542,10 @@ mod tests {
         (tmp, ctx)
     }
 
-    const AGE_KEY_1: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
-    const AGE_KEY_2: &str = "age1lvyvwawkr0mcnnnncaghunadrqkmuf9e6507x9y920xxpp866cnql7dp2z";
+    const AGE_KEY_1: &str =
+        "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    const AGE_KEY_2: &str =
+        "age1lvyvwawkr0mcnnnncaghunadrqkmuf9e6507x9y920xxpp866cnql7dp2z";
 
     #[test]
     fn add_writes_flat_pub_and_errors_on_duplicate() {
@@ -609,21 +608,12 @@ mod tests {
         let rdir = rstore::recipients_dir(&ctx.store);
         std::fs::create_dir_all(rdir.join("common")).unwrap();
         std::fs::create_dir_all(rdir.join("admins")).unwrap();
-        std::fs::write(
-            rdir.join("common").join("alice.pub"),
-            format!("{AGE_KEY_1}\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            rdir.join("common").join("bob.pub"),
-            format!("{AGE_KEY_2}\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            rdir.join("admins").join("alice.pub"),
-            format!("{AGE_KEY_1}\n"),
-        )
-        .unwrap();
+        std::fs::write(rdir.join("common").join("alice.pub"), format!("{AGE_KEY_1}\n"))
+            .unwrap();
+        std::fs::write(rdir.join("common").join("bob.pub"), format!("{AGE_KEY_2}\n"))
+            .unwrap();
+        std::fs::write(rdir.join("admins").join("alice.pub"), format!("{AGE_KEY_1}\n"))
+            .unwrap();
 
         migrate_legacy_layout(&ctx).unwrap();
 
@@ -641,15 +631,13 @@ mod tests {
     fn migration_is_idempotent_on_flat_layout() {
         let (_tmp, ctx) = mk_ctx();
         add(&ctx, "alice", false, Some(AGE_KEY_1), None).unwrap();
-        let before =
-            std::fs::read_to_string(rstore::store_config_path(&ctx.store)).unwrap_or_default();
+        let before = std::fs::read_to_string(rstore::store_config_path(&ctx.store))
+            .unwrap_or_default();
         migrate_legacy_layout(&ctx).unwrap();
         migrate_legacy_layout(&ctx).unwrap();
-        let after =
-            std::fs::read_to_string(rstore::store_config_path(&ctx.store)).unwrap_or_default();
+        let after = std::fs::read_to_string(rstore::store_config_path(&ctx.store))
+            .unwrap_or_default();
         assert_eq!(before, after);
-        assert!(rstore::recipients_dir(&ctx.store)
-            .join("alice.pub")
-            .exists());
+        assert!(rstore::recipients_dir(&ctx.store).join("alice.pub").exists());
     }
 }

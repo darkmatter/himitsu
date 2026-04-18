@@ -75,7 +75,12 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
 
 /// Encrypt raw `plaintext` bytes and persist them at `path`. Used by
 /// `himitsu write` and other scripting paths that don't carry metadata.
-pub fn set_plaintext(ctx: &Context, path: &str, plaintext: &[u8], no_push: bool) -> Result<String> {
+pub fn set_plaintext(
+    ctx: &Context,
+    path: &str,
+    plaintext: &[u8],
+    no_push: bool,
+) -> Result<String> {
     let sv = SecretValue {
         data: plaintext.to_vec(),
         content_type: String::new(),
@@ -89,7 +94,12 @@ pub fn set_plaintext(ctx: &Context, path: &str, plaintext: &[u8], no_push: bool)
     encrypt_and_write(ctx, path, &sv, no_push)
 }
 
-fn encrypt_and_write(ctx: &Context, path: &str, sv: &SecretValue, no_push: bool) -> Result<String> {
+fn encrypt_and_write(
+    ctx: &Context,
+    path: &str,
+    sv: &SecretValue,
+    no_push: bool,
+) -> Result<String> {
     let secret_ref = SecretRef::parse(path)?;
     let (effective_store, secret_path, recipients_path_override) = if secret_ref.is_qualified() {
         let resolved = secret_ref.resolve_store()?;
@@ -132,7 +142,9 @@ fn encrypt_and_write(ctx: &Context, path: &str, sv: &SecretValue, no_push: bool)
 pub(crate) fn validate_totp(input: &str) -> Result<()> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(HimitsuError::InvalidReference("totp value is empty".into()));
+        return Err(HimitsuError::InvalidReference(
+            "totp value is empty".into(),
+        ));
     }
 
     if trimmed.starts_with("otpauth://") {
@@ -172,7 +184,9 @@ pub(crate) fn validate_totp(input: &str) -> Result<()> {
 /// under a name no shell can read.
 pub(crate) fn validate_env_key(input: &str) -> Result<()> {
     if input.is_empty() {
-        return Err(HimitsuError::InvalidReference("env-key is empty".into()));
+        return Err(HimitsuError::InvalidReference(
+            "env-key is empty".into(),
+        ));
     }
     let mut chars = input.chars();
     let first = chars.next().unwrap();
@@ -195,10 +209,7 @@ mod tests {
 
     #[test]
     fn totp_accepts_otpauth_uri() {
-        assert!(validate_totp(
-            "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example"
-        )
-        .is_ok());
+        assert!(validate_totp("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example").is_ok());
     }
 
     #[test]

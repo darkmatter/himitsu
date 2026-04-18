@@ -39,18 +39,20 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     }
 
     let op_ref = args.op.as_deref().ok_or_else(|| {
-        HimitsuError::InvalidReference("missing source: pass --op <op://vault/item/field>".into())
+        HimitsuError::InvalidReference(
+            "missing source: pass --op <op://vault/item/field>".into(),
+        )
     })?;
 
     // Validate the op reference shape. `op read` supports
     // `op://vault/item/field` (single field). A bare `op://vault/item`
     // refers to an entire item and would need `op item get` + field
     // enumeration — not yet implemented.
-    let trimmed = op_ref.strip_prefix("op://").ok_or_else(|| {
-        HimitsuError::InvalidReference(format!(
-            "1Password reference must start with `op://` (got {op_ref:?})"
-        ))
-    })?;
+    let trimmed = op_ref
+        .strip_prefix("op://")
+        .ok_or_else(|| HimitsuError::InvalidReference(
+            format!("1Password reference must start with `op://` (got {op_ref:?})"),
+        ))?;
     let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
     match segments.len() {
         3 => {} // vault/item/field — good
@@ -125,8 +127,9 @@ fn op_read(program: &str, op_ref: &str) -> Result<String> {
         return Err(HimitsuError::External(detail));
     }
 
-    String::from_utf8(output.stdout)
-        .map_err(|e| HimitsuError::External(format!("`op read` returned non-UTF-8 output: {e}")))
+    String::from_utf8(output.stdout).map_err(|e| {
+        HimitsuError::External(format!("`op read` returned non-UTF-8 output: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -148,9 +151,8 @@ mod tests {
     fn parse(args: &[&str]) -> ImportArgs {
         let mut full = vec!["test", "import"];
         full.extend_from_slice(args);
-        let TestCli {
-            cmd: TestCmd::Import(a),
-        } = TestCli::try_parse_from(full).expect("parse ok");
+        let TestCli { cmd: TestCmd::Import(a) } =
+            TestCli::try_parse_from(full).expect("parse ok");
         a
     }
 
@@ -165,7 +167,13 @@ mod tests {
 
     #[test]
     fn parses_flags() {
-        let a = parse(&["--op", "op://v/i/f", "--overwrite", "--no-push", "prod/X"]);
+        let a = parse(&[
+            "--op",
+            "op://v/i/f",
+            "--overwrite",
+            "--no-push",
+            "prod/X",
+        ]);
         assert!(a.overwrite);
         assert!(a.no_push);
     }
@@ -173,13 +181,7 @@ mod tests {
     #[test]
     fn op_and_sops_conflict() {
         let res = TestCli::try_parse_from([
-            "test",
-            "import",
-            "--op",
-            "op://v/i/f",
-            "--sops",
-            "x.yaml",
-            "prod/X",
+            "test", "import", "--op", "op://v/i/f", "--sops", "x.yaml", "prod/X",
         ]);
         assert!(res.is_err(), "clap should reject --op with --sops");
     }
@@ -235,10 +237,7 @@ mod tests {
             recipients_path: None,
         };
         let err = run(args, &ctx).unwrap_err();
-        assert!(
-            matches!(err, HimitsuError::InvalidReference(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, HimitsuError::InvalidReference(_)), "got {err:?}");
     }
 
     #[test]
@@ -267,7 +266,8 @@ mod tests {
     #[test]
     fn op_read_errors_when_binary_missing() {
         let fake = "/nonexistent/himitsu-test-op-binary";
-        let err = op_read(fake, "op://v/i/f").expect_err("expected error when binary is missing");
+        let err = op_read(fake, "op://v/i/f")
+            .expect_err("expected error when binary is missing");
         match err {
             HimitsuError::External(msg) => {
                 assert!(
