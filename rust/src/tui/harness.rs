@@ -73,6 +73,7 @@ impl TuiHarness {
 
     /// Feed a sequence of bare `KeyCode`s, redrawing after every key so the
     /// intermediate buffer states are reachable for assertions if needed.
+    #[allow(dead_code)]
     pub fn press_seq(&mut self, codes: &[KeyCode]) {
         for code in codes {
             self.press(*code);
@@ -111,6 +112,7 @@ impl TuiHarness {
     /// Clone the current `TestBackend` buffer. Cloned rather than borrowed so
     /// callers can hold it across further `press` calls without fighting the
     /// borrow checker.
+    #[allow(dead_code)]
     pub fn buffer(&self) -> Buffer {
         self.terminal.backend().buffer().clone()
     }
