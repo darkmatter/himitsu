@@ -17,6 +17,7 @@
 //! - `Esc` — emit `SecretViewerAction::Back` so the router pops to the
 //!   previous view (search).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -274,7 +275,7 @@ impl SecretViewerView {
         let sv = SecretValue {
             data: parsed.value.as_bytes().to_vec(),
             content_type: String::new(),
-            annotations: Default::default(),
+            annotations: parsed.annotations,
             totp: parsed.totp,
             url: parsed.url,
             expires_at,
@@ -296,6 +297,7 @@ impl SecretViewerView {
             totp: sv.totp,
             env_key: sv.env_key,
             expires_at: sv.expires_at,
+            annotations: sv.annotations,
         });
         Ok(parsed.value)
     }
@@ -502,6 +504,15 @@ impl SecretViewerView {
                     }
                 }
             }
+            // Annotations: sorted for stable display order.
+            if !d.annotations.is_empty() {
+                let mut keys: Vec<&String> = d.annotations.keys().collect();
+                keys.sort();
+                for k in keys {
+                    let padded = format!("{k:12}");
+                    lines.push(labeled_line_owned(padded, d.annotations[k].clone()));
+                }
+            }
         }
 
         lines
@@ -583,12 +594,14 @@ struct ParsedEdit {
     totp: String,
     expires_at: String,
     env_key: String,
+    annotations: HashMap<String, String>,
     value: String,
 }
 
 const EDIT_DOC_HEADER: &str = "# himitsu edit — metadata above, secret value below the `---` line.
 # Leave a field blank to clear it. Lines starting with `#` are ignored.
 # expires_at accepts: 30d / 6mo / 1y / never / RFC 3339 timestamp.
+# Custom fields (any other `key: value` lines) are stored as annotations.
 
 ";
 
@@ -605,14 +618,22 @@ fn render_edit_doc(decoded: &secret_value::Decoded) -> String {
         })
         .unwrap_or_default();
     let value = String::from_utf8_lossy(&decoded.data);
-    format!(
-        "{EDIT_DOC_HEADER}description: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}\n---\n{value}",
+    let mut buf = format!(
+        "{EDIT_DOC_HEADER}description: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}",
         desc = decoded.description,
         url = decoded.url,
         totp = decoded.totp,
         exp = expires,
         env = decoded.env_key,
-    )
+    );
+    // Append annotations in sorted order for deterministic output.
+    let mut keys: Vec<&String> = decoded.annotations.keys().collect();
+    keys.sort();
+    for k in keys {
+        buf.push_str(&format!("\n{}: {}", k, decoded.annotations[k]));
+    }
+    buf.push_str(&format!("\n---\n{value}"));
+    buf
 }
 
 fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
@@ -645,7 +666,9 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
             "totp" => parsed.totp = val,
             "expires_at" => parsed.expires_at = val,
             "env_key" => parsed.env_key = val,
-            other => return Err(format!("unknown field `{other}`")),
+            other => {
+                parsed.annotations.insert(other.to_string(), val);
+            }
         }
     }
     if !in_value {
@@ -659,6 +682,13 @@ fn labeled_line(label: &'static str, value: impl Into<String>) -> Line<'static> 
     Line::from(vec![
         Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
         Span::raw(value.into()),
+    ])
+}
+
+fn labeled_line_owned(label: String, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
+        Span::raw(value),
     ])
 }
 
@@ -1068,6 +1098,8 @@ s3cret";
 
     #[test]
     fn parse_edit_doc_round_trips_all_fields() {
+        let mut annotations = HashMap::new();
+        annotations.insert("team".to_string(), "backend".to_string());
         let decoded = secret_value::Decoded {
             data: b"pw".to_vec(),
             description: "d".to_string(),
@@ -1075,6 +1107,7 @@ s3cret";
             totp: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP".to_string(),
             env_key: "API".to_string(),
             expires_at: None,
+            annotations,
         };
         let doc = render_edit_doc(&decoded);
         let parsed = parse_edit_doc(&doc).unwrap();
@@ -1082,14 +1115,18 @@ s3cret";
         assert_eq!(parsed.url, "https://x");
         assert_eq!(parsed.totp, "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP");
         assert_eq!(parsed.env_key, "API");
+        assert_eq!(parsed.annotations.get("team").unwrap(), "backend");
         assert_eq!(parsed.value, "pw");
     }
 
     #[test]
-    fn parse_edit_doc_rejects_unknown_field() {
-        let doc = "bogus: value\n---\n";
-        let err = parse_edit_doc(doc).unwrap_err();
-        assert!(err.contains("unknown field"), "got: {err}");
+    fn parse_edit_doc_stores_unknown_fields_as_annotations() {
+        let doc = "description: hi\nbogus: value\ncustom_tag: 42\n---\nbody";
+        let parsed = parse_edit_doc(doc).unwrap();
+        assert_eq!(parsed.description, "hi");
+        assert_eq!(parsed.annotations.get("bogus").unwrap(), "value");
+        assert_eq!(parsed.annotations.get("custom_tag").unwrap(), "42");
+        assert_eq!(parsed.value, "body");
     }
 
     #[test]

@@ -7,6 +7,8 @@
 //! backwards compatibility by falling back to raw bytes whenever the
 //! payload is not a populated `SecretValue`.
 
+use std::collections::HashMap;
+
 use prost::Message;
 
 use crate::cli::duration;
@@ -28,6 +30,8 @@ pub struct Decoded {
     pub env_key: String,
     /// Expiration timestamp — `None` when unset.
     pub expires_at: Option<pbjson_types::Timestamp>,
+    /// Arbitrary user-defined key-value pairs.
+    pub annotations: HashMap<String, String>,
 }
 
 impl Decoded {
@@ -37,6 +41,7 @@ impl Decoded {
             || !self.url.is_empty()
             || !self.description.is_empty()
             || !self.env_key.is_empty()
+            || !self.annotations.is_empty()
             || self
                 .expires_at
                 .as_ref()
@@ -65,6 +70,7 @@ pub fn decode(plaintext: &[u8]) -> Decoded {
             description: sv.description,
             env_key: sv.env_key,
             expires_at: sv.expires_at,
+            annotations: sv.annotations,
         },
         _ => Decoded {
             data: plaintext.to_vec(),
@@ -119,6 +125,22 @@ mod tests {
         assert_eq!(d.description, "db");
         assert_eq!(d.env_key, "DATABASE_URL");
         assert!(d.totp.starts_with("otpauth://"));
+        assert!(d.has_metadata());
+    }
+
+    #[test]
+    fn annotations_round_trip() {
+        let mut annotations = HashMap::new();
+        annotations.insert("team".to_string(), "backend".to_string());
+        annotations.insert("rotation".to_string(), "90d".to_string());
+        let sv = SecretValue {
+            data: b"pw".to_vec(),
+            annotations,
+            ..Default::default()
+        };
+        let d = decode(&encode(&sv));
+        assert_eq!(d.annotations.get("team").unwrap(), "backend");
+        assert_eq!(d.annotations.get("rotation").unwrap(), "90d");
         assert!(d.has_metadata());
     }
 
