@@ -20,14 +20,17 @@ pub struct RecipientArgs {
 pub enum RecipientCommand {
     /// Add a recipient.
     ///
-    /// Recipients live in a flat layout: `<store>/.himitsu/recipients/<name>.pub`.
-    /// Group membership is managed separately via `himitsu group add-recipient`.
+    /// Recipients live under `<store>/.himitsu/recipients/<name>.pub`.
+    /// Names may contain `/` to create a path-based hierarchy
+    /// (e.g. `ops/alice` creates `.himitsu/recipients/ops/alice.pub`).
+    /// Use path prefixes with `ops/*` patterns in encryption configs to
+    /// reference all recipients under a prefix.
     ///
     /// Examples:
     ///   himitsu recipient add laptop --self
-    ///   himitsu recipient add alice --age-key age1... --description "Alice"
+    ///   himitsu recipient add ops/alice --age-key age1... --description "Alice"
     Add {
-        /// Recipient name (e.g. laptop-a, alice).
+        /// Recipient name (e.g. laptop-a, ops/alice).
         name: String,
         /// Add yourself as a recipient (reads the local age public key).
         #[arg(long = "self")]
@@ -123,6 +126,10 @@ fn add(
     std::fs::create_dir_all(&recipients_dir)?;
 
     let pub_file = recipients_dir.join(format!("{name}.pub"));
+    // Create intermediate directories for path-based names (e.g. ops/alice).
+    if let Some(parent) = pub_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     if pub_file.exists() {
         return Err(HimitsuError::Recipient(format!(
             "recipient '{name}' already exists at {}",
@@ -154,7 +161,6 @@ fn add(
         std::fs::write(&sidecar_path, serde_yaml::to_string(&meta)?)?;
     }
 
-    ctx.commit_and_push(&format!("himitsu: add recipient {name}"));
     println!("Added recipient '{name}'");
     Ok(())
 }
@@ -198,9 +204,6 @@ fn rm(ctx: &Context, name: &str, group: Option<&str>) -> Result<()> {
             )));
         }
         rstore::save_store_config(&ctx.store, &cfg)?;
-        ctx.commit_and_push(&format!(
-            "himitsu: remove recipient {name} from group {group_name}"
-        ));
         println!("Removed recipient '{name}' from group '{group_name}'");
         return Ok(());
     }
@@ -231,7 +234,6 @@ fn rm(ctx: &Context, name: &str, group: Option<&str>) -> Result<()> {
         rstore::save_store_config(&ctx.store, &cfg)?;
     }
 
-    ctx.commit_and_push(&format!("himitsu: remove recipient {name}"));
     println!("Removed recipient '{name}'");
     Ok(())
 }
@@ -287,29 +289,7 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
     });
 
     let mut rows: Vec<(String, String, String, String)> = vec![];
-    for entry in std::fs::read_dir(&recipients_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let fname = entry.file_name().to_string_lossy().to_string();
-        let Some(name) = fname.strip_suffix(".pub") else {
-            continue;
-        };
-        if let Some(ref members) = filter_members {
-            if !members.iter().any(|m| m == name) {
-                continue;
-            }
-        }
-        let key = std::fs::read_to_string(entry.path())?
-            .trim()
-            .to_string();
-        let meta = read_sidecar(&recipients_dir, name);
-        let description = meta.description.unwrap_or_default();
-        let groups = groups_for(&cfg, name).join(",");
-        let short_key = short_fingerprint(&key);
-        rows.push((name.to_string(), description, groups, short_key));
-    }
+    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows, &filter_members, &cfg)?;
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     if rows.is_empty() {
@@ -341,6 +321,57 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
             w1 = w1,
             w2 = w2
         );
+    }
+    Ok(())
+}
+
+/// Recursively collect `.pub` entries, building path-based names relative to `base`.
+fn collect_pub_entries(
+    base: &Path,
+    dir: &Path,
+    rows: &mut Vec<(String, String, String, String)>,
+    filter_members: &Option<Vec<String>>,
+    cfg: &rstore::StoreFileConfig,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_pub_entries(base, &entry.path(), rows, filter_members, cfg)?;
+            continue;
+        }
+        if !ft.is_file() {
+            continue;
+        }
+        let fname = entry.file_name().to_string_lossy().to_string();
+        let Some(basename) = fname.strip_suffix(".pub") else {
+            continue;
+        };
+        // Build the full path-based name relative to the recipients root.
+        let rel = entry
+            .path()
+            .strip_prefix(base)
+            .unwrap_or(entry.path().as_path())
+            .with_extension("")
+            .to_string_lossy()
+            .to_string();
+        let name = if rel.is_empty() { basename.to_string() } else { rel };
+        if let Some(ref members) = filter_members {
+            if !members.iter().any(|m| m == &name) {
+                continue;
+            }
+        }
+        let key = std::fs::read_to_string(entry.path())?
+            .trim()
+            .to_string();
+        let meta = read_sidecar(
+            entry.path().parent().unwrap_or(base),
+            basename,
+        );
+        let description = meta.description.unwrap_or_default();
+        let groups = groups_for(cfg, &name).join(",");
+        let short_key = short_fingerprint(&key);
+        rows.push((name, description, groups, short_key));
     }
     Ok(())
 }
@@ -391,14 +422,24 @@ fn short_fingerprint(key: &str) -> String {
 
 fn validate_name(name: &str) -> Result<()> {
     if name.is_empty()
-        || name.contains('/')
         || name.contains('\\')
         || name.starts_with('.')
+        || name.starts_with('/')
+        || name.ends_with('/')
         || name.contains("..")
+        || name.contains("//")
     {
         return Err(HimitsuError::Recipient(format!(
             "invalid recipient name '{name}'"
         )));
+    }
+    // Validate each path segment individually.
+    for segment in name.split('/') {
+        if segment.is_empty() || segment.starts_with('.') {
+            return Err(HimitsuError::Recipient(format!(
+                "invalid recipient name '{name}'"
+            )));
+        }
     }
     Ok(())
 }
@@ -438,86 +479,14 @@ fn now_iso8601() -> String {
 
 /// Migrate a legacy `<group>/<name>.pub` layout to the flat layout.
 ///
-/// - Walks every subdirectory under `.himitsu/recipients/`.
-/// - Moves each `<group>/<name>.pub` to `<name>.pub` (last-group-wins on
-///   name collisions, with the earlier key preserved as a `.pub.<group>` backup).
-/// - Builds the `recipients.groups` mapping in `.himitsu/config.yaml`.
-/// - Commits via `ctx.commit_and_push`.
+/// **Note:** With path-based recipient names, subdirectories under
+/// `.himitsu/recipients/` are now the intended structure (e.g.
+/// `ops/alice.pub`). This migration is disabled — subdirectories are
+/// treated as path-based recipient namespaces, not legacy groups.
 ///
-/// Idempotent — does nothing if no subdirectories are present.
-pub fn migrate_legacy_layout(ctx: &Context) -> Result<()> {
-    if ctx.store.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let recipients_dir = flat_recipients_dir(ctx);
-    if !recipients_dir.exists() {
-        return Ok(());
-    }
-
-    // Detect any group subdirectories.
-    let mut group_dirs: Vec<(String, PathBuf)> = vec![];
-    for entry in std::fs::read_dir(&recipients_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let gname = entry.file_name().to_string_lossy().to_string();
-            group_dirs.push((gname, entry.path()));
-        }
-    }
-    if group_dirs.is_empty() {
-        return Ok(());
-    }
-    group_dirs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut cfg = rstore::load_store_config(&ctx.store)?;
-
-    for (group_name, dir) in &group_dirs {
-        let mut members: Vec<String> = vec![];
-        for file in std::fs::read_dir(dir)? {
-            let file = file?;
-            if !file.file_type()?.is_file() {
-                continue;
-            }
-            let fname = file.file_name().to_string_lossy().to_string();
-            let Some(name) = fname.strip_suffix(".pub") else {
-                continue;
-            };
-            let src = file.path();
-            let contents = std::fs::read_to_string(&src)?;
-            let dst = recipients_dir.join(format!("{name}.pub"));
-            if dst.exists() {
-                let existing = std::fs::read_to_string(&dst)?;
-                if existing.trim() != contents.trim() {
-                    // Preserve divergent key under a backup name.
-                    let backup =
-                        recipients_dir.join(format!("{name}.pub.{group_name}"));
-                    std::fs::write(&backup, contents)?;
-                }
-            } else {
-                std::fs::write(&dst, contents)?;
-            }
-            std::fs::remove_file(&src)?;
-            if !members.contains(&name.to_string()) {
-                members.push(name.to_string());
-            }
-        }
-        // Remove the now-empty group dir; ignore if not actually empty.
-        let _ = std::fs::remove_dir(dir);
-        if !members.is_empty() {
-            let entry = cfg
-                .recipients
-                .groups
-                .entry(group_name.clone())
-                .or_default();
-            for m in members {
-                if !entry.contains(&m) {
-                    entry.push(m);
-                }
-            }
-        }
-    }
-
-    rstore::save_store_config(&ctx.store, &cfg)?;
-    ctx.commit_and_push("himitsu: migrate recipients to flat layout");
+/// Kept as a no-op so existing call-sites continue to compile.
+pub fn migrate_legacy_layout(_ctx: &Context) -> Result<()> {
+    // No-op: subdirectories are now valid path-based recipient namespaces.
     Ok(())
 }
 
@@ -602,29 +571,22 @@ mod tests {
     }
 
     #[test]
-    fn migration_converts_legacy_layout() {
+    fn migration_is_noop_subdirs_are_path_based() {
         let (_tmp, ctx) = mk_ctx();
-        // Seed a legacy layout.
+        // Subdirectories are now path-based recipient namespaces, not legacy groups.
         let rdir = rstore::recipients_dir(&ctx.store);
-        std::fs::create_dir_all(rdir.join("common")).unwrap();
-        std::fs::create_dir_all(rdir.join("admins")).unwrap();
-        std::fs::write(rdir.join("common").join("alice.pub"), format!("{AGE_KEY_1}\n"))
+        std::fs::create_dir_all(rdir.join("ops")).unwrap();
+        std::fs::create_dir_all(rdir.join("dev")).unwrap();
+        std::fs::write(rdir.join("ops").join("alice.pub"), format!("{AGE_KEY_1}\n"))
             .unwrap();
-        std::fs::write(rdir.join("common").join("bob.pub"), format!("{AGE_KEY_2}\n"))
-            .unwrap();
-        std::fs::write(rdir.join("admins").join("alice.pub"), format!("{AGE_KEY_1}\n"))
+        std::fs::write(rdir.join("dev").join("bob.pub"), format!("{AGE_KEY_2}\n"))
             .unwrap();
 
         migrate_legacy_layout(&ctx).unwrap();
 
-        assert!(rdir.join("alice.pub").exists());
-        assert!(rdir.join("bob.pub").exists());
-        assert!(!rdir.join("common").exists());
-        assert!(!rdir.join("admins").exists());
-
-        let cfg = rstore::load_store_config(&ctx.store).unwrap();
-        assert_eq!(cfg.recipients.groups["common"], vec!["alice", "bob"]);
-        assert_eq!(cfg.recipients.groups["admins"], vec!["alice"]);
+        // Subdirectories should remain intact (they are path-based names).
+        assert!(rdir.join("ops").join("alice.pub").exists());
+        assert!(rdir.join("dev").join("bob.pub").exists());
     }
 
     #[test]
@@ -639,5 +601,31 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(before, after);
         assert!(rstore::recipients_dir(&ctx.store).join("alice.pub").exists());
+    }
+
+    #[test]
+    fn add_path_based_recipient_creates_subdirs() {
+        let (_tmp, ctx) = mk_ctx();
+        add(&ctx, "ops/alice", false, Some(AGE_KEY_1), Some("Alice from ops".into())).unwrap();
+        let rdir = rstore::recipients_dir(&ctx.store);
+        assert!(rdir.join("ops").join("alice.pub").exists());
+        assert!(rdir.join("ops").join("alice.yaml").exists());
+    }
+
+    #[test]
+    fn validate_name_allows_slashes() {
+        assert!(validate_name("ops/alice").is_ok());
+        assert!(validate_name("team/sub/bob").is_ok());
+    }
+
+    #[test]
+    fn validate_name_rejects_invalid() {
+        assert!(validate_name("").is_err());
+        assert!(validate_name("/leading").is_err());
+        assert!(validate_name("trailing/").is_err());
+        assert!(validate_name("a//b").is_err());
+        assert!(validate_name(".hidden").is_err());
+        assert!(validate_name("a/..").is_err());
+        assert!(validate_name("a\\.pub").is_err());
     }
 }

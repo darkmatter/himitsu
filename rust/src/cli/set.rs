@@ -68,7 +68,7 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         env_key: args.env_key.clone().unwrap_or_default(),
     };
 
-    let secret_path = encrypt_and_write(ctx, &args.path, &sv, args.no_push)?;
+    let secret_path = encrypt_and_write(ctx, &args.path, &sv)?;
     println!("Set {secret_path}");
     Ok(())
 }
@@ -79,7 +79,6 @@ pub fn set_plaintext(
     ctx: &Context,
     path: &str,
     plaintext: &[u8],
-    no_push: bool,
 ) -> Result<String> {
     let sv = SecretValue {
         data: plaintext.to_vec(),
@@ -91,14 +90,13 @@ pub fn set_plaintext(
         description: String::new(),
         env_key: String::new(),
     };
-    encrypt_and_write(ctx, path, &sv, no_push)
+    encrypt_and_write(ctx, path, &sv)
 }
 
 fn encrypt_and_write(
     ctx: &Context,
     path: &str,
     sv: &SecretValue,
-    no_push: bool,
 ) -> Result<String> {
     let secret_ref = SecretRef::parse(path)?;
     let (effective_store, secret_path, recipients_path_override) = if secret_ref.is_qualified() {
@@ -124,10 +122,6 @@ fn encrypt_and_write(
     let plaintext = secret_value::encode(sv);
     let ciphertext = age::encrypt(&plaintext, &recipients)?;
     store::write_secret(&effective_store, &secret_path, &ciphertext)?;
-
-    if !no_push {
-        ctx.commit_and_push(&format!("himitsu: set {secret_path}"));
-    }
 
     Ok(secret_path)
 }

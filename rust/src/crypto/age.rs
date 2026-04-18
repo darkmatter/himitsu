@@ -129,6 +129,98 @@ pub fn collect_all_recipients(store_path: &Path) -> Result<Vec<Recipient>> {
     collect_recipients(store_path, None)
 }
 
+/// Collect recipients whose path-based name matches a glob-like pattern.
+///
+/// Supported patterns:
+/// - `alice`          — exact match (equivalent to a single recipient)
+/// - `ops/*`          — all recipients directly under `ops/`
+/// - `ops/**`         — all recipients recursively under `ops/`
+/// - `*`              — all recipients (same as `collect_recipients`)
+///
+/// The recipients directory is resolved the same way as [`collect_recipients`].
+pub fn collect_recipients_matching(
+    store_path: &Path,
+    recipients_path: Option<&str>,
+    patterns: &[&str],
+) -> Result<Vec<Recipient>> {
+    let dir = crate::remote::store::recipients_dir_with_override(store_path, recipients_path);
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+
+    // Collect all (name, recipient) pairs first.
+    let mut all_named: Vec<(String, Recipient)> = vec![];
+    collect_named_recipients_recursive(&dir, &dir, &mut all_named)?;
+
+    // Filter by patterns.
+    let mut matched: Vec<Recipient> = vec![];
+    for (name, recipient) in &all_named {
+        for pat in patterns {
+            if recipient_matches(name, pat) {
+                matched.push(recipient.clone());
+                break;
+            }
+        }
+    }
+
+    // Deduplicate.
+    matched.sort_by_key(|a| a.to_string());
+    matched.dedup_by(|a, b| a.to_string() == b.to_string());
+    Ok(matched)
+}
+
+/// Check whether a recipient name matches a glob-like pattern.
+fn recipient_matches(name: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "**" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        // Recursive: anything under prefix/
+        return name.starts_with(&format!("{prefix}/")) || name == prefix;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        // Direct children only: prefix/<something> but not prefix/<sub>/<something>
+        if let Some(rest) = name.strip_prefix(&format!("{prefix}/")) {
+            return !rest.contains('/');
+        }
+        return false;
+    }
+    // Exact match.
+    name == pattern
+}
+
+/// Walk `dir` recursively and collect (path-based-name, Recipient) pairs.
+fn collect_named_recipients_recursive(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, Recipient)>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_named_recipients_recursive(base, &path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "pub") {
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .with_extension("")
+                .to_string_lossy()
+                .to_string();
+            let contents = std::fs::read_to_string(&path)?;
+            let trimmed = contents.trim();
+            if !trimmed.is_empty() {
+                out.push((rel, parse_recipient(trimmed)?));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// (Internal) Walk `dir` recursively and collect every `.pub` file as a
 /// recipient, tolerating both the flat layout and legacy group subdirectories.
 fn collect_recipients_recursive(dir: &Path, out: &mut Vec<Recipient>) -> Result<()> {
@@ -262,5 +354,70 @@ mod tests {
         let identity_fallback_2 =
             resolve_private_key(scope, temp_file.path(), Some(&empty_provider)).unwrap();
         assert_eq!(identity_fallback_2.to_string().expose_secret(), &secret);
+    }
+
+    #[test]
+    fn recipient_matches_exact() {
+        assert!(super::recipient_matches("alice", "alice"));
+        assert!(!super::recipient_matches("alice", "bob"));
+        assert!(!super::recipient_matches("ops/alice", "alice"));
+    }
+
+    #[test]
+    fn recipient_matches_star_glob() {
+        assert!(super::recipient_matches("ops/alice", "ops/*"));
+        assert!(super::recipient_matches("ops/bob", "ops/*"));
+        assert!(!super::recipient_matches("ops/sub/alice", "ops/*"));
+        assert!(!super::recipient_matches("dev/alice", "ops/*"));
+    }
+
+    #[test]
+    fn recipient_matches_double_star_glob() {
+        assert!(super::recipient_matches("ops/alice", "ops/**"));
+        assert!(super::recipient_matches("ops/sub/alice", "ops/**"));
+        assert!(!super::recipient_matches("dev/alice", "ops/**"));
+    }
+
+    #[test]
+    fn recipient_matches_wildcard_all() {
+        assert!(super::recipient_matches("alice", "*"));
+        assert!(super::recipient_matches("ops/alice", "*"));
+        assert!(super::recipient_matches("alice", "**"));
+        assert!(super::recipient_matches("ops/sub/alice", "**"));
+    }
+
+    #[test]
+    fn collect_recipients_matching_filters_by_pattern() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = tmp.path().to_path_buf();
+        let rdir = crate::remote::store::recipients_dir(&store);
+
+        // Create path-based recipients.
+        std::fs::create_dir_all(rdir.join("ops")).unwrap();
+        std::fs::create_dir_all(rdir.join("dev")).unwrap();
+
+        let (_, pub1) = keygen();
+        let (_, pub2) = keygen();
+        let (_, pub3) = keygen();
+
+        std::fs::write(rdir.join("ops").join("alice.pub"), format!("{pub1}\n")).unwrap();
+        std::fs::write(rdir.join("ops").join("bob.pub"), format!("{pub2}\n")).unwrap();
+        std::fs::write(rdir.join("dev").join("carol.pub"), format!("{pub3}\n")).unwrap();
+
+        // Match ops/*
+        let ops = collect_recipients_matching(&store, None, &["ops/*"]).unwrap();
+        assert_eq!(ops.len(), 2);
+
+        // Match dev/*
+        let dev = collect_recipients_matching(&store, None, &["dev/*"]).unwrap();
+        assert_eq!(dev.len(), 1);
+
+        // Match all
+        let all = collect_recipients_matching(&store, None, &["*"]).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Exact match
+        let exact = collect_recipients_matching(&store, None, &["ops/alice"]).unwrap();
+        assert_eq!(exact.len(), 1);
     }
 }

@@ -5,6 +5,7 @@ pub mod context;
 pub mod decrypt;
 pub mod duration;
 pub mod encrypt;
+pub mod export;
 pub mod generate;
 pub mod get;
 pub mod git;
@@ -164,7 +165,7 @@ pub enum Command {
     /// Manage recipients.
     Recipient(recipient::RecipientArgs),
 
-    /// Manage recipient groups.
+    /// (Deprecated) Manage recipient groups — use path-based recipient names instead.
     Group(group::GroupArgs),
 
     /// Manage remote stores (add, remove, list, set default).
@@ -179,6 +180,9 @@ pub enum Command {
 
     /// Generate SOPS-encrypted output files from env definitions in project config.
     Generate(generate::GenerateArgs),
+
+    /// Export secrets matching a glob pattern as a SOPS-encrypted file.
+    Export(export::ExportArgs),
 
     /// (Legacy) Generate typed config code from secrets. See 'generate' for canonical output.
     #[command(hide = true)]
@@ -282,6 +286,7 @@ impl Cli {
                 | Command::Group(_)
                 | Command::Schema(_)
                 | Command::Generate(_)
+                | Command::Export(_)
                 | Command::Codegen(_)
                 | Command::Share(_)
                 | Command::Import(_)
@@ -316,7 +321,25 @@ impl Cli {
             recipients_path,
         };
 
-        match command {
+        // Determine whether the command is a mutation and whether the user
+        // opted out of git sync via `--no-push`.
+        let is_mutation = matches!(
+            &command,
+            Command::Set(_)
+                | Command::Write(_)
+                | Command::Rekey(_)
+                | Command::Import(_)
+                | Command::Recipient(_)
+                | Command::Group(_)
+        );
+        let no_push = match &command {
+            Command::Set(a) => a.no_push,
+            Command::Write(a) => a.no_push,
+            Command::Import(a) => a.no_push,
+            _ => false,
+        };
+
+        let result = match command {
             Command::Init(args) => init::run(args, &ctx),
             Command::Set(args) => set::run(args, &ctx),
             Command::Get(args) => get::run(args, &ctx),
@@ -335,6 +358,7 @@ impl Cli {
 
             Command::Schema(args) => schema::run(args, &ctx),
             Command::Generate(args) => generate::run(args, &ctx),
+            Command::Export(args) => export::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Check(args) => check::run(args, &ctx),
@@ -347,7 +371,14 @@ impl Cli {
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
+        };
+
+        // Post-dispatch: sync to git remote after successful mutations.
+        if result.is_ok() && is_mutation && !no_push {
+            ctx.commit_and_push("himitsu: sync after mutation");
         }
+
+        result
     }
 
     fn launch_tui() -> Result<()> {
@@ -391,6 +422,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Group(_)
             | Command::Schema(_)
             | Command::Generate(_)
+            | Command::Export(_)
             | Command::Codegen(_)
             | Command::Share(_)
             | Command::Import(_)

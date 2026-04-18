@@ -16,7 +16,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::cli::search::{search_core, SearchResult};
+use chrono::Utc;
+
+use crate::cli::search::{humanize_age, parse_ts, search_core, SearchResult};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
@@ -61,6 +63,22 @@ enum Row {
     },
 }
 
+/// Health status of the active store's git checkout, computed once at view
+/// construction. Displayed as a compact indicator in the header bar.
+#[derive(Debug, Clone)]
+enum StoreHealth {
+    /// Store checkout is up to date with its remote tracking branch.
+    Synced,
+    /// Local checkout is behind its remote by N commit(s).
+    Behind(u32),
+    /// Working tree has uncommitted local changes.
+    Dirty,
+    /// Both behind remote AND has local changes.
+    BehindAndDirty(u32),
+    /// Could not determine status (not a git repo, no remote, etc.).
+    Unknown,
+}
+
 pub struct SearchView {
     query: String,
     results: Vec<SearchResult>,
@@ -73,6 +91,8 @@ pub struct SearchView {
     ctx: Context,
     /// Embedded store-picker overlay. When `Some`, it intercepts every key.
     picker: Option<StorePicker>,
+    /// Health of the active store's git checkout, checked once at startup.
+    store_health: StoreHealth,
 }
 
 impl SearchView {
@@ -83,6 +103,7 @@ impl SearchView {
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
         };
+        let store_health = check_store_health(&ctx_owned.store);
         let mut view = Self {
             query: String::new(),
             results: Vec::new(),
@@ -90,6 +111,7 @@ impl SearchView {
             list_state: ListState::default(),
             ctx: ctx_owned,
             picker: None,
+            store_health,
         };
         view.refresh_results();
         view
@@ -262,6 +284,16 @@ impl SearchView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (health_label, health_color) = match &self.store_health {
+            StoreHealth::Synced => ("synced".to_string(), Color::Green),
+            StoreHealth::Behind(n) => (format!("{n} behind remote"), Color::Yellow),
+            StoreHealth::Dirty => ("uncommitted changes".to_string(), Color::Red),
+            StoreHealth::BehindAndDirty(n) => {
+                (format!("{n} behind + dirty"), Color::Red)
+            }
+            StoreHealth::Unknown => ("unknown".to_string(), Color::DarkGray),
+        };
+
         let header = Line::from(vec![
             Span::styled(
                 " himitsu ",
@@ -281,6 +313,10 @@ impl SearchView {
                 ),
                 Style::default().fg(Color::DarkGray),
             ),
+            Span::raw("  "),
+            Span::styled("●", Style::default().fg(health_color)),
+            Span::raw(" "),
+            Span::styled(health_label, Style::default().fg(health_color)),
         ]);
         frame.render_widget(Paragraph::new(header), area);
     }
@@ -317,19 +353,50 @@ impl SearchView {
         // the header row and we drop the redundant per-row store column.
         let has_store_headers = self.rows.iter().any(|r| matches!(r, Row::Store { .. }));
 
+        let now = Utc::now();
+
+        // Pre-compute humanized timestamps and descriptions for each secret
+        // row so column widths account for the rendered text, not raw data.
+        let row_data: Vec<Option<(String, String, String)>> = self
+            .rows
+            .iter()
+            .map(|row| match row {
+                Row::Secret { result, indent } => {
+                    let prefix = "  ".repeat(*indent);
+                    let padded_path = format!("{prefix}{}", result.path);
+                    let ts = result.updated_at.as_deref().or(result.created_at.as_deref());
+                    let updated = ts
+                        .and_then(parse_ts)
+                        .map(|t| humanize_age(now, t))
+                        .unwrap_or_else(|| "—".to_string());
+                    let desc = result.description.clone().unwrap_or_default();
+                    Some((padded_path, updated, desc))
+                }
+                _ => None,
+            })
+            .collect();
+
         // Column widths are computed against the widest secret row and the
         // header label itself, so short paths still leave room for "PATH" /
         // "STORE" to read cleanly.
-        let path_w = self
-            .rows
+        let path_w = row_data
             .iter()
-            .filter_map(|row| match row {
-                Row::Secret { result, indent } => Some(result.path.len() + indent * 2),
-                _ => None,
-            })
+            .filter_map(|d| d.as_ref().map(|(p, _, _)| p.len()))
             .max()
             .unwrap_or(0)
             .max("PATH".len());
+        let updated_w = row_data
+            .iter()
+            .filter_map(|d| d.as_ref().map(|(_, u, _)| u.len()))
+            .max()
+            .unwrap_or(0)
+            .max("UPDATED".len());
+        let desc_w = row_data
+            .iter()
+            .filter_map(|d| d.as_ref().map(|(_, _, d)| d.len()))
+            .max()
+            .unwrap_or(0)
+            .max("DESCRIPTION".len());
         let store_w = if has_store_headers {
             0
         } else {
@@ -352,23 +419,33 @@ impl SearchView {
         let header_style = Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD);
-        let mut header_spans = vec![Span::styled(
-            format!("{:<path_w$}  ", "PATH", path_w = path_w),
-            header_style,
-        )];
+        let mut header_spans = vec![
+            Span::styled(
+                format!("{:<path_w$}  ", "PATH", path_w = path_w),
+                header_style,
+            ),
+            Span::styled(
+                format!("{:<updated_w$}  ", "UPDATED", updated_w = updated_w),
+                header_style,
+            ),
+            Span::styled(
+                format!("{:<desc_w$}  ", "DESCRIPTION", desc_w = desc_w),
+                header_style,
+            ),
+        ];
         if !has_store_headers {
             header_spans.push(Span::styled(
-                format!("{:<store_w$}  ", "STORE", store_w = store_w),
+                format!("{:<store_w$}", "STORE", store_w = store_w),
                 header_style,
             ));
         }
-        header_spans.push(Span::styled("CREATED", header_style));
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
         let items: Vec<ListItem> = self
             .rows
             .iter()
-            .map(|row| match row {
+            .zip(row_data.iter())
+            .map(|(row, data)| match row {
                 Row::Store { name, count } => {
                     let line = Line::from(vec![
                         Span::styled(
@@ -401,21 +478,22 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::Secret { result, indent } => {
-                    let prefix = "  ".repeat(*indent);
-                    let created = result.created_at.as_deref().unwrap_or("-");
-                    let padded_path = format!("{prefix}{}", result.path);
-                    let mut spans = vec![Span::raw(format!("{padded_path:<path_w$}  "))];
+                Row::Secret { result, .. } => {
+                    let (padded_path, updated, desc) = data.as_ref().unwrap();
+                    let mut spans = vec![
+                        Span::raw(format!("{padded_path:<path_w$}  ")),
+                        Span::styled(
+                            format!("{updated:<updated_w$}  "),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::raw(format!("{desc:<desc_w$}  ")),
+                    ];
                     if !has_store_headers {
                         spans.push(Span::styled(
-                            format!("{:<store_w$}  ", result.store, store_w = store_w),
+                            format!("{:<store_w$}", result.store, store_w = store_w),
                             Style::default().fg(Color::Cyan),
                         ));
                     }
-                    spans.push(Span::styled(
-                        created.to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    ));
                     ListItem::new(Line::from(spans))
                 }
             })
@@ -462,6 +540,53 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
     let plain = age::decrypt(&ciphertext, &identity)?;
     let decoded = secret_value::decode(&plain);
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
+}
+
+/// Check the git health of a store checkout (offline — no fetch).
+///
+/// Returns a [`StoreHealth`] summarising whether the checkout is behind its
+/// remote tracking branch and/or has uncommitted local changes. The check
+/// is intentionally cheap: it only inspects already-fetched refs so it
+/// never blocks on the network.
+fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
+    use crate::git;
+
+    if store_path.as_os_str().is_empty() || !store_path.join(".git").exists() {
+        return StoreHealth::Unknown;
+    }
+
+    // Current branch name
+    let branch = match git::run(&["rev-parse", "--abbrev-ref", "HEAD"], store_path) {
+        Ok(b) => b.trim().to_string(),
+        Err(_) => return StoreHealth::Unknown,
+    };
+
+    // Check remote tracking branch exists
+    let remote_ref = format!("origin/{branch}");
+    if git::run(&["rev-parse", "--verify", &remote_ref], store_path).is_err() {
+        return StoreHealth::Unknown;
+    }
+
+    // Behind count
+    let behind: u32 = git::run(
+        &["rev-list", "--count", &format!("HEAD..{remote_ref}")],
+        store_path,
+    )
+    .ok()
+    .and_then(|s| s.trim().parse().ok())
+    .unwrap_or(0);
+
+    // Dirty working tree
+    let dirty = git::run(&["status", "--short"], store_path)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    match (behind > 0, dirty) {
+        (true, true) => StoreHealth::BehindAndDirty(behind),
+        (true, false) => StoreHealth::Behind(behind),
+        (false, true) => StoreHealth::Dirty,
+        (false, false) => StoreHealth::Synced,
+    }
 }
 
 /// Group a flat list of results into rows.
@@ -786,11 +911,12 @@ mod tests {
             rendered.push('\n');
         }
         assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
-        assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
+        assert!(rendered.contains("UPDATED"), "missing UPDATED header: {rendered}");
         assert!(
-            rendered.contains("CREATED"),
-            "missing CREATED header: {rendered}"
+            rendered.contains("DESCRIPTION"),
+            "missing DESCRIPTION header: {rendered}"
         );
+        assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
     }
 
     /// Seed two stores under `<tmp>/state/stores/<org>/<repo>/.himitsu/secrets/`

@@ -4,12 +4,13 @@ use super::Context;
 use crate::error::{HimitsuError, Result};
 use crate::remote::store as rstore;
 
-/// Manage recipient groups.
+/// Manage recipient groups (deprecated — use path-based recipient names instead).
 ///
-/// Groups are pure name → member mappings persisted in
-/// `<store>/.himitsu/config.yaml`. They do not correspond to filesystem
-/// directories; a recipient can belong to zero, one, or many groups without
-/// duplicating key material.
+/// Groups are deprecated. Instead, use path-based recipient names:
+///   himitsu recipient add ops/alice --age-key age1...
+///   himitsu recipient add ops/bob --age-key age1...
+///
+/// Then reference all ops recipients with `ops/*` in encryption configs.
 #[derive(Debug, Args)]
 pub struct GroupArgs {
     #[command(subcommand)]
@@ -41,6 +42,11 @@ pub enum GroupCommand {
 }
 
 pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
+    eprintln!(
+        "warning: `himitsu group` is deprecated. Use path-based recipient names instead.\n\
+         Example: `himitsu recipient add ops/alice --age-key age1...`\n\
+         Then reference all ops recipients with `ops/*` in encryption configs.\n"
+    );
     super::recipient::migrate_legacy_layout(ctx)?;
     let mut cfg = rstore::load_store_config(&ctx.store)?;
 
@@ -56,7 +62,6 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
             }
             cfg.recipients.groups.insert(name.clone(), vec![]);
             rstore::save_store_config(&ctx.store, &cfg)?;
-            ctx.commit_and_push(&format!("himitsu: add group {name}"));
             println!("Created group '{name}'");
         }
 
@@ -72,7 +77,6 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
                 )));
             }
             rstore::save_store_config(&ctx.store, &cfg)?;
-            ctx.commit_and_push(&format!("himitsu: remove group {name}"));
             println!("Removed group '{name}'");
         }
 
@@ -108,9 +112,6 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
             }
             members.push(recipient.clone());
             rstore::save_store_config(&ctx.store, &cfg)?;
-            ctx.commit_and_push(&format!(
-                "himitsu: add recipient {recipient} to group {group}"
-            ));
             println!("Added '{recipient}' to group '{group}'");
         }
 
@@ -128,9 +129,6 @@ pub fn run(args: GroupArgs, ctx: &Context) -> Result<()> {
                 )));
             }
             rstore::save_store_config(&ctx.store, &cfg)?;
-            ctx.commit_and_push(&format!(
-                "himitsu: remove recipient {recipient} from group {group}"
-            ));
             println!("Removed '{recipient}' from group '{group}'");
         }
     }

@@ -31,6 +31,6 @@ pub fn run(args: WriteArgs, ctx: &Context) -> Result<()> {
         }
     };
 
-    super::set::set_plaintext(ctx, &args.path, &plaintext, args.no_push)?;
+    super::set::set_plaintext(ctx, &args.path, &plaintext)?;
     Ok(())
 }

@@ -55,7 +55,6 @@ pub fn rekey_store(ctx: &Context, path_prefix: Option<&str>) -> Result<usize> {
 pub fn run(args: RekeyArgs, ctx: &Context) -> Result<()> {
     let count = rekey_store(ctx, args.path.as_deref())?;
     let recipients = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref())?;
-    ctx.commit_and_push(&format!("himitsu: re-encrypt {count} secret(s)"));
     println!(
         "Re-encrypted {count} secret(s) for {} recipient(s)",
         recipients.len()
