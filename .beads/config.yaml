@@ -52,3 +52,10 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+# Disable dolt auto-start since dolt isn't installed
+dolt:
+  auto-start: false
+no-db: true
+
+sync.remote: "git+http://local_proxy@127.0.0.1:47182/git/darkmatter/himitsu"
