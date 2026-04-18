@@ -75,7 +75,14 @@ enum StoreHealth {
     Dirty,
     /// Both behind remote AND has local changes.
     BehindAndDirty(u32),
-    /// Could not determine status (not a git repo, no remote, etc.).
+    /// Store directory is not a git repo.
+    NotGit,
+    /// Git repo exists but has no remote configured.
+    NoRemote,
+    /// Git repo has a remote but the tracking branch doesn't exist yet
+    /// (e.g. never pushed).
+    NotPushed,
+    /// Could not determine status for some other reason.
     Unknown,
 }
 
@@ -290,6 +297,13 @@ impl SearchView {
             StoreHealth::Dirty => ("uncommitted changes".to_string(), Color::Red),
             StoreHealth::BehindAndDirty(n) => {
                 (format!("{n} behind + dirty"), Color::Red)
+            }
+            StoreHealth::NotGit => ("not a git repo".to_string(), Color::Yellow),
+            StoreHealth::NoRemote => {
+                ("no remote — run: himitsu remote add".to_string(), Color::Yellow)
+            }
+            StoreHealth::NotPushed => {
+                ("not pushed — run: himitsu git push -u origin main".to_string(), Color::Yellow)
             }
             StoreHealth::Unknown => ("unknown".to_string(), Color::DarkGray),
         };
@@ -551,8 +565,11 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
 fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
     use crate::git;
 
-    if store_path.as_os_str().is_empty() || !store_path.join(".git").exists() {
+    if store_path.as_os_str().is_empty() {
         return StoreHealth::Unknown;
+    }
+    if !store_path.join(".git").exists() {
+        return StoreHealth::NotGit;
     }
 
     // Current branch name
@@ -561,10 +578,18 @@ fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
         Err(_) => return StoreHealth::Unknown,
     };
 
+    // Check if any remote is configured at all
+    let has_remote = git::run(&["remote"], store_path)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_remote {
+        return StoreHealth::NoRemote;
+    }
+
     // Check remote tracking branch exists
     let remote_ref = format!("origin/{branch}");
     if git::run(&["rev-parse", "--verify", &remote_ref], store_path).is_err() {
-        return StoreHealth::Unknown;
+        return StoreHealth::NotPushed;
     }
 
     // Behind count
