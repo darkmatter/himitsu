@@ -84,10 +84,11 @@ fn emit_git_build_info() {
 
     let head_path = git_dir.join("HEAD");
     println!("cargo:rerun-if-changed={}", head_path.display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("packed-refs").display()
-    );
+
+    let packed_refs = git_dir.join("packed-refs");
+    if packed_refs.exists() {
+        println!("cargo:rerun-if-changed={}", packed_refs.display());
+    }
 
     if let Ok(head) = std::fs::read_to_string(&head_path) {
         if let Some(reference) = head.strip_prefix("ref: ").map(str::trim) {
