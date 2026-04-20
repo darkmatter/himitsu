@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod completions;
 pub mod context;
 pub mod decrypt;
+pub mod docs;
 pub mod duration;
 pub mod encrypt;
 pub mod export;
@@ -194,6 +195,9 @@ pub enum Command {
     /// Verify store checkouts are up to date with their remotes.
     Check(check::CheckArgs),
 
+    /// Show the himitsu documentation (renders README).
+    Docs,
+
     /// Print version information.
     Version,
 
@@ -235,12 +239,14 @@ impl Cli {
         let is_init = matches!(&command, Command::Init(_));
         let is_git = matches!(&command, Command::Git(_));
         let is_version = matches!(&command, Command::Version);
+        let is_docs = matches!(&command, Command::Docs);
         let is_completions = matches!(&command, Command::Completions(_));
         let is_complete_paths = matches!(&command, Command::CompletePaths(_));
 
         if !is_init
             && !is_git
             && !is_version
+            && !is_docs
             && !is_completions
             && !is_complete_paths
             && !data_dir.join("key").exists()
@@ -369,6 +375,7 @@ impl Cli {
             Command::Codegen(args) => codegen::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Check(args) => check::run(args, &ctx),
+            Command::Docs => docs::run(),
             Command::Version => {
                 println!("{}", crate::build_info::VERSION_LINE);
                 Ok(())
