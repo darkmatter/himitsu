@@ -476,18 +476,28 @@ pub fn remote_store_path(slug: &str) -> Result<PathBuf> {
 /// - On clone failure: returns an error with the attempted URL and a hint to
 ///   use `himitsu remote add --url` for custom URLs.
 pub fn ensure_store(slug: &str) -> Result<PathBuf> {
-    let (org, repo) = validate_remote_slug(slug)?;
+    // Accept full git URLs (e.g. git@github.com:org/repo.git) and extract
+    // the org/repo slug automatically.
+    let (resolved, clone_url) =
+        if let Some(parsed) = crate::cli::init::parse_remote_slug(slug) {
+            let url = slug.to_string();
+            (parsed, Some(url))
+        } else {
+            (slug.to_string(), None)
+        };
+
+    let (org, repo) = validate_remote_slug(&resolved)?;
     let path = store_checkout(org, repo);
     if path.exists() {
         return Ok(path);
     }
-    // Attempt lazy clone from the default GitHub SSH URL.
-    let url = format!("git@github.com:{org}/{repo}.git");
-    eprintln!("Cloning {slug} → {}", path.display());
+    // Attempt lazy clone from the explicit or default GitHub SSH URL.
+    let url = clone_url.unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
+    eprintln!("Cloning {resolved} → {}", path.display());
     crate::git::clone_noninteractive(&url, &path).map_err(|e| {
         HimitsuError::Remote(format!(
-            "failed to clone {slug} from {url}: {e}\n  \
-             Tip: use `himitsu remote add {slug} --url <url>` to specify a custom URL."
+            "failed to clone {resolved} from {url}: {e}\n  \
+             Tip: use `himitsu remote add {resolved} --url <url>` to specify a custom URL."
         ))
     })?;
     Ok(path)

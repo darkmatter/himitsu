@@ -379,7 +379,7 @@ fn detect_origin_remote(git_root: &PathBuf) -> Option<String> {
     parse_remote_slug(&url)
 }
 
-fn parse_remote_slug(url: &str) -> Option<String> {
+pub(crate) fn parse_remote_slug(url: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("git@github.com:") {
         return Some(rest.strip_suffix(".git").unwrap_or(rest).to_string());
     }

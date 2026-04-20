@@ -42,22 +42,32 @@ pub enum RemoteCommand {
 pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
     match args.command {
         RemoteCommand::Add { slug, url } => {
-            let (org, repo) = config::validate_remote_slug(&slug)?;
+            // If the user passed a full git URL as the slug, extract the
+            // org/repo slug and use the original input as the clone URL.
+            let (resolved_slug, clone_url) =
+                if let Some(parsed) = super::init::parse_remote_slug(&slug) {
+                    (parsed, url.unwrap_or_else(|| slug.clone()))
+                } else {
+                    let s = slug.clone();
+                    let (org, repo) = config::validate_remote_slug(&s)?;
+                    let u =
+                        url.unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
+                    (s, u)
+                };
 
+            let (org, repo) = config::validate_remote_slug(&resolved_slug)?;
             let dest = config::stores_dir().join(org).join(repo);
 
             if dest.exists() {
                 return Err(HimitsuError::Remote(format!(
-                    "remote '{slug}' already exists at {}",
+                    "remote '{resolved_slug}' already exists at {}",
                     dest.display()
                 )));
             }
 
-            let clone_url = url.unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
-
             println!("Cloning {clone_url} → {}", dest.display());
             git::clone(&clone_url, &dest)?;
-            println!("Added remote '{slug}'");
+            println!("Added remote '{resolved_slug}'");
         }
 
         RemoteCommand::Default { slug } => match slug {
@@ -121,4 +131,33 @@ pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that a full SSH URL is resolved to the correct slug and clone URL.
+    #[test]
+    fn slug_from_ssh_url() {
+        let slug = "git@github.com:myorg/secrets.git";
+        let parsed = super::super::init::parse_remote_slug(slug);
+        assert_eq!(parsed, Some("myorg/secrets".to_string()));
+    }
+
+    /// Verify that a full HTTPS URL is resolved correctly.
+    #[test]
+    fn slug_from_https_url() {
+        let slug = "https://github.com/myorg/secrets.git";
+        let parsed = super::super::init::parse_remote_slug(slug);
+        assert_eq!(parsed, Some("myorg/secrets".to_string()));
+    }
+
+    /// A plain slug should NOT be parsed as a URL.
+    #[test]
+    fn plain_slug_not_parsed_as_url() {
+        let slug = "myorg/secrets";
+        let parsed = super::super::init::parse_remote_slug(slug);
+        assert_eq!(parsed, None);
+    }
 }
