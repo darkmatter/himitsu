@@ -186,6 +186,152 @@ impl<'de> Deserialize<'de> for EnvEntry {
     }
 }
 
+// ── Env label validation ──────────────────────────────────────────────────
+
+/// Returns `true` if `c` is a legal character within a single env label
+/// segment. Segments are restricted to `[A-Za-z0-9_-]` so env names can be
+/// used as filenames (`<env>.sops.yaml`) without escaping.
+fn is_valid_env_segment_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+/// Validates an env label against the preset-env grammar.
+///
+/// Legal forms:
+/// - Concrete: `foo`, `foo/bar`, `foo/bar/baz`
+/// - Trailing wildcard: `foo/*`, `foo/bar/*`
+///
+/// Rejected:
+/// - Empty labels
+/// - Leading/trailing slashes or empty segments (`/foo`, `foo/`, `foo//bar`)
+/// - Mid-path wildcards (`foo/*/bar`, `*/foo`)
+/// - Bare wildcard `*` (at least one concrete segment is required)
+/// - Segments with characters outside `[A-Za-z0-9_-]`
+pub fn validate_env_label(label: &str) -> Result<()> {
+    if label.is_empty() {
+        return Err(HimitsuError::InvalidConfig(
+            "env label must not be empty".into(),
+        ));
+    }
+    let segments: Vec<&str> = label.split('/').collect();
+    let last_idx = segments.len() - 1;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.is_empty() {
+            return Err(HimitsuError::InvalidConfig(format!(
+                "env label '{label}' has an empty segment (leading/trailing slash or `//`)"
+            )));
+        }
+        if *seg == "*" {
+            if i != last_idx {
+                return Err(HimitsuError::InvalidConfig(format!(
+                    "env label '{label}' has a mid-path wildcard: `*` is only allowed as the final segment"
+                )));
+            }
+            if i == 0 {
+                return Err(HimitsuError::InvalidConfig(format!(
+                    "env label '{label}' is a bare wildcard: at least one concrete segment is required before `*`"
+                )));
+            }
+            continue;
+        }
+        if !seg.chars().all(is_valid_env_segment_char) {
+            return Err(HimitsuError::InvalidConfig(format!(
+                "env label '{label}' segment '{seg}' contains invalid characters (allowed: [A-Za-z0-9_-])"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `true` when the label ends in `/*` (a wildcard env).
+pub fn is_wildcard_label(label: &str) -> bool {
+    label.ends_with("/*")
+}
+
+/// Returns the concrete prefix segments of a wildcard label, or the full
+/// segments of a concrete label. `foo/bar/*` → `["foo", "bar"]`.
+pub fn label_prefix_segments(label: &str) -> Vec<&str> {
+    let mut segs: Vec<&str> = label.split('/').collect();
+    if segs.last().copied() == Some("*") {
+        segs.pop();
+    }
+    segs
+}
+
+/// Extracts the 1-indexed capture numbers referenced in a string (`$1`,
+/// `$2`, …) in order of appearance. Invalid/partial matches are ignored.
+///
+/// Only bare `$N` is recognized. `${N}` and escape sequences are out of
+/// scope for v1.
+pub fn parse_captures(s: &str) -> Vec<u32> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            // Safe: we advanced only over ASCII digits.
+            let digits = std::str::from_utf8(&bytes[start..j]).unwrap();
+            if let Ok(n) = digits.parse::<u32>() {
+                out.push(n);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Validates every env label in a map and checks that capture references
+/// only appear inside wildcard envs. Concrete envs containing `$N` are
+/// rejected — captures have no segment to bind to.
+pub fn validate_envs(envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
+    for (label, entries) in envs {
+        validate_env_label(label)?;
+        let is_wild = is_wildcard_label(label);
+        for (idx, entry) in entries.iter().enumerate() {
+            let path = match entry {
+                EnvEntry::Single(p) | EnvEntry::Glob(p) => p,
+                EnvEntry::Alias { path, .. } => path,
+            };
+            let captures = parse_captures(path);
+            if !captures.is_empty() && !is_wild {
+                return Err(HimitsuError::InvalidConfig(format!(
+                    "env '{label}' entry #{idx} uses capture refs (`$N`) but the label is not a wildcard; captures are only valid in `<prefix>/*` envs"
+                )));
+            }
+            // In a wildcard env, a single `*` captures one segment — captures
+            // must be `$1`. Reject higher-index captures up front.
+            if is_wild {
+                for n in &captures {
+                    if *n != 1 {
+                        return Err(HimitsuError::InvalidConfig(format!(
+                            "env '{label}' entry #{idx} references $${n}, but a single-`*` wildcard only exposes $1"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl ProjectConfig {
+    /// Run all cross-field validation that cannot be expressed in serde:
+    /// env-label grammar, capture-ref legality. Called by consumers before
+    /// acting on the config; not invoked implicitly on deserialize so that
+    /// serde round-trips remain pure.
+    pub fn validate(&self) -> Result<()> {
+        validate_envs(&self.envs)?;
+        Ok(())
+    }
+}
+
 /// Settings for the `generate` command output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateConfig {
@@ -731,6 +877,149 @@ mod tests {
         assert!(
             matches!(back, EnvEntry::Alias { ref key, ref path } if key == "MY_DB" && path == "prod/DB_PASS")
         );
+    }
+
+    // ── Env label grammar ──────────────────────────────────────────────
+
+    #[test]
+    fn env_label_accepts_concrete_and_trailing_wildcard() {
+        for good in [
+            "foo",
+            "foo/bar",
+            "foo/bar/baz",
+            "foo/*",
+            "foo/bar/*",
+            "foo_bar",
+            "foo-1",
+            "ENV123",
+        ] {
+            validate_env_label(good).unwrap_or_else(|e| panic!("expected {good} valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn env_label_rejects_empty() {
+        assert!(validate_env_label("").is_err());
+    }
+
+    #[test]
+    fn env_label_rejects_mid_path_wildcard() {
+        assert!(validate_env_label("foo/*/bar").is_err());
+        assert!(validate_env_label("*/foo").is_err());
+        assert!(validate_env_label("a/*/b/c").is_err());
+    }
+
+    #[test]
+    fn env_label_rejects_bare_wildcard() {
+        assert!(validate_env_label("*").is_err());
+    }
+
+    #[test]
+    fn env_label_rejects_empty_segments() {
+        assert!(validate_env_label("/foo").is_err());
+        assert!(validate_env_label("foo/").is_err());
+        assert!(validate_env_label("foo//bar").is_err());
+    }
+
+    #[test]
+    fn env_label_rejects_invalid_chars() {
+        assert!(validate_env_label("foo.bar").is_err());
+        assert!(validate_env_label("foo bar").is_err());
+        assert!(validate_env_label("foo:bar").is_err());
+    }
+
+    #[test]
+    fn is_wildcard_label_detects_trailing_star() {
+        assert!(is_wildcard_label("foo/*"));
+        assert!(is_wildcard_label("foo/bar/*"));
+        assert!(!is_wildcard_label("foo"));
+        assert!(!is_wildcard_label("foo/bar"));
+    }
+
+    #[test]
+    fn label_prefix_segments_strips_wildcard() {
+        assert_eq!(label_prefix_segments("foo"), vec!["foo"]);
+        assert_eq!(label_prefix_segments("foo/bar"), vec!["foo", "bar"]);
+        assert_eq!(label_prefix_segments("foo/*"), vec!["foo"]);
+        assert_eq!(label_prefix_segments("foo/bar/*"), vec!["foo", "bar"]);
+    }
+
+    // ── Capture references ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_captures_finds_dollar_digits() {
+        assert_eq!(parse_captures("no captures here"), Vec::<u32>::new());
+        assert_eq!(parse_captures("/$1/postgres-url"), vec![1]);
+        assert_eq!(parse_captures("$1/$2"), vec![1, 2]);
+        assert_eq!(parse_captures("foo$10bar"), vec![10]);
+        // Literal `$` followed by non-digit is ignored.
+        assert_eq!(parse_captures("$abc"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn validate_envs_accepts_capture_in_wildcard_alias() {
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "foo/*".to_string(),
+            vec![EnvEntry::Alias {
+                key: "POSTGRES".into(),
+                path: "/$1/postgres-url".into(),
+            }],
+        );
+        validate_envs(&envs).unwrap();
+    }
+
+    #[test]
+    fn validate_envs_rejects_capture_in_concrete_env() {
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "foo/bar".to_string(),
+            vec![EnvEntry::Alias {
+                key: "POSTGRES".into(),
+                path: "/$1/postgres-url".into(),
+            }],
+        );
+        let err = validate_envs(&envs).unwrap_err();
+        assert!(
+            err.to_string().contains("capture refs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_envs_rejects_high_capture_index() {
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "foo/*".to_string(),
+            vec![EnvEntry::Single("/$2/postgres-url".into())],
+        );
+        let err = validate_envs(&envs).unwrap_err();
+        assert!(
+            err.to_string().contains("$1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_envs_rejects_bad_label() {
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "foo/*/bar".to_string(),
+            vec![EnvEntry::Single("x".into())],
+        );
+        assert!(validate_envs(&envs).is_err());
+    }
+
+    #[test]
+    fn project_config_validate_surfaces_label_errors() {
+        let yaml = r#"
+envs:
+  "foo/*/bar":
+    - SECRET: x
+"#;
+        let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
+        // Deserialization succeeds — validation surfaces the grammar error.
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
