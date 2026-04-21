@@ -97,6 +97,33 @@ impl Context {
         }
     }
 
+    /// Fetch from `origin` and fast-forward `pull` the store's working tree.
+    /// Used by the `auto_pull` config to give a `git fetch && himitsu <cmd>`
+    /// workflow with no extra commands.
+    ///
+    /// Best-effort: a missing git repo, no remote, no upstream branch, or a
+    /// network failure all degrade to a stderr warning so the underlying
+    /// command can still run offline.
+    pub fn pull_if_remote(&self) {
+        let Some(git_root) = self.git_root() else {
+            return;
+        };
+        if !crate::git::has_any_remote(&git_root) {
+            return;
+        }
+        if let Err(e) = crate::git::run(&["fetch", "origin"], &git_root) {
+            eprintln!("warning: auto-pull fetch failed: {e}");
+            return;
+        }
+        // --ff-only is intentional: the dispatcher's invariant is a clean
+        // working tree, so a non-fast-forward state means someone modified
+        // history out-of-band. Surface that loudly instead of silently
+        // creating a merge commit.
+        if let Err(e) = crate::git::run(&["pull", "--ff-only"], &git_root) {
+            eprintln!("warning: auto-pull skipped (not fast-forward or no upstream): {e}");
+        }
+    }
+
     /// Push the store's git repo to its remote. Best-effort: failures are
     /// logged at debug and discarded (offline, auth issues, etc.).
     ///
@@ -364,6 +391,17 @@ impl Cli {
             store,
             recipients_path,
         };
+
+        // Pre-dispatch: when `auto_pull` is on, fetch + fast-forward the
+        // resolved store so reads see latest state and writes can't fast-fail
+        // a push because of a remote-side commit. Only fires for store-
+        // touching commands; init/version/completions etc. skip.
+        if !ctx.store.as_os_str().is_empty()
+            && init::store_exists(&ctx.store)
+            && crate::config::auto_pull_enabled()
+        {
+            ctx.pull_if_remote();
+        }
 
         // Snapshot the mutation message and `--no-push` opt-out *before*
         // dispatching, since `command` is moved into the match below.
@@ -677,5 +715,99 @@ mod tests {
 
         let cmd = parse(&["himitsu", "context", "clear"]);
         assert_eq!(mutation_message(&cmd), None);
+    }
+
+    // ── pull_if_remote ──────────────────────────────────────────────────
+
+    /// Helper: build two linked git repos so we can test fetch+ff-only pull
+    /// against a real remote without touching the network.
+    ///
+    /// Returns `(remote_path, local_path)`. The remote has one commit; the
+    /// local was cloned from it and tracks `origin/main`.
+    fn make_linked_repos(root: &Path) -> (PathBuf, PathBuf) {
+        let remote = root.join("remote.git");
+        let local = root.join("local");
+
+        // Bare remote.
+        crate::git::run(&["init", "--bare", "-b", "main", remote.to_str().unwrap()], root)
+            .unwrap();
+
+        // Working repo + initial commit.
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        crate::git::run(&["init", "-b", "main"], &work).unwrap();
+        crate::git::run(&["config", "user.email", "t@t"], &work).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &work).unwrap();
+        std::fs::write(work.join("seed.txt"), "seed").unwrap();
+        crate::git::run(&["add", "."], &work).unwrap();
+        crate::git::run(&["commit", "-m", "seed"], &work).unwrap();
+        crate::git::run(&["remote", "add", "origin", remote.to_str().unwrap()], &work)
+            .unwrap();
+        crate::git::run(&["push", "-u", "origin", "main"], &work).unwrap();
+
+        // The "local" store is a fresh clone — has tracking branch.
+        crate::git::run(
+            &["clone", remote.to_str().unwrap(), local.to_str().unwrap()],
+            root,
+        )
+        .unwrap();
+        crate::git::run(&["config", "user.email", "t@t"], &local).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &local).unwrap();
+
+        (remote, local)
+    }
+
+    fn ctx_for(store: &Path) -> Context {
+        let tmp = tempfile::tempdir().unwrap().keep();
+        Context {
+            data_dir: tmp.clone(),
+            state_dir: tmp,
+            store: store.to_path_buf(),
+            recipients_path: None,
+        }
+    }
+
+    #[test]
+    fn pull_if_remote_fast_forwards_when_remote_advances() {
+        let root = tempfile::tempdir().unwrap();
+        let (_remote, local) = make_linked_repos(root.path());
+
+        // Advance the remote by pushing a new commit from the work clone.
+        let work = root.path().join("work");
+        std::fs::write(work.join("new.txt"), "x").unwrap();
+        crate::git::run(&["add", "."], &work).unwrap();
+        crate::git::run(&["commit", "-m", "remote-side"], &work).unwrap();
+        crate::git::run(&["push"], &work).unwrap();
+
+        // Local doesn't have the new commit yet.
+        assert!(!local.join("new.txt").exists());
+
+        ctx_for(&local).pull_if_remote();
+
+        // After auto-pull, local has fast-forwarded.
+        assert!(
+            local.join("new.txt").exists(),
+            "auto-pull should fast-forward and bring in remote commit"
+        );
+    }
+
+    #[test]
+    fn pull_if_remote_noop_without_remote() {
+        // Reproduces the user's broken store state: a local repo with no
+        // origin must not panic, must not produce any side effect.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("orphan");
+        std::fs::create_dir_all(&store).unwrap();
+        crate::git::init(&store).unwrap();
+
+        ctx_for(&store).pull_if_remote();
+        // No assertion to make beyond "did not panic" — the absence of a
+        // remote means there's nothing to do.
+    }
+
+    #[test]
+    fn pull_if_remote_noop_outside_git_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        ctx_for(tmp.path()).pull_if_remote();
     }
 }

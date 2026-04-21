@@ -57,6 +57,7 @@ impl std::str::FromStr for KeyProvider {
 /// | `key_provider`   | `HIMITSU_KEY_PROVIDER`    |
 /// | `data_dir`       | `HIMITSU_DATA_DIR`        |
 /// | `context`        | `HIMITSU_CONTEXT`         |
+/// | `auto_pull`      | `HIMITSU_AUTO_PULL`       |
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default remote store slug (e.g. `"myorg/secrets"`).
@@ -82,6 +83,15 @@ pub struct Config {
     /// Override: `HIMITSU_DATA_DIR=/custom/path`
     #[serde(default)]
     pub data_dir: Option<String>,
+
+    /// When true, every store-touching command first runs `git fetch` +
+    /// fast-forward `git pull` on the resolved store before dispatching.
+    /// Combined with the post-mutation auto-commit/push, this gives a
+    /// `git fetch && himitsu <cmd> && git push` workflow with no extra
+    /// commands. Failures are non-fatal and surface as a stderr warning.
+    /// Override: `HIMITSU_AUTO_PULL=1`
+    #[serde(default)]
+    pub auto_pull: bool,
 
     /// TUI-specific settings — currently just the configurable keymap.
     /// Users override individual actions under `tui.keys`; anything left
@@ -548,6 +558,27 @@ pub fn store_checkout(org: &str, repo: &str) -> PathBuf {
     stores_dir().join(org).join(repo)
 }
 
+/// Returns true when auto-pull is enabled, honoring the env override.
+///
+/// Resolution order:
+/// 1. `HIMITSU_AUTO_PULL` env var (any of `1`, `true`, `yes`, case-insensitive)
+/// 2. `auto_pull` field in the global config
+/// 3. Default: false
+///
+/// Reads the global config from disk on each call. Cheap (single YAML parse)
+/// and avoids threading a config handle through every dispatch call site.
+pub fn auto_pull_enabled() -> bool {
+    if let Ok(val) = std::env::var("HIMITSU_AUTO_PULL") {
+        return matches!(
+            val.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        );
+    }
+    Config::load(&config_path())
+        .map(|c| c.auto_pull)
+        .unwrap_or(false)
+}
+
 // ── Project config discovery ────────────────────────────────────────────────
 
 /// Walk upward from the current directory looking for a project-level config
@@ -823,6 +854,53 @@ mod tests {
         assert!(validate_remote_slug("git@github.com:foo/bar").is_err());
         assert!(validate_remote_slug("https:/foo/bar").is_err());
         assert!(validate_remote_slug("foo/bar@v1").is_err());
+    }
+
+    // ── auto_pull config ────────────────────────────────────────────────
+
+    /// Existing configs that predate the `auto_pull` field must still parse
+    /// and yield `false`. Backwards-compat guard.
+    #[test]
+    fn config_without_auto_pull_defaults_to_false() {
+        let yaml = "default_store: foo/bar\nkey_provider: disk\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.auto_pull);
+    }
+
+    #[test]
+    fn config_auto_pull_round_trips() {
+        let yaml = "auto_pull: true\nkey_provider: disk\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.auto_pull);
+
+        let written = serde_yaml::to_string(&cfg).unwrap();
+        assert!(written.contains("auto_pull: true"));
+    }
+
+    #[test]
+    fn auto_pull_enabled_env_var_overrides_config() {
+        // Serialize via the same mutex used by other env-touching tests.
+        let _guard = crate::config::envs_mut::HIMITSU_HOME_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HIMITSU_HOME", tmp.path());
+
+        // Config absent → default false. Env override forces true.
+        std::env::remove_var("HIMITSU_AUTO_PULL");
+        assert!(!auto_pull_enabled());
+
+        for truthy in ["1", "true", "TRUE", "yes"] {
+            std::env::set_var("HIMITSU_AUTO_PULL", truthy);
+            assert!(auto_pull_enabled(), "expected {truthy} to enable");
+        }
+        for falsy in ["0", "false", "no", ""] {
+            std::env::set_var("HIMITSU_AUTO_PULL", falsy);
+            assert!(!auto_pull_enabled(), "expected {falsy} to disable");
+        }
+
+        std::env::remove_var("HIMITSU_AUTO_PULL");
+        std::env::remove_var("HIMITSU_HOME");
     }
 
     #[test]
