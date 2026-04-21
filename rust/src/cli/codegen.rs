@@ -1,37 +1,58 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
 
 use clap::Args;
 use tracing::{debug, info};
 
 use super::Context;
+use crate::config::{self, env_resolver, validate_env_label};
 use crate::error::{HimitsuError, Result};
 use crate::proto::{self, CodegenLang};
 
-/// Generate typed config code from secrets.
+/// Generate typed config code *or* an encrypted `<env>.sops.yaml` file from
+/// the resolved preset envs in the project config.
 ///
-/// When run without arguments, reads language and output path from
-/// the project's .himitsu.yaml codegen config.
+/// There are two distinct modes, selected by which arguments are provided:
+///
+/// - **Sops mode** (`himitsu codegen <env>`): takes a bare env label (that
+///   passes [`validate_env_label`]), resolves it against `cfg.envs` +
+///   store contents, and emits `<env>.sops.yaml` (or `--output` override)
+///   encrypted via the local `sops` CLI.
+/// - **Language mode** (`himitsu codegen --lang <ts|go|py|rust> [--env ...]`):
+///   the legacy behaviour — scans the store for key names and emits a typed
+///   stub file for the chosen language. Written to `--output` / the path
+///   configured in `.himitsu.yaml`, or printed with `--stdout`.
+///
+/// When invoked with no positional and no `--lang`, falls back to reading
+/// the codegen section of the project `.himitsu.yaml` just like before.
 #[derive(Debug, Args)]
 pub struct CodegenArgs {
+    /// Env label to materialize as an encrypted `<env>.sops.yaml` file.
+    /// Triggers sops mode when present (and `--lang` is not set).
+    /// Examples: `foo`, `foo/bar`, `foo/*`.
+    #[arg(value_name = "ENV")]
+    pub env_positional: Option<String>,
+
     /// Target language (typescript, golang, python, rust). Overrides .himitsu.yaml.
     #[arg(long)]
     pub lang: Option<String>,
 
-    /// Output file path. Overrides .himitsu.yaml.
+    /// Output file path. Overrides the default derived from the env label
+    /// (sops mode) or the `.himitsu.yaml` codegen path (language mode).
     #[arg(long, short)]
     pub output: Option<String>,
 
-    /// Environment to generate for (e.g. "prod", "dev").
-    /// If omitted, generates a union of all environments.
+    /// Language mode only: environment to narrow the generated key set to
+    /// (e.g. "prod", "dev"). If omitted, emits the union across all envs.
     #[arg(long)]
     pub env: Option<String>,
 
-    /// Print generated code to stdout instead of writing to a file.
+    /// Language mode only: print generated code to stdout instead of writing.
     #[arg(long, default_value_t = false)]
     pub stdout: bool,
 
-    /// Include "common" environment keys merged with the target env.
+    /// Language mode only: merge the "common" env's keys with the target env.
     #[arg(long, default_value_t = true)]
     pub merge_common: bool,
 }
@@ -48,6 +69,13 @@ struct SecretInventory {
 }
 
 pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
+    // Dispatch: sops mode (positional env, no --lang) vs language mode.
+    if let Some(ref label) = args.env_positional {
+        if args.lang.is_none() {
+            return run_sops(label, args.output.as_deref(), ctx);
+        }
+    }
+
     // 1. Resolve language and output path from CLI flags or project config.
     let (lang, output_path) = resolve_config(&args, ctx)?;
 
@@ -92,6 +120,132 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
         println!("{code}");
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Sops mode: `himitsu codegen <env>` → `<env>.sops.yaml`
+// ---------------------------------------------------------------------------
+
+/// Resolve `label` against the project config's `envs` map, decrypt every
+/// leaf via the active store, write plaintext YAML with the AUTO-GENERATED
+/// banner, then shell out to `sops --encrypt --in-place <path>`.
+fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result<()> {
+    // Validate the label up front so we can give a precise error before
+    // loading any config. `resolve` will also validate — this is defensive.
+    validate_env_label(label)?;
+
+    // Load project config — sops mode needs `cfg.envs` to resolve the label.
+    let (project_cfg, _cfg_path) = config::load_project_config().ok_or_else(|| {
+        HimitsuError::ProjectConfigRequired(
+            "no project config found (himitsu.yaml); codegen <env> needs an `envs:` map".into(),
+        )
+    })?;
+
+    if !project_cfg.envs.contains_key(label) {
+        return Err(HimitsuError::InvalidConfig(format!(
+            "unknown env: {label}"
+        )));
+    }
+
+    // Enumerate store secrets so the resolver can expand wildcards/globs.
+    let secrets = crate::remote::store::list_secrets(&ctx.store, None)?;
+
+    // Resolve into the nested EnvNode tree.
+    let tree = env_resolver::resolve(&project_cfg.envs, label, &secrets)?;
+
+    // Walk the tree and decrypt each Leaf into a plaintext YAML value.
+    let yaml_tree = materialize_tree(&tree, ctx)?;
+
+    // Serialize with the AUTO-GENERATED banner on top.
+    let body = serde_yaml::to_string(&yaml_tree)?;
+    let mut out = gen_header("#", Some(label));
+    out.push_str(&body);
+
+    // Determine the output path (default: `<label>`.sops.yaml with `/`→`-`
+    // and trailing `/*` stripped).
+    let output_path = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(default_sops_output_name(label)));
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&output_path, out.as_bytes())?;
+    debug!("wrote plaintext to {}", output_path.display());
+
+    // Invoke sops to encrypt in place. The user's `.sops.yaml` rules file
+    // supplies the recipients; we don't pass `--age`/`--kms` ourselves.
+    encrypt_with_sops(&output_path)?;
+
+    println!("wrote {}", output_path.display());
+    Ok(())
+}
+
+/// Derive the default output file name from an env label.
+///
+/// - `foo` → `foo.sops.yaml`
+/// - `foo/bar` → `foo-bar.sops.yaml`
+/// - `foo/*` → `foo.sops.yaml` (strip trailing `/*` first)
+/// - `foo/bar/*` → `foo-bar.sops.yaml`
+fn default_sops_output_name(label: &str) -> String {
+    let trimmed = label.strip_suffix("/*").unwrap_or(label);
+    format!("{}.sops.yaml", trimmed.replace('/', "-"))
+}
+
+/// Walk an [`EnvNode`] tree and decrypt every `Leaf` into its plaintext
+/// string, producing a parallel [`serde_yaml::Value`] tree. `Branch`es
+/// become YAML mappings; `Leaf`s become YAML strings.
+fn materialize_tree(node: &env_resolver::EnvNode, ctx: &Context) -> Result<serde_yaml::Value> {
+    match node {
+        env_resolver::EnvNode::Leaf { secret_path } => {
+            let bytes = crate::cli::get::get_plaintext(ctx, secret_path)?;
+            let s = String::from_utf8(bytes).map_err(|e| {
+                HimitsuError::DecryptionFailed(format!(
+                    "non-UTF-8 secret at '{secret_path}': {e}"
+                ))
+            })?;
+            Ok(serde_yaml::Value::String(s))
+        }
+        env_resolver::EnvNode::Branch(map) => {
+            let mut m = serde_yaml::Mapping::with_capacity(map.len());
+            for (k, child) in map {
+                m.insert(
+                    serde_yaml::Value::String(k.clone()),
+                    materialize_tree(child, ctx)?,
+                );
+            }
+            Ok(serde_yaml::Value::Mapping(m))
+        }
+    }
+}
+
+/// Shell out to `sops --encrypt --in-place <path>`. Maps missing binary to
+/// an actionable error and bubbles sops stderr on non-zero exit.
+fn encrypt_with_sops(path: &Path) -> Result<()> {
+    let output = StdCommand::new("sops")
+        .args(["--encrypt", "--in-place"])
+        .arg(path)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                HimitsuError::External(
+                    "sops not found on PATH; install sops from getsops.io".into(),
+                )
+            } else {
+                HimitsuError::External(format!("failed to launch sops: {e}"))
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(HimitsuError::External(format!(
+            "sops --encrypt failed: {}",
+            stderr.trim()
+        )));
+    }
     Ok(())
 }
 
@@ -809,6 +963,7 @@ mod tests {
         };
 
         let args = CodegenArgs {
+            env_positional: None,
             lang: Some("typescript".into()),
             output: None,
             env: Some("prod".into()),
@@ -835,6 +990,7 @@ mod tests {
         };
 
         let args = CodegenArgs {
+            env_positional: None,
             lang: Some("typescript".into()),
             output: None,
             env: None,
@@ -862,6 +1018,7 @@ mod tests {
         };
 
         let args = CodegenArgs {
+            env_positional: None,
             lang: Some("cobol".into()),
             output: None,
             env: None,
@@ -891,6 +1048,7 @@ mod tests {
         };
 
         let args = CodegenArgs {
+            env_positional: None,
             lang: Some("typescript".into()),
             output: Some(output.to_string_lossy().into()),
             env: Some("prod".into()),
@@ -904,5 +1062,188 @@ mod tests {
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("export interface HimitsuSecrets"));
         assert!(content.contains("readonly token: string;"));
+    }
+
+    // -- Sops-mode output path derivation --
+
+    #[test]
+    fn default_sops_output_name_concrete_top_level() {
+        assert_eq!(default_sops_output_name("foo"), "foo.sops.yaml");
+    }
+
+    #[test]
+    fn default_sops_output_name_nested_concrete() {
+        assert_eq!(default_sops_output_name("foo/bar"), "foo-bar.sops.yaml");
+        assert_eq!(
+            default_sops_output_name("foo/bar/baz"),
+            "foo-bar-baz.sops.yaml"
+        );
+    }
+
+    #[test]
+    fn default_sops_output_name_strips_trailing_wildcard() {
+        assert_eq!(default_sops_output_name("foo/*"), "foo.sops.yaml");
+        assert_eq!(
+            default_sops_output_name("foo/bar/*"),
+            "foo-bar.sops.yaml"
+        );
+    }
+
+    // -- Tree materialization --
+
+    /// Stubbed-leaf walker with the same shape as `materialize_tree` but
+    /// replacing the live decrypt call with a fixed string. Lets us assert
+    /// structure without standing up a full store + age identity.
+    fn materialize_tree_stub(
+        node: &env_resolver::EnvNode,
+        leaf_value: &str,
+    ) -> serde_yaml::Value {
+        match node {
+            env_resolver::EnvNode::Leaf { .. } => {
+                serde_yaml::Value::String(leaf_value.to_string())
+            }
+            env_resolver::EnvNode::Branch(map) => {
+                let mut m = serde_yaml::Mapping::with_capacity(map.len());
+                for (k, child) in map {
+                    m.insert(
+                        serde_yaml::Value::String(k.clone()),
+                        materialize_tree_stub(child, leaf_value),
+                    );
+                }
+                serde_yaml::Value::Mapping(m)
+            }
+        }
+    }
+
+    #[test]
+    fn materialize_tree_serializes_concrete_env_as_flat_yaml() {
+        use crate::config::EnvEntry;
+        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
+        envs.insert(
+            "dev".into(),
+            vec![
+                EnvEntry::Single("dev/API_KEY".into()),
+                EnvEntry::Alias {
+                    key: "DB".into(),
+                    path: "dev/DB_PASS".into(),
+                },
+            ],
+        );
+        let tree = env_resolver::resolve(&envs, "dev", &[]).unwrap();
+        let value = materialize_tree_stub(&tree, "PLAINTEXT");
+
+        let yaml = serde_yaml::to_string(&value).unwrap();
+        // Shape: dev: { API_KEY: PLAINTEXT, DB: PLAINTEXT }
+        assert!(yaml.contains("dev:"), "yaml=\n{yaml}");
+        assert!(yaml.contains("API_KEY: PLAINTEXT"), "yaml=\n{yaml}");
+        assert!(yaml.contains("DB: PLAINTEXT"), "yaml=\n{yaml}");
+    }
+
+    #[test]
+    fn materialize_tree_serializes_wildcard_env_as_nested_yaml() {
+        use crate::config::EnvEntry;
+        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
+        envs.insert(
+            "foo/*".into(),
+            vec![EnvEntry::Alias {
+                key: "POSTGRES".into(),
+                path: "$1/postgres-url".into(),
+            }],
+        );
+        let secrets = vec!["dev/postgres-url".to_string(), "prod/postgres-url".into()];
+        let tree = env_resolver::resolve(&envs, "foo/*", &secrets).unwrap();
+        let value = materialize_tree_stub(&tree, "PW");
+
+        let yaml = serde_yaml::to_string(&value).unwrap();
+        // Shape: foo: { dev: { POSTGRES: PW }, prod: { POSTGRES: PW } }
+        assert!(yaml.contains("foo:"), "yaml=\n{yaml}");
+        assert!(yaml.contains("dev:"), "yaml=\n{yaml}");
+        assert!(yaml.contains("prod:"), "yaml=\n{yaml}");
+        assert!(yaml.contains("POSTGRES: PW"), "yaml=\n{yaml}");
+    }
+
+    // -- Unknown env label --
+
+    #[test]
+    fn run_sops_unknown_env_label_errors() {
+        // Build an isolated project root (doubles as CWD and git root) with
+        // a himitsu.yaml that *doesn't* declare the label we'll ask for.
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        // .git so the walk stops here; project config discovery still finds
+        // himitsu.yaml at this level.
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::write(
+            project.join("himitsu.yaml"),
+            "envs:\n  dev:\n    - dev/API_KEY\n",
+        )
+        .unwrap();
+
+        // Chdir into the project so `load_project_config` finds it.
+        let saved_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let ctx = Context {
+            data_dir: tmp.path().join("share"),
+            state_dir: tmp.path().join("state"),
+            store: project.clone(),
+            recipients_path: None,
+        };
+        let result = run_sops("ghost", None, &ctx);
+
+        // Always restore CWD before asserting so a panic here doesn't leak.
+        std::env::set_current_dir(saved_cwd).unwrap();
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown env") && msg.contains("ghost"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // -- Header banner present in plaintext --
+
+    #[test]
+    fn sops_plaintext_contains_auto_generated_header() {
+        // The plaintext we feed to `sops --encrypt --in-place` is constructed
+        // as `gen_header("#", Some(label)) + serde_yaml::to_string(tree)`.
+        // Rather than stand up sops + age here, verify the composition rule
+        // by re-running the same assembly with a stub tree.
+        use crate::config::EnvEntry;
+        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
+        envs.insert(
+            "dev".into(),
+            vec![EnvEntry::Single("dev/API_KEY".into())],
+        );
+        let tree = env_resolver::resolve(&envs, "dev", &[]).unwrap();
+        let value = materialize_tree_stub(&tree, "XXX");
+        let body = serde_yaml::to_string(&value).unwrap();
+        let mut out = gen_header("#", Some("dev"));
+        out.push_str(&body);
+
+        assert!(out.starts_with("# ="), "plaintext must start with header");
+        assert!(out.contains("AUTO-GENERATED"));
+        assert!(out.contains("(environment: dev)"));
+        // And the body is below the banner.
+        let header_end = out.find("\n\n").expect("banner ends with blank line");
+        assert!(
+            out[header_end..].contains("dev:"),
+            "body should follow banner"
+        );
+    }
+
+    // -- sops shell-out: gated behind #[ignore] (requires sops + keys). --
+
+    #[test]
+    #[ignore]
+    fn encrypt_with_sops_smoke() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("x.sops.yaml");
+        std::fs::write(&p, "foo: bar\n").unwrap();
+        // This will fail without a .sops.yaml rules file + recipients on
+        // PATH — the test is ignored by default.
+        encrypt_with_sops(&p).unwrap();
     }
 }
