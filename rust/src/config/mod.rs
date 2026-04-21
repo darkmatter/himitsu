@@ -9,6 +9,7 @@ use crate::tui::keymap::KeyMap;
 
 pub mod env_cache;
 pub mod env_resolver;
+pub mod envs_mut;
 
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -88,6 +89,23 @@ pub struct Config {
     /// hardcoded bindings that shipped before this section existed.
     #[serde(default)]
     pub tui: TuiConfig,
+
+    /// Environment definitions at global scope: env name → list of entry
+    /// specs. Mirrors the `envs:` field on [`ProjectConfig`]; the two may
+    /// coexist and the TUI / codegen walk layers resolve which scope wins
+    /// for any given label.
+    #[serde(default)]
+    pub envs: BTreeMap<String, Vec<EnvEntry>>,
+}
+
+impl Config {
+    /// Run cross-field validation that cannot be expressed in serde: currently
+    /// just env-label grammar and capture-ref legality on [`Config::envs`].
+    /// Called by consumers before writing the config back to disk.
+    pub fn validate(&self) -> Result<()> {
+        validate_envs(&self.envs)?;
+        Ok(())
+    }
 }
 
 /// `tui:` section of the global config.
@@ -829,6 +847,50 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = Config::load(&tmp.path().join("nonexistent.yaml")).unwrap();
         assert!(cfg.default_store.is_none());
+    }
+
+    #[test]
+    fn config_envs_round_trip_serde() {
+        // YAML with envs at global scope should deserialize into Config and
+        // serialize back with the same shape (labels + entries preserved).
+        let yaml = r#"
+default_store: org/secrets
+envs:
+  dev:
+    - dev/API_KEY
+    - DB_PASS: dev/DB_PASSWORD
+  prod/*:
+    - POSTGRES: /$1/postgres-url
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.default_store.as_deref(), Some("org/secrets"));
+        assert_eq!(cfg.envs.len(), 2);
+
+        let dev = cfg.envs.get("dev").unwrap();
+        assert_eq!(dev.len(), 2);
+        assert!(matches!(&dev[0], EnvEntry::Single(p) if p == "dev/API_KEY"));
+        assert!(
+            matches!(&dev[1], EnvEntry::Alias { key, path } if key == "DB_PASS" && path == "dev/DB_PASSWORD")
+        );
+
+        cfg.validate().unwrap();
+
+        // Round-trip through YAML and back.
+        let serialized = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2: Config = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(cfg2.envs.len(), 2);
+        assert!(cfg2.envs.contains_key("dev"));
+        assert!(cfg2.envs.contains_key("prod/*"));
+    }
+
+    #[test]
+    fn config_validate_rejects_bad_env_label() {
+        let mut cfg = Config::default();
+        cfg.envs.insert(
+            "foo/*/bar".into(),
+            vec![EnvEntry::Single("x".into())],
+        );
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
