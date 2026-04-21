@@ -36,9 +36,6 @@ pub enum HimitsuError {
     #[error("git error: {0}")]
     Git(String),
 
-    #[error("group error: {0}")]
-    Group(String),
-
     #[error("recipient error: {0}")]
     Recipient(String),
 

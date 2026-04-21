@@ -44,24 +44,14 @@ pub enum RecipientCommand {
     Rm {
         /// Name of the recipient to remove (e.g. `ops/alice`).
         name: String,
-        /// (Deprecated, hidden) Kept for backwards compatibility.
-        #[arg(long, hide = true)]
-        group: Option<String>,
     },
     /// Show a recipient's key and description.
     Show {
         /// Recipient name to look up (e.g. `ops/alice`).
         name: String,
-        /// (Deprecated, hidden) Kept for backwards compatibility.
-        #[arg(long, hide = true)]
-        group: Option<String>,
     },
     /// List recipients in a plain aligned table.
-    Ls {
-        /// (Deprecated, hidden) Kept for backwards compatibility.
-        #[arg(long, hide = true)]
-        group: Option<String>,
-    },
+    Ls,
 }
 
 /// Sidecar metadata stored beside each `<name>.pub`.
@@ -74,8 +64,6 @@ pub struct RecipientMeta {
 }
 
 pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
-    migrate_legacy_layout(ctx)?;
-
     match args.command {
         RecipientCommand::Add {
             name,
@@ -84,11 +72,11 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
             description,
         } => add(ctx, &name, self_, age_key.as_deref(), description),
 
-        RecipientCommand::Rm { name, group } => rm(ctx, &name, group.as_deref()),
+        RecipientCommand::Rm { name } => rm(ctx, &name),
 
-        RecipientCommand::Show { name, group: _ } => show(ctx, &name),
+        RecipientCommand::Show { name } => show(ctx, &name),
 
-        RecipientCommand::Ls { group } => ls(ctx, group.as_deref()),
+        RecipientCommand::Ls => ls(ctx),
     }
 }
 
@@ -176,33 +164,8 @@ fn prompt_description() -> Result<Option<String>> {
 
 // ── rm ──────────────────────────────────────────────────────────────────────
 
-fn rm(ctx: &Context, name: &str, group: Option<&str>) -> Result<()> {
+fn rm(ctx: &Context, name: &str) -> Result<()> {
     let recipients_dir = flat_recipients_dir(ctx);
-
-    // `--group` is deprecated: only drop membership in that group, keep files.
-    if let Some(group_name) = group {
-        eprintln!(
-            "warning: `--group` is deprecated. Use path-based recipient names instead \
-             (e.g. `himitsu recipient rm {group_name}/{name}`)."
-        );
-        let mut cfg = rstore::load_store_config(&ctx.store)?;
-        let changed = match cfg.recipients.groups.get_mut(group_name) {
-            Some(members) => {
-                let before = members.len();
-                members.retain(|m| m != name);
-                members.len() != before
-            }
-            None => false,
-        };
-        if !changed {
-            return Err(HimitsuError::Recipient(format!(
-                "recipient '{name}' is not a member of group '{group_name}'"
-            )));
-        }
-        rstore::save_store_config(&ctx.store, &cfg)?;
-        println!("Removed recipient '{name}' from group '{group_name}'");
-        return Ok(());
-    }
 
     let pub_file = recipients_dir.join(format!("{name}.pub"));
     if !pub_file.exists() {
@@ -214,20 +177,6 @@ fn rm(ctx: &Context, name: &str, group: Option<&str>) -> Result<()> {
     let sidecar = recipients_dir.join(format!("{name}.yaml"));
     if sidecar.exists() {
         std::fs::remove_file(&sidecar)?;
-    }
-
-    // Strip from every group in the store config.
-    let mut cfg = rstore::load_store_config(&ctx.store)?;
-    let mut touched = false;
-    for members in cfg.recipients.groups.values_mut() {
-        let before = members.len();
-        members.retain(|m| m != name);
-        if members.len() != before {
-            touched = true;
-        }
-    }
-    if touched {
-        rstore::save_store_config(&ctx.store, &cfg)?;
     }
 
     println!("Removed recipient '{name}'");
@@ -261,24 +210,14 @@ fn show(ctx: &Context, name: &str) -> Result<()> {
 
 // ── ls ──────────────────────────────────────────────────────────────────────
 
-fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
+fn ls(ctx: &Context) -> Result<()> {
     let recipients_dir = flat_recipients_dir(ctx);
     if !recipients_dir.exists() {
         return Ok(());
     }
 
-    // Legacy --group filter: kept for backwards compat but hidden from help.
-    let filter_members: Option<Vec<String>> = group_filter.map(|g| {
-        let cfg = rstore::load_store_config(&ctx.store).unwrap_or_default();
-        cfg.recipients
-            .groups
-            .get(g)
-            .cloned()
-            .unwrap_or_default()
-    });
-
     let mut rows: Vec<(String, String, String)> = vec![];
-    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows, &filter_members)?;
+    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows)?;
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     if rows.is_empty() {
@@ -308,13 +247,12 @@ fn collect_pub_entries(
     base: &Path,
     dir: &Path,
     rows: &mut Vec<(String, String, String)>,
-    filter_members: &Option<Vec<String>>,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            collect_pub_entries(base, &entry.path(), rows, filter_members)?;
+            collect_pub_entries(base, &entry.path(), rows)?;
             continue;
         }
         if !ft.is_file() {
@@ -333,11 +271,6 @@ fn collect_pub_entries(
             .to_string_lossy()
             .to_string();
         let name = if rel.is_empty() { basename.to_string() } else { rel };
-        if let Some(ref members) = filter_members {
-            if !members.iter().any(|m| m == &name) {
-                continue;
-            }
-        }
         let key = std::fs::read_to_string(entry.path())?
             .trim()
             .to_string();
@@ -434,21 +367,6 @@ fn now_iso8601() -> String {
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-// ── migration ───────────────────────────────────────────────────────────────
-
-/// Migrate a legacy `<group>/<name>.pub` layout to the flat layout.
-///
-/// **Note:** With path-based recipient names, subdirectories under
-/// `.himitsu/recipients/` are now the intended structure (e.g.
-/// `ops/alice.pub`). This migration is disabled — subdirectories are
-/// treated as path-based recipient namespaces, not legacy groups.
-///
-/// Kept as a no-op so existing call-sites continue to compile.
-pub fn migrate_legacy_layout(_ctx: &Context) -> Result<()> {
-    // No-op: subdirectories are now valid path-based recipient namespaces.
-    Ok(())
-}
-
 // ── tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -506,60 +424,15 @@ mod tests {
     }
 
     #[test]
-    fn rm_deletes_pub_and_sidecar_and_strips_groups() {
+    fn rm_deletes_pub_and_sidecar() {
         let (_tmp, ctx) = mk_ctx();
         add(&ctx, "alice", false, Some(AGE_KEY_1), Some("desc".into())).unwrap();
-        // Add alice to two groups.
-        let mut cfg = rstore::load_store_config(&ctx.store).unwrap();
-        cfg.recipients
-            .groups
-            .insert("common".into(), vec!["alice".into()]);
-        cfg.recipients
-            .groups
-            .insert("admins".into(), vec!["alice".into(), "bob".into()]);
-        rstore::save_store_config(&ctx.store, &cfg).unwrap();
 
-        rm(&ctx, "alice", None).unwrap();
+        rm(&ctx, "alice").unwrap();
 
         let rdir = rstore::recipients_dir(&ctx.store);
         assert!(!rdir.join("alice.pub").exists());
         assert!(!rdir.join("alice.yaml").exists());
-        let after = rstore::load_store_config(&ctx.store).unwrap();
-        assert!(after.recipients.groups["common"].is_empty());
-        assert_eq!(after.recipients.groups["admins"], vec!["bob"]);
-    }
-
-    #[test]
-    fn migration_is_noop_subdirs_are_path_based() {
-        let (_tmp, ctx) = mk_ctx();
-        // Subdirectories are now path-based recipient namespaces, not legacy groups.
-        let rdir = rstore::recipients_dir(&ctx.store);
-        std::fs::create_dir_all(rdir.join("ops")).unwrap();
-        std::fs::create_dir_all(rdir.join("dev")).unwrap();
-        std::fs::write(rdir.join("ops").join("alice.pub"), format!("{AGE_KEY_1}\n"))
-            .unwrap();
-        std::fs::write(rdir.join("dev").join("bob.pub"), format!("{AGE_KEY_2}\n"))
-            .unwrap();
-
-        migrate_legacy_layout(&ctx).unwrap();
-
-        // Subdirectories should remain intact (they are path-based names).
-        assert!(rdir.join("ops").join("alice.pub").exists());
-        assert!(rdir.join("dev").join("bob.pub").exists());
-    }
-
-    #[test]
-    fn migration_is_idempotent_on_flat_layout() {
-        let (_tmp, ctx) = mk_ctx();
-        add(&ctx, "alice", false, Some(AGE_KEY_1), None).unwrap();
-        let before = std::fs::read_to_string(rstore::store_config_path(&ctx.store))
-            .unwrap_or_default();
-        migrate_legacy_layout(&ctx).unwrap();
-        migrate_legacy_layout(&ctx).unwrap();
-        let after = std::fs::read_to_string(rstore::store_config_path(&ctx.store))
-            .unwrap_or_default();
-        assert_eq!(before, after);
-        assert!(rstore::recipients_dir(&ctx.store).join("alice.pub").exists());
     }
 
     #[test]

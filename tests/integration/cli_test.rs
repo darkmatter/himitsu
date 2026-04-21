@@ -492,71 +492,6 @@ fn recipient_ls() {
 
 // ============ group tests ============
 
-#[test]
-fn group_add_creates_directory() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "group", "add", "admins"])
-        .assert()
-        .success();
-
-    // Groups are now mappings in .himitsu/config.yaml, not filesystem dirs.
-    let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
-    assert!(cfg.contains("admins"), "config.yaml should list admins: {cfg}");
-}
-
-#[test]
-fn group_rm_removes_directory() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "group", "add", "temp"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "group", "rm", "temp"])
-        .assert()
-        .success();
-
-    // Group mapping should be gone from config.yaml.
-    let cfg = std::fs::read_to_string(store.path().join(".himitsu/config.yaml")).unwrap();
-    assert!(!cfg.contains("temp"), "config.yaml should not list temp: {cfg}");
-}
-
-#[test]
-fn group_rm_common_rejected() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "group", "rm", "common"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("reserved"));
-}
-
-#[test]
-fn group_ls_shows_counts() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .args(["--store", &s, "group", "ls"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("common"))
-        .stdout(predicate::str::contains("1 recipient(s)"));
-}
-
 // ============ search tests ============
 
 #[test]
@@ -635,7 +570,6 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("get"))
         .stdout(predicate::str::contains("search"))
         .stdout(predicate::str::contains("recipient"))
-        .stdout(predicate::str::contains("group"))
         .stdout(predicate::str::contains("rekey"))
         .stdout(predicate::str::contains("sync"))
         .stdout(predicate::str::contains("git"))
