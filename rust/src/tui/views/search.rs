@@ -34,6 +34,8 @@ pub enum SearchAction {
     OpenViewer(SearchResult),
     /// User requested the new-secret form (Ctrl+N).
     NewSecret,
+    /// User requested the envs view (Shift+E) — browse/delete preset envs.
+    OpenEnvs,
     /// User picked a new active store via the embedded picker overlay.
     SwitchStore(PathBuf),
     /// User pressed Esc / Ctrl-C — root view, so quit the app.
@@ -148,6 +150,9 @@ impl SearchView {
         }
         if keymap.new_secret.matches(&key) {
             return SearchAction::NewSecret;
+        }
+        if keymap.envs.matches(&key) {
+            return SearchAction::OpenEnvs;
         }
         if keymap.switch_store.matches(&key) {
             self.picker = Some(StorePicker::new(
@@ -534,6 +539,8 @@ impl SearchView {
             Span::raw(" switch store  "),
             Span::styled("ctrl-y", Style::default().fg(Color::Cyan)),
             Span::raw(" copy  "),
+            Span::styled("E", Style::default().fg(Color::Cyan)),
+            Span::raw(" envs  "),
             Span::styled("?", Style::default().fg(Color::Cyan)),
             Span::raw(" help  "),
             Span::styled("esc", Style::default().fg(Color::Cyan)),
@@ -722,6 +729,7 @@ impl SearchView {
             ("ctrl-n", "new secret"),
             ("ctrl-s", "switch store"),
             ("ctrl-y", "copy selection to clipboard"),
+            ("shift-e", "browse env presets"),
             ("?", "toggle this help"),
             ("esc / ctrl-c", "quit"),
         ]

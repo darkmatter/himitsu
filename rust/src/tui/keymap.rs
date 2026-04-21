@@ -374,6 +374,9 @@ pub struct KeyMap {
     pub switch_store: Vec<KeyBinding>,
     /// Copy the selected search result's value to the clipboard (default: Ctrl+Y).
     pub copy_selected: Vec<KeyBinding>,
+    /// Open the envs view (browse/delete preset env labels) from search
+    /// (default: Shift+E).
+    pub envs: Vec<KeyBinding>,
 
     // ── Secret viewer ────────────────────────────────────────────────
     /// Reveal / hide the decrypted value (default: `r`).
@@ -412,6 +415,10 @@ impl Default for KeyMap {
             new_secret: vec![KeyBinding::ctrl('n')],
             switch_store: vec![KeyBinding::ctrl('s')],
             copy_selected: vec![KeyBinding::ctrl('y')],
+            envs: vec![KeyBinding::new(
+                KeyCode::Char('e'),
+                KeyModifiers::SHIFT,
+            )],
 
             reveal: vec![KeyBinding::bare(KeyCode::Char('r'))],
             copy_value: vec![KeyBinding::bare(KeyCode::Char('y'))],

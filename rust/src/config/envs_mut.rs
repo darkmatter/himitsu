@@ -243,14 +243,23 @@ pub fn read(
     Ok((resolved, envs))
 }
 
+/// Process-global mutex guarding mutations to `HIMITSU_HOME` in tests.
+///
+/// Several test modules (this one plus `tui::views::envs`) need to swap the
+/// global config dir under their feet. Those tests MUST acquire this lock
+/// before mutating the env var so they never clobber each other under
+/// `cargo test`'s default parallelism.
+#[cfg(test)]
+pub(crate) static HIMITSU_HOME_TEST_GUARD: std::sync::Mutex<()> =
+    std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    // Tests mutate HIMITSU_HOME, which is process-global. Serialize to avoid
-    // cross-test races under `cargo test` default parallelism.
-    static ENV_GUARD: Mutex<()> = Mutex::new(());
+    // Re-export the shared guard under the old local name so the existing
+    // tests in this file keep reading naturally.
+    use super::HIMITSU_HOME_TEST_GUARD as ENV_GUARD;
 
     struct HimitsuHome {
         _guard: std::sync::MutexGuard<'static, ()>,

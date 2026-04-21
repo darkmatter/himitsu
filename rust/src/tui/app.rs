@@ -15,6 +15,7 @@ use ratatui::Frame;
 use crate::cli::Context;
 use crate::tui::keymap::{Bindings, KeyMap};
 pub use crate::tui::toast::{Toast, ToastKind};
+use crate::tui::views::envs::{EnvsAction, EnvsView};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::search::{SearchAction, SearchView};
@@ -24,6 +25,7 @@ enum View {
     Search(SearchView),
     SecretViewer(SecretViewerView),
     NewSecret(NewSecretView),
+    Envs(EnvsView),
 }
 
 /// Intent emitted by [`App::on_key`] when a view needs the outer event
@@ -104,6 +106,9 @@ impl App {
                 SearchAction::NewSecret => {
                     self.view = View::NewSecret(NewSecretView::new(&self.ctx));
                 }
+                SearchAction::OpenEnvs => {
+                    self.view = View::Envs(EnvsView::new(&self.ctx));
+                }
                 SearchAction::SwitchStore(path) => {
                     let label = path
                         .file_name()
@@ -140,6 +145,26 @@ impl App {
                     // drops out of listings.
                     self.view = View::Search(SearchView::new(&self.ctx));
                     self.push_toast("deleted", ToastKind::Success);
+                }
+            },
+            View::Envs(envs) => match envs.on_key(key, &self.keymap) {
+                EnvsAction::None => {}
+                EnvsAction::Quit => self.should_quit = true,
+                EnvsAction::Back => {
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                }
+                EnvsAction::Deleted { label, scope } => {
+                    let scope_str = match scope {
+                        crate::config::env_cache::Scope::Project => "project",
+                        crate::config::env_cache::Scope::Global => "global",
+                    };
+                    self.push_toast(
+                        format!("deleted `{label}` ({scope_str})"),
+                        ToastKind::Success,
+                    );
+                }
+                EnvsAction::DeleteFailed(msg) => {
+                    self.push_toast(msg, ToastKind::Error);
                 }
             },
             View::NewSecret(form) => match form.on_key(key, &self.keymap) {
@@ -188,13 +213,14 @@ impl App {
     }
 
     /// Name of the currently active view, for integration-test assertions.
-    /// Returns one of `"search"`, `"secret_viewer"`, `"new_secret"`.
+    /// Returns one of `"search"`, `"secret_viewer"`, `"new_secret"`, `"envs"`.
     #[cfg(test)]
     pub fn current_view(&self) -> &'static str {
         match &self.view {
             View::Search(_) => "search",
             View::SecretViewer(_) => "secret_viewer",
             View::NewSecret(_) => "new_secret",
+            View::Envs(_) => "envs",
         }
     }
 
@@ -211,6 +237,7 @@ impl App {
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
             View::NewSecret(form) => form.draw(frame),
+            View::Envs(envs) => envs.draw(frame),
         }
         // Expire-then-paint the toast. Eviction happens lazily at draw time
         // so we don't need a background tick — any `draw` call (triggered by
@@ -255,6 +282,9 @@ impl App {
             ),
             View::NewSecret(_) => {
                 HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
+            }
+            View::Envs(_) => {
+                HelpView::new(EnvsView::help_entries(), EnvsView::help_title())
             }
         }
     }
