@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{HimitsuError, Result};
 use crate::tui::keymap::KeyMap;
 
+pub mod env_cache;
+pub mod env_resolver;
+
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
