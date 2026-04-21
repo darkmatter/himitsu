@@ -10,7 +10,6 @@ pub mod export;
 pub mod generate;
 pub mod get;
 pub mod git;
-pub mod group;
 pub mod import;
 pub mod inbox;
 pub mod init;
@@ -79,23 +78,42 @@ impl Context {
         crate::config::find_git_root(&self.store)
     }
 
-    /// Commit `.himitsu/` changes inside the store and push to origin.
-    /// Best-effort: does not fail if no git repo or no remote configured.
-    pub fn commit_and_push(&self, message: &str) {
+    /// Stage `.himitsu/` and commit if there are staged changes.
+    ///
+    /// Returns `true` when a commit was actually created. Best-effort: a
+    /// missing git repo or a clean tree both yield `false` without erroring.
+    pub fn commit(&self, message: &str) -> bool {
         let Some(git_root) = self.git_root() else {
-            return;
+            return false;
         };
         let _ = crate::git::run(&["add", ".himitsu"], &git_root);
 
         if crate::git::run(&["diff", "--cached", "--quiet"], &git_root).is_err() {
             let _ = crate::git::run(&["commit", "-m", message], &git_root);
             debug!("committed: {message}");
+            true
+        } else {
+            false
         }
+    }
 
+    /// Push the store's git repo to its remote. Best-effort: failures are
+    /// logged at debug and discarded (no remote, offline, etc.).
+    pub fn push(&self) {
+        let Some(git_root) = self.git_root() else {
+            return;
+        };
         match crate::git::push(&git_root) {
             Ok(_) => debug!("pushed to remote"),
             Err(e) => debug!("push skipped: {e}"),
         }
+    }
+
+    /// Back-compat shim: commit and push in one step on the success path.
+    /// Prefer `commit` + `push` directly so failure paths can still commit.
+    pub fn commit_and_push(&self, message: &str) {
+        self.commit(message);
+        self.push();
     }
 }
 
@@ -165,9 +183,6 @@ pub enum Command {
 
     /// Manage recipients.
     Recipient(recipient::RecipientArgs),
-
-    /// (Deprecated) Manage recipient groups — use path-based recipient names instead.
-    Group(group::GroupArgs),
 
     /// Manage remote stores (add, remove, list, set default).
     Remote(remote::RemoteArgs),
@@ -289,7 +304,6 @@ impl Cli {
                 | Command::Write(_)
                 | Command::Rekey(_)
                 | Command::Recipient(_)
-                | Command::Group(_)
                 | Command::Schema(_)
                 | Command::Generate(_)
                 | Command::Export(_)
@@ -334,17 +348,14 @@ impl Cli {
             recipients_path,
         };
 
-        // Determine whether the command is a mutation and whether the user
-        // opted out of git sync via `--no-push`.
-        let is_mutation = matches!(
-            &command,
-            Command::Set(_)
-                | Command::Write(_)
-                | Command::Rekey(_)
-                | Command::Import(_)
-                | Command::Recipient(_)
-                | Command::Group(_)
-        );
+        // Snapshot the mutation message and `--no-push` opt-out *before*
+        // dispatching, since `command` is moved into the match below.
+        //
+        // The append-only invariant — every mutating command must leave the
+        // store with a clean working tree — is enforced post-dispatch by
+        // committing on both success and failure paths. See `mutation_message`
+        // for the set of commands considered mutations.
+        let mutation_msg = mutation_message(&command);
         let no_push = match &command {
             Command::Set(a) => a.no_push,
             Command::Write(a) => a.no_push,
@@ -365,7 +376,6 @@ impl Cli {
             Command::Sync(args) => sync::run(args, &ctx),
             Command::Search(args) => search::run(args, &ctx),
             Command::Recipient(args) => recipient::run(args, &ctx),
-            Command::Group(args) => group::run(args, &ctx),
             Command::Remote(args) => remote::run(args, &ctx),
             Command::Context(args) => context::run(args, &ctx),
 
@@ -387,9 +397,20 @@ impl Cli {
             Command::Import(args) => import::run(args, &ctx),
         };
 
-        // Post-dispatch: sync to git remote after successful mutations.
-        if result.is_ok() && is_mutation && !no_push {
-            ctx.commit_and_push("himitsu: sync after mutation");
+        // Post-dispatch: enforce the append-only invariant for mutating
+        // commands. Always commit (success OR failure) so `git status` is
+        // never left dirty; on failure prefix the message with `FAILED:` and
+        // append the error so the history records the partial state. Push
+        // only on success, and only when the user did not opt out.
+        if let Some(msg) = mutation_msg {
+            let final_msg = match &result {
+                Ok(_) => format!("himitsu: {msg}"),
+                Err(e) => format!("himitsu: FAILED: {msg}: {e}"),
+            };
+            let committed = ctx.commit(&final_msg);
+            if result.is_ok() && committed && !no_push {
+                ctx.push();
+            }
         }
 
         result
@@ -421,6 +442,52 @@ impl Cli {
     }
 }
 
+/// Returns the human-readable mutation message for commands that change the
+/// store on disk, or `None` for read-only commands and commands that touch
+/// state outside the store (project/global config, generated output files).
+///
+/// Commands listed here participate in the append-only commit dispatcher:
+/// the store is committed after every invocation, so `git status` is never
+/// left dirty. The message becomes the commit subject (with a `FAILED:`
+/// prefix on the error path).
+///
+/// Intentionally excluded:
+///   * `Sync` — already a git operation; user-driven pull/rekey.
+///   * `Init` — has its own bootstrap commit logic.
+///   * `Generate`, `Export`, `Codegen` — write outside the store.
+///   * `Remote`, `Context` — mutate global config, not the store repo.
+fn mutation_message(cmd: &Command) -> Option<String> {
+    match cmd {
+        Command::Set(a) => Some(format!("set {}", a.path)),
+        Command::Write(a) => Some(format!("write {}", a.path)),
+        Command::Rekey(a) => Some(match &a.path {
+            Some(p) => format!("rekey {p}"),
+            None => "rekey".to_string(),
+        }),
+        Command::Encrypt(_) => Some("rekey (encrypt)".to_string()),
+        Command::Import(_) => Some("import".to_string()),
+        Command::Recipient(a) => recipient_subcommand_label(&a.command)
+            .map(|label| format!("recipient {label}")),
+        Command::Schema(a) => match &a.command {
+            schema::SchemaCommand::Refresh => Some("schema refresh".to_string()),
+            _ => None,
+        },
+        Command::Share(_) => Some("share".to_string()),
+        Command::Inbox(_) => Some("inbox".to_string()),
+        _ => None,
+    }
+}
+
+/// Short label for mutating recipient subcommands. `Show` and `Ls` are
+/// read-only and return `None` so the dispatcher skips the commit.
+fn recipient_subcommand_label(cmd: &recipient::RecipientCommand) -> Option<String> {
+    match cmd {
+        recipient::RecipientCommand::Add { name, .. } => Some(format!("add {name}")),
+        recipient::RecipientCommand::Rm { name } => Some(format!("rm {name}")),
+        recipient::RecipientCommand::Show { .. } | recipient::RecipientCommand::Ls => None,
+    }
+}
+
 fn command_uses_explicit_path_store(command: &Command) -> bool {
     matches!(
         command,
@@ -433,7 +500,6 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Encrypt(_)
             | Command::Decrypt(_)
             | Command::Recipient(_)
-            | Command::Group(_)
             | Command::Schema(_)
             | Command::Generate(_)
             | Command::Export(_)
@@ -498,4 +564,101 @@ fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Command {
+        let cli = Cli::try_parse_from(argv).expect("argv parses");
+        cli.command.expect("subcommand present")
+    }
+
+    #[test]
+    fn mutation_message_set_includes_path() {
+        let cmd = parse(&["himitsu", "set", "prod/API_KEY", "value"]);
+        assert_eq!(
+            mutation_message(&cmd).as_deref(),
+            Some("set prod/API_KEY")
+        );
+    }
+
+    #[test]
+    fn mutation_message_write_includes_path() {
+        let cmd = parse(&["himitsu", "write", "prod/TOKEN", "v"]);
+        assert_eq!(mutation_message(&cmd).as_deref(), Some("write prod/TOKEN"));
+    }
+
+    #[test]
+    fn mutation_message_rekey_with_and_without_path() {
+        let cmd = parse(&["himitsu", "rekey"]);
+        assert_eq!(mutation_message(&cmd).as_deref(), Some("rekey"));
+
+        let cmd = parse(&["himitsu", "rekey", "prod"]);
+        assert_eq!(mutation_message(&cmd).as_deref(), Some("rekey prod"));
+    }
+
+    #[test]
+    fn mutation_message_recipient_add_and_rm() {
+        let cmd = parse(&["himitsu", "recipient", "add", "ops/alice", "--self"]);
+        assert_eq!(
+            mutation_message(&cmd).as_deref(),
+            Some("recipient add ops/alice")
+        );
+
+        let cmd = parse(&["himitsu", "recipient", "rm", "ops/alice"]);
+        assert_eq!(
+            mutation_message(&cmd).as_deref(),
+            Some("recipient rm ops/alice")
+        );
+    }
+
+    #[test]
+    fn mutation_message_recipient_show_and_ls_are_readonly() {
+        let cmd = parse(&["himitsu", "recipient", "show", "ops/alice"]);
+        assert_eq!(mutation_message(&cmd), None);
+
+        let cmd = parse(&["himitsu", "recipient", "ls"]);
+        assert_eq!(mutation_message(&cmd), None);
+    }
+
+    #[test]
+    fn mutation_message_schema_refresh_only() {
+        let cmd = parse(&["himitsu", "schema", "refresh"]);
+        assert_eq!(mutation_message(&cmd).as_deref(), Some("schema refresh"));
+
+        let cmd = parse(&["himitsu", "schema", "list"]);
+        assert_eq!(mutation_message(&cmd), None);
+    }
+
+    #[test]
+    fn mutation_message_readonly_commands_return_none() {
+        for argv in [
+            vec!["himitsu", "get", "prod/API_KEY"],
+            vec!["himitsu", "read", "prod/API_KEY"],
+            vec!["himitsu", "ls"],
+            vec!["himitsu", "search", "api"],
+            vec!["himitsu", "version"],
+        ] {
+            let cmd = parse(&argv);
+            assert_eq!(
+                mutation_message(&cmd),
+                None,
+                "expected {argv:?} to be read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn mutation_message_outside_store_commands_return_none() {
+        // Generate/Export/Codegen write outside the store; Remote/Context
+        // mutate global config. None should trigger a store commit.
+        let cmd = parse(&["himitsu", "remote", "list"]);
+        assert_eq!(mutation_message(&cmd), None);
+
+        let cmd = parse(&["himitsu", "context", "clear"]);
+        assert_eq!(mutation_message(&cmd), None);
+    }
 }
