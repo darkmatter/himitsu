@@ -2,7 +2,7 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-Age-based secrets management. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key in a git-backed `.himitsu/` store, with group-based recipient control and typed codegen.
+Age-based secrets management. Secrets are encrypted with [age](https://github.com/FiloSottile/age) x25519 keys, stored one-file-per-key in a git-backed `.himitsu/` store, with path-based recipient control and typed codegen.
 
 ![himitsu demo](demo/demo-vhs.gif)
 
@@ -10,7 +10,7 @@ Age-based secrets management. Secrets are encrypted with [age](https://github.co
 
 - **Age-only encryption** — no KMS, no GPG, no SOPS. One `.age` file per secret.
 - **One file per secret** — `.himitsu/secrets/<env>/<KEY>.age` keeps diffs readable.
-- **Group-based recipients** — organize keys into named groups; re-encrypt for all with `encrypt`.
+- **Path-based recipients** — organize keys into directories (e.g. `ops/alice`, `team/*`); re-encrypt for all with `rekey`.
 - **Typed codegen** — generate TypeScript, Go, Python, or Rust type stubs directly from your secret store.
 - **Cross-store search** — `himitsu search` queries a local SQLite index across all known stores.
 - **JSON schema export** — `himitsu schema` writes machine-readable schemas for your secret structure.
@@ -142,11 +142,10 @@ Opened with `ctrl-n` from search. Fields in order: `path`, `value`, `description
     dev/
       DB_PASSWORD.age
   recipients/
-    common/
-      self.pub                 # your age public key (added automatically on init)
-      alice.pub
+    self.pub                   # your age public key (added automatically on init)
     ops/
-      deploy-bot.pub
+      alice.pub                # path-based name: ops/alice
+      deploy-bot.pub           # path-based name: ops/deploy-bot
   schemas/                     # written by `himitsu schema refresh`
     secrets.json
 ```
@@ -165,7 +164,7 @@ The keyring lives separately in `$HIMITSU_HOME` (default: `~/.himitsu`):
 
 ### `himitsu init`
 
-Scaffold the store directory and generate a local age keypair. Adds `self` to the `common` recipient group automatically.
+Scaffold the store directory and generate a local age keypair. Adds `self.pub` as a recipient automatically.
 
 ### `himitsu set <path> <value>`
 
@@ -217,28 +216,29 @@ himitsu search DB             # query the cached index
 himitsu search DB --refresh   # rebuild index first, then query
 ```
 
-### `himitsu recipient add|rm|ls`
+### `himitsu recipient add|rm|ls|show`
+
+Recipients use path-based names. Slash-separated paths create a
+directory hierarchy under `.himitsu/recipients/`, so `ops/alice`
+creates `recipients/ops/alice.pub`. Use path prefixes to reference
+sets of recipients (e.g. `ops/*`).
 
 ```bash
 # Add yourself
 himitsu recipient add laptop --self
 
-# Add a teammate by age public key
-himitsu recipient add alice --age-key "age1abc..." --group common
+# Add teammates by age public key (path-based names)
+himitsu recipient add ops/alice --age-key "age1abc..."
+himitsu recipient add ops/bob   --age-key "age1xyz..." --description "Bob"
 
-# Remove
-himitsu recipient rm alice --group common
+# Show a recipient's key and metadata
+himitsu recipient show ops/alice
+
+# Remove a recipient
+himitsu recipient rm ops/bob
 
 # List all recipients
 himitsu recipient ls
-```
-
-### `himitsu group add|rm|ls`
-
-```bash
-himitsu group add ops
-himitsu group ls
-himitsu group rm temp   # 'common' is reserved and cannot be removed
 ```
 
 ### `himitsu remote push|pull|status`

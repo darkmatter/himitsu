@@ -22,15 +22,13 @@ pub enum RecipientCommand {
     ///
     /// Recipients live under `<store>/.himitsu/recipients/<name>.pub`.
     /// Names may contain `/` to create a path-based hierarchy
-    /// (e.g. `ops/alice` creates `.himitsu/recipients/ops/alice.pub`).
-    /// Use path prefixes with `ops/*` patterns in encryption configs to
-    /// reference all recipients under a prefix.
+    /// (e.g. `ops/alice` → `.himitsu/recipients/ops/alice.pub`).
     ///
     /// Examples:
     ///   himitsu recipient add laptop --self
     ///   himitsu recipient add ops/alice --age-key age1... --description "Alice"
     Add {
-        /// Recipient name (e.g. laptop-a, ops/alice).
+        /// Recipient name (e.g. laptop, ops/alice).
         name: String,
         /// Add yourself as a recipient (reads the local age public key).
         #[arg(long = "self")]
@@ -42,28 +40,26 @@ pub enum RecipientCommand {
         #[arg(long)]
         description: Option<String>,
     },
-    /// Remove a recipient (deletes pub + sidecar and strips from every group).
+    /// Remove a recipient (deletes pub + sidecar).
     Rm {
-        /// Name of the recipient to remove.
+        /// Name of the recipient to remove (e.g. `ops/alice`).
         name: String,
-        /// (Deprecated) Group to remove the recipient from. Kept for CLI
-        /// backwards compatibility — now removes membership in that group
-        /// only, leaving the `.pub` file and other memberships intact.
-        #[arg(long)]
+        /// (Deprecated, hidden) Kept for backwards compatibility.
+        #[arg(long, hide = true)]
         group: Option<String>,
     },
-    /// Show a recipient's key, description and groups.
+    /// Show a recipient's key and description.
     Show {
-        /// Recipient name to look up.
+        /// Recipient name to look up (e.g. `ops/alice`).
         name: String,
-        /// (Deprecated) Accepted for backwards compatibility; ignored.
+        /// (Deprecated, hidden) Kept for backwards compatibility.
         #[arg(long, hide = true)]
         group: Option<String>,
     },
     /// List recipients in a plain aligned table.
     Ls {
-        /// Filter to members of a specific group.
-        #[arg(long)]
+        /// (Deprecated, hidden) Kept for backwards compatibility.
+        #[arg(long, hide = true)]
         group: Option<String>,
     },
 }
@@ -186,8 +182,8 @@ fn rm(ctx: &Context, name: &str, group: Option<&str>) -> Result<()> {
     // `--group` is deprecated: only drop membership in that group, keep files.
     if let Some(group_name) = group {
         eprintln!(
-            "warning: `recipient rm --group` is deprecated. \
-             Use `group rm-recipient {group_name} {name}` instead."
+            "warning: `--group` is deprecated. Use path-based recipient names instead \
+             (e.g. `himitsu recipient rm {group_name}/{name}`)."
         );
         let mut cfg = rstore::load_store_config(&ctx.store)?;
         let changed = match cfg.recipients.groups.get_mut(group_name) {
@@ -260,14 +256,6 @@ fn show(ctx: &Context, name: &str) -> Result<()> {
     if let Some(added) = meta.added_at.as_deref().filter(|d| !d.is_empty()) {
         println!("Added at:     {added}");
     }
-
-    let cfg = rstore::load_store_config(&ctx.store)?;
-    let groups = groups_for(&cfg, name);
-    if groups.is_empty() {
-        println!("Groups:       (none)");
-    } else {
-        println!("Groups:       {}", groups.join(", "));
-    }
     Ok(())
 }
 
@@ -278,9 +266,10 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
     if !recipients_dir.exists() {
         return Ok(());
     }
-    let cfg = rstore::load_store_config(&ctx.store)?;
 
+    // Legacy --group filter: kept for backwards compat but hidden from help.
     let filter_members: Option<Vec<String>> = group_filter.map(|g| {
+        let cfg = rstore::load_store_config(&ctx.store).unwrap_or_default();
         cfg.recipients
             .groups
             .get(g)
@@ -288,38 +277,27 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
             .unwrap_or_default()
     });
 
-    let mut rows: Vec<(String, String, String, String)> = vec![];
-    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows, &filter_members, &cfg)?;
+    let mut rows: Vec<(String, String, String)> = vec![];
+    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows, &filter_members)?;
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     if rows.is_empty() {
         return Ok(());
     }
 
-    let headers = ("NAME", "DESCRIPTION", "GROUPS", "KEY");
+    let headers = ("NAME", "DESCRIPTION", "KEY");
     let w0 = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max(headers.0.len());
     let w1 = rows.iter().map(|r| r.1.len()).max().unwrap_or(0).max(headers.1.len());
-    let w2 = rows.iter().map(|r| r.2.len()).max().unwrap_or(0).max(headers.2.len());
     println!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {}",
-        headers.0,
-        headers.1,
-        headers.2,
-        headers.3,
-        w0 = w0,
-        w1 = w1,
-        w2 = w2
+        "{:<w0$}  {:<w1$}  {}",
+        headers.0, headers.1, headers.2,
+        w0 = w0, w1 = w1,
     );
     for r in &rows {
         println!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {}",
-            r.0,
-            r.1,
-            r.2,
-            r.3,
-            w0 = w0,
-            w1 = w1,
-            w2 = w2
+            "{:<w0$}  {:<w1$}  {}",
+            r.0, r.1, r.2,
+            w0 = w0, w1 = w1,
         );
     }
     Ok(())
@@ -329,15 +307,14 @@ fn ls(ctx: &Context, group_filter: Option<&str>) -> Result<()> {
 fn collect_pub_entries(
     base: &Path,
     dir: &Path,
-    rows: &mut Vec<(String, String, String, String)>,
+    rows: &mut Vec<(String, String, String)>,
     filter_members: &Option<Vec<String>>,
-    cfg: &rstore::StoreFileConfig,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            collect_pub_entries(base, &entry.path(), rows, filter_members, cfg)?;
+            collect_pub_entries(base, &entry.path(), rows, filter_members)?;
             continue;
         }
         if !ft.is_file() {
@@ -369,9 +346,8 @@ fn collect_pub_entries(
             basename,
         );
         let description = meta.description.unwrap_or_default();
-        let groups = groups_for(cfg, &name).join(",");
         let short_key = short_fingerprint(&key);
-        rows.push((name, description, groups, short_key));
+        rows.push((name, description, short_key));
     }
     Ok(())
 }
@@ -391,23 +367,6 @@ fn read_sidecar(dir: &Path, name: &str) -> RecipientMeta {
         .ok()
         .and_then(|c| serde_yaml::from_str(&c).ok())
         .unwrap_or_default()
-}
-
-fn groups_for(cfg: &rstore::StoreFileConfig, name: &str) -> Vec<String> {
-    let mut out: Vec<String> = cfg
-        .recipients
-        .groups
-        .iter()
-        .filter_map(|(g, members)| {
-            if members.iter().any(|m| m == name) {
-                Some(g.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    out.sort();
-    out
 }
 
 fn short_fingerprint(key: &str) -> String {
