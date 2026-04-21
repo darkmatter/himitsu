@@ -607,15 +607,21 @@ pub fn load_project_config() -> Option<(ProjectConfig, PathBuf)> {
 
 /// Validate a remote slug (e.g., `"org/repo"`).
 ///
-/// A valid slug has exactly one `/`, no empty segments, and neither segment is
-/// `.` or `..`.  Returns `(org, repo)` on success.
+/// A valid slug has exactly one `/`, no empty segments, neither segment is
+/// `.` or `..`, and segments contain none of the URL-fragment characters
+/// `:` `@` `\` (callers should pass a slug, not a clone URL — full URLs are
+/// pre-parsed by [`super::cli::init::parse_remote_slug`] before reaching here).
+/// Returns `(org, repo)` on success.
 pub fn validate_remote_slug(slug: &str) -> Result<(&str, &str)> {
     let parts: Vec<&str> = slug.split('/').collect();
-    if parts.len() != 2
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || *p == "." || *p == "..")
-    {
+    let invalid = parts.len() != 2
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || *p == "."
+                || *p == ".."
+                || p.chars().any(|c| matches!(c, ':' | '@' | '\\'))
+        });
+    if invalid {
         return Err(HimitsuError::InvalidConfig(format!(
             "invalid remote slug '{slug}': expected 'org/repo'"
         )));
@@ -812,6 +818,11 @@ mod tests {
         assert!(validate_remote_slug("../repo").is_err());
         assert!(validate_remote_slug("org/..").is_err());
         assert!(validate_remote_slug("./repo").is_err());
+        // URL fragments must not be accepted as slugs — they create
+        // garbage directory names like `stores/git@github.com:foo/bar`.
+        assert!(validate_remote_slug("git@github.com:foo/bar").is_err());
+        assert!(validate_remote_slug("https:/foo/bar").is_err());
+        assert!(validate_remote_slug("foo/bar@v1").is_err());
     }
 
     #[test]

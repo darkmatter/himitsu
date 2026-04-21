@@ -98,11 +98,24 @@ impl Context {
     }
 
     /// Push the store's git repo to its remote. Best-effort: failures are
-    /// logged at debug and discarded (no remote, offline, etc.).
+    /// logged at debug and discarded (offline, auth issues, etc.).
+    ///
+    /// Special case: when the store has *no* remote configured at all, emit a
+    /// one-shot stderr warning instead of a silent debug log. Otherwise
+    /// every mutation appears to succeed while commits accumulate locally
+    /// forever — the exact failure mode this dispatcher is meant to prevent.
     pub fn push(&self) {
         let Some(git_root) = self.git_root() else {
             return;
         };
+        if !crate::git::has_any_remote(&git_root) {
+            eprintln!(
+                "warning: store at {} has no git remote — commit landed locally only.\n  \
+                 Add one with: himitsu git remote add origin <url>",
+                git_root.display()
+            );
+            return;
+        }
         match crate::git::push(&git_root) {
             Ok(_) => debug!("pushed to remote"),
             Err(e) => debug!("push skipped: {e}"),
@@ -338,6 +351,10 @@ impl Cli {
         // didn't previously run `git init`.
         if !store.as_os_str().is_empty() && init::store_exists(&store) {
             init::ensure_git_repo(&store);
+            // Also ensure the slug-managed store has a default `origin` so
+            // auto-commits actually push somewhere. Catches stores created
+            // before the dispatcher started auto-committing.
+            init::ensure_default_origin(&store, &state_dir.join("stores"));
         }
 
         let recipients_path = load_recipients_path_override(&store);

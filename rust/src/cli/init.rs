@@ -349,6 +349,53 @@ pub(crate) fn ensure_git_repo(store: &Path) {
     let _ = git::run(&["commit", "-m", "chore: initialize himitsu store"], store);
 }
 
+/// Idempotent: ensure a slug-managed store has at least one git remote
+/// configured. Without this, every auto-commit lands in a local-only repo
+/// and never pushes — commits accumulate silently.
+///
+/// When the store sits at `<stores_dir>/<org>/<repo>` and has no remotes,
+/// adds `origin = git@github.com:<org>/<repo>.git` (the same default URL
+/// `remote add` uses). No-op when:
+///   * the store path is not under `stores_dir` (caller doesn't manage it),
+///   * the store is not a git repo,
+///   * any remote is already configured (caller already chose a remote).
+pub(crate) fn ensure_default_origin(store: &Path, stores_dir: &Path) {
+    use crate::git;
+
+    if store.as_os_str().is_empty() || !store.join(".git").exists() {
+        return;
+    }
+    if git::has_any_remote(store) {
+        return;
+    }
+
+    let Ok(rel) = store.strip_prefix(stores_dir) else {
+        return;
+    };
+    let parts: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    if parts.len() != 2 {
+        return;
+    }
+    let (org, repo) = (parts[0], parts[1]);
+
+    // Sanity: the slug must round-trip through the validator. Guards against
+    // legacy directories like `git@github.com:foo/` left over from earlier
+    // bugs in `remote add` slug parsing.
+    if config::validate_remote_slug(&format!("{org}/{repo}")).is_err() {
+        return;
+    }
+
+    let url = format!("git@github.com:{org}/{repo}.git");
+    if let Err(e) = git::add_remote(store, "origin", &url) {
+        tracing::debug!("failed to set origin for {}: {e}", store.display());
+    } else {
+        tracing::debug!("set default origin {url} for {}", store.display());
+    }
+}
+
 fn timestamp() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
@@ -415,5 +462,90 @@ mod tests {
     #[test]
     fn parse_unknown_url_returns_none() {
         assert_eq!(parse_remote_slug("https://gitlab.com/foo/bar"), None);
+    }
+
+    // ── ensure_default_origin ────────────────────────────────────────────
+
+    /// Helper: layout `<root>/stores/<org>/<repo>` with `git init` and return
+    /// the `(stores_dir, store_path)` pair.
+    fn make_store_under(root: &Path, org: &str, repo: &str) -> (PathBuf, PathBuf) {
+        let stores = root.join("stores");
+        let store = stores.join(org).join(repo);
+        std::fs::create_dir_all(&store).unwrap();
+        crate::git::init(&store).unwrap();
+        (stores, store)
+    }
+
+    #[test]
+    fn ensure_default_origin_sets_github_url_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (stores, store) = make_store_under(tmp.path(), "myorg", "secrets");
+
+        // Reproduce the bug: store has commits but no remote. Auto-commit
+        // dispatcher would silently never push.
+        assert!(!crate::git::has_any_remote(&store));
+
+        ensure_default_origin(&store, &stores);
+
+        assert!(crate::git::has_any_remote(&store));
+        let url = crate::git::run(&["remote", "get-url", "origin"], &store).unwrap();
+        assert_eq!(url.trim(), "git@github.com:myorg/secrets.git");
+    }
+
+    #[test]
+    fn ensure_default_origin_noop_when_remote_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (stores, store) = make_store_under(tmp.path(), "myorg", "secrets");
+        crate::git::add_remote(&store, "origin", "https://example.com/custom.git").unwrap();
+
+        ensure_default_origin(&store, &stores);
+
+        // Existing remote must be preserved — the user picked it.
+        let url = crate::git::run(&["remote", "get-url", "origin"], &store).unwrap();
+        assert_eq!(url.trim(), "https://example.com/custom.git");
+    }
+
+    #[test]
+    fn ensure_default_origin_noop_for_path_outside_stores_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("loose-store");
+        std::fs::create_dir_all(&store).unwrap();
+        crate::git::init(&store).unwrap();
+        let stores = tmp.path().join("stores");
+        std::fs::create_dir_all(&stores).unwrap();
+
+        ensure_default_origin(&store, &stores);
+
+        assert!(
+            !crate::git::has_any_remote(&store),
+            "stores outside stores_dir aren't slug-managed; we can't guess a URL"
+        );
+    }
+
+    #[test]
+    fn ensure_default_origin_noop_for_non_git_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stores = tmp.path().join("stores");
+        let store = stores.join("myorg").join("secrets");
+        std::fs::create_dir_all(&store).unwrap();
+        // No git init → must not panic, must not somehow set a remote.
+
+        ensure_default_origin(&store, &stores);
+
+        assert!(!store.join(".git").exists());
+    }
+
+    #[test]
+    fn ensure_default_origin_rejects_garbage_slug_dirs() {
+        // Reproduces a pre-existing bug where `remote add` accepted a full URL
+        // as the slug and created `stores/git@github.com:foo/bar/`. We must
+        // not configure an origin for those — the slug is not valid.
+        let tmp = tempfile::tempdir().unwrap();
+        let (stores, store) =
+            make_store_under(tmp.path(), "git@github.com:foo", "secrets");
+
+        ensure_default_origin(&store, &stores);
+
+        assert!(!crate::git::has_any_remote(&store));
     }
 }

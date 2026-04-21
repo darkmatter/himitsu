@@ -99,6 +99,23 @@ pub fn init(cwd: &Path) -> Result<String> {
     run(&["init"], cwd)
 }
 
+/// Returns true when the repo at `cwd` has at least one named remote configured.
+///
+/// Used to detect the "commits go nowhere" failure mode where a local store
+/// has accumulated commits but never had `origin` (or any remote) set up, so
+/// `git push` silently fails on every mutation.
+pub fn has_any_remote(cwd: &Path) -> bool {
+    match run(&["remote"], cwd) {
+        Ok(out) => out.lines().any(|l| !l.trim().is_empty()),
+        Err(_) => false,
+    }
+}
+
+/// Add a named remote pointing at `url`. Errors if the remote already exists.
+pub fn add_remote(cwd: &Path, name: &str, url: &str) -> Result<String> {
+    run(&["remote", "add", name, url], cwd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +135,30 @@ mod tests {
         // Running git log in a non-git directory should fail
         let result = run(&["log"], tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn has_any_remote_false_on_fresh_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init(tmp.path()).unwrap();
+        assert!(
+            !has_any_remote(tmp.path()),
+            "fresh repo should have no remotes"
+        );
+    }
+
+    #[test]
+    fn has_any_remote_true_after_add() {
+        let tmp = tempfile::tempdir().unwrap();
+        init(tmp.path()).unwrap();
+        add_remote(tmp.path(), "origin", "git@github.com:foo/bar.git").unwrap();
+        assert!(has_any_remote(tmp.path()));
+    }
+
+    #[test]
+    fn has_any_remote_false_outside_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Not a git repo at all → must not panic, must report no remote.
+        assert!(!has_any_remote(tmp.path()));
     }
 }
