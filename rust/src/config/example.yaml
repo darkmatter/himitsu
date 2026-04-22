@@ -1,0 +1,107 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# himitsu global config — ~/.config/himitsu/config.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# This file controls himitsu's global behavior. Every field here can also be
+# set via a HIMITSU_<FIELD> environment variable (env vars win over file values).
+#
+# Env var mapping:
+#   default_store  →  HIMITSU_DEFAULT_STORE
+#   context        →  HIMITSU_CONTEXT
+#   key_provider   →  HIMITSU_KEY_PROVIDER
+#   data_dir       →  HIMITSU_DATA_DIR
+#   auto_pull      →  HIMITSU_AUTO_PULL  (accepts 1, true, yes)
+#
+# See also: project-level config in `himitsu.yaml` (per-repo overrides).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Default remote store slug. Used when no --store or --remote flag is given
+# and no project config overrides it. Format: "org/repo".
+#
+# default_store: myorg/secrets
+
+# Active store context. When set, takes priority over default_store and all
+# heuristics. Useful when you work across multiple stores and want an explicit
+# "I mean this one" setting. Set interactively with:
+#   himitsu context remote <org/repo>
+#
+# context: myorg/secrets
+
+# How age private keys are stored. Options:
+#   disk            — keys live at ~/.local/share/himitsu/key (default)
+#   macos-keychain  — keys stored in macOS Keychain via the `security` CLI
+#
+key_provider: disk
+
+# Override the himitsu data directory (where age keys are stored).
+# Platform defaults when unset:
+#   Linux:  ~/.local/share/himitsu
+#   macOS:  ~/Library/Application Support/himitsu
+#
+# data_dir: /custom/path/to/himitsu
+
+# Auto-pull: fetch + fast-forward the store before every command.
+# Combined with the automatic post-mutation push, this gives a seamless
+# git-backed sync workflow with no extra commands.
+# Failures are non-fatal (stderr warning only).
+#
+auto_pull: false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TUI settings
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Customize keybindings for the interactive terminal UI. Any binding left out
+# keeps its default. Bindings are lists — assign multiple keys to one action.
+#
+# Key format:   <mod>+<key>  (modifiers: ctrl, alt/opt, shift)
+# Examples:     ctrl+n, shift+tab, esc, F2, ?, r
+#
+# tui:
+#   keys:
+#     # ── Global ──────────────────────────────────────────────────────────
+#     quit:           [esc, ctrl+c]       # exit the app
+#     help:           ["?"]               # open help overlay
+#
+#     # ── Search view ────────────────────────────────────────────────────
+#     new_secret:     [ctrl+n]            # open new-secret form
+#     switch_store:   [ctrl+s]            # store picker
+#     copy_selected:  [ctrl+y]            # copy selected secret's value
+#     envs:           [shift+e]           # browse preset env labels
+#
+#     # ── Secret viewer ──────────────────────────────────────────────────
+#     reveal:         [r]                 # reveal / hide value
+#     copy_value:     [y]                 # copy value to clipboard
+#     edit:           [e]                 # open in $EDITOR
+#     rekey:          [shift+r]           # rekey for current recipients
+#     delete:         [d]                 # delete (confirms first)
+#     back:           [esc]               # back to search
+#
+#     # ── New-secret form ────────────────────────────────────────────────
+#     save_secret:    [ctrl+s, ctrl+w]    # save the secret
+#     next_field:     [tab]               # advance to next field
+#     prev_field:     [shift+tab]         # go back one field
+#     cancel:         [esc]               # cancel and return to search
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Global environment definitions
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Map environment names to lists of secret entries. These are used by
+# `himitsu generate` and the TUI envs view. Three entry shapes:
+#
+#   - "path/SECRET"           →  key = SECRET (last path component)
+#   - "prefix/*"              →  all secrets under prefix/
+#   - {MY_KEY: "path/SECRET"} →  explicit alias (key = MY_KEY)
+#
+# Wildcard envs (trailing /*) support capture refs: $1 binds the matched
+# segment. Example: prod/* with entry {DB: "/$1/db-url"} expands DB for
+# each secret matched under prod/.
+#
+# envs:
+#   dev:
+#     - dev/API_KEY
+#     - DB_PASSWORD: dev/DB_PASSWORD
+#     - dev/*
+#   prod:
+#     - prod/*

@@ -418,14 +418,18 @@ impl Config {
         Ok(config)
     }
 
-    /// Write a default config to the given path (creating parent dirs).
+    /// Annotated example config embedded at compile time.
+    pub const EXAMPLE: &'static str = include_str!("example.yaml");
+
+    /// Write the annotated example config to the given path (creating parent
+    /// dirs). This is the file users see on first `himitsu init` — it
+    /// documents every field with inline comments so the config is
+    /// self-explanatory.
     pub fn write_default(path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let config = Config::default();
-        let yaml = serde_yaml::to_string(&config)?;
-        std::fs::write(path, yaml)?;
+        std::fs::write(path, Self::EXAMPLE)?;
         Ok(())
     }
 
@@ -929,6 +933,18 @@ mod tests {
                                      // RemoteNotFound requires a missing directory; we trust validate_remote_slug
         let err = validate_remote_slug("ghost/missing");
         assert!(err.is_ok()); // valid slug
+    }
+
+    #[test]
+    fn example_config_parses_and_matches_defaults() {
+        let cfg: Config = serde_yaml::from_str(Config::EXAMPLE).unwrap();
+        assert!(cfg.default_store.is_none());
+        assert!(cfg.context.is_none());
+        assert_eq!(cfg.key_provider, KeyProvider::Disk);
+        assert!(cfg.data_dir.is_none());
+        assert!(!cfg.auto_pull);
+        assert!(cfg.envs.is_empty());
+        cfg.validate().unwrap();
     }
 
     #[test]

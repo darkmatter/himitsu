@@ -132,13 +132,6 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
             std::fs::create_dir_all(&recipients_dir)?;
             if !pubkey.is_empty() {
                 std::fs::write(recipients_dir.join("self.pub"), format!("{pubkey}\n"))?;
-                // Seed the common group with this recipient.
-                let mut store_cfg = crate::remote::store::load_store_config(&dest)?;
-                store_cfg
-                    .recipients
-                    .groups
-                    .insert("common".to_string(), vec!["self".to_string()]);
-                crate::remote::store::save_store_config(&dest, &store_cfg)?;
             }
         }
         // Set (or update) default_store in global config
@@ -305,20 +298,6 @@ pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
     if !self_pub.exists() && !pubkey.is_empty() {
         std::fs::write(&self_pub, format!("{pubkey}\n"))?;
         wrote_self = true;
-    }
-
-    // Seed the store config with a `common: [self]` mapping on first setup.
-    if wrote_self {
-        let mut store_cfg = crate::remote::store::load_store_config(store)?;
-        let members = store_cfg
-            .recipients
-            .groups
-            .entry("common".to_string())
-            .or_default();
-        if !members.iter().any(|m| m == "self") {
-            members.push("self".to_string());
-        }
-        crate::remote::store::save_store_config(store, &store_cfg)?;
     }
 
     // Ensure the store is a git repo. Idempotent: skips if .git already exists
