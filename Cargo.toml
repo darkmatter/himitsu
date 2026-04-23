@@ -1,9 +1,43 @@
 [package]
-name = "himitsu"
+name = "himitsu-cli"
 version = "0.1.0"
 edition = "2021"
 description = "Age-based secrets management with transport-agnostic sharing"
 license = "MIT"
+repository = "https://github.com/darkmatter/himitsu"
+homepage = "https://github.com/darkmatter/himitsu"
+readme = "README.md"
+authors = ["Cooper Maruyama"]
+keywords = ["secrets", "age", "encryption", "cli", "vault"]
+categories = ["command-line-utilities", "cryptography", "authentication"]
+exclude = [
+    ".beads/",
+    ".meta/",
+    ".zed/",
+    ".github/",
+    ".agents/",
+    ".claude/",
+    ".cursor/",
+    ".himitsu/",
+    ".mux/",
+    "action/",
+    "demo/",
+    "docs/",
+    "nix/",
+    "openspec/",
+    "tests/",
+    "key.txt",
+    "himitsu.db",
+    "skills-lock.json",
+    "TODO.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "flake.nix",
+    "flake.lock",
+    "Justfile",
+    "bacon.toml",
+    "action.yml",
+]
 
 [[bin]]
 name = "himitsu"
