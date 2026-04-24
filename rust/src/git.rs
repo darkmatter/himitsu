@@ -116,6 +116,82 @@ pub fn add_remote(cwd: &Path, name: &str, url: &str) -> Result<String> {
     run(&["remote", "add", name, url], cwd)
 }
 
+/// List absolute paths of initialized submodules for the repo at `cwd`.
+///
+/// Reads `.gitmodules` directly so callers don't depend on a POSIX shell.
+/// Submodules that appear in `.gitmodules` but aren't checked out (no `.git`
+/// file/dir inside) are filtered so callers can safely run git in each path.
+pub fn list_submodules(cwd: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(out) = run(
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "--get-regexp",
+            r"submodule\..*\.path",
+        ],
+        cwd,
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|l| l.split_once(' ').map(|(_, p)| p.to_string()))
+        .map(|rel| cwd.join(rel))
+        .filter(|p| p.join(".git").exists())
+        .collect()
+}
+
+/// Returns true when the repo at `cwd` has commits ahead of its upstream.
+/// Returns false when no upstream is configured — treat as nothing to push.
+pub fn has_unpushed_commits(cwd: &Path) -> bool {
+    match run(&["rev-list", "--count", "@{u}..HEAD"], cwd) {
+        Ok(out) => out
+            .trim()
+            .parse::<u32>()
+            .map(|n| n > 0)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Move the repo at `cwd` from detached HEAD onto its default branch, but
+/// only when the detached commit already matches the tip of that branch.
+///
+/// `git clone --recurse-submodules` leaves submodules detached at the pinned
+/// commit, and a detached HEAD can't be pushed. Auto-checking out is safe
+/// when HEAD == tip of origin/<default> (the pointer and branch tip agree).
+/// If they diverge the submodule is genuinely pinned — don't silently unpin;
+/// return an error with context so the caller can surface it.
+///
+/// No-op when HEAD is already symbolic.
+pub fn ensure_on_branch(cwd: &Path) -> Result<()> {
+    if run(&["symbolic-ref", "-q", "HEAD"], cwd).is_ok() {
+        return Ok(());
+    }
+    let head = run(&["rev-parse", "HEAD"], cwd)?.trim().to_string();
+    let default = run(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd)?;
+    let branch = default
+        .trim()
+        .strip_prefix("origin/")
+        .unwrap_or_else(|| default.trim())
+        .to_string();
+    let tip = run(&["rev-parse", &format!("origin/{branch}")], cwd)?
+        .trim()
+        .to_string();
+    if head != tip {
+        return Err(HimitsuError::Git(format!(
+            "detached HEAD at {} is not the tip of origin/{branch}; \
+             checkout the branch manually before writing",
+            &head[..head.len().min(7)]
+        )));
+    }
+    run(
+        &["checkout", "-B", &branch, &format!("origin/{branch}")],
+        cwd,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +236,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // Not a git repo at all → must not panic, must report no remote.
         assert!(!has_any_remote(tmp.path()));
+    }
+
+    #[test]
+    fn list_submodules_empty_without_gitmodules() {
+        let tmp = tempfile::tempdir().unwrap();
+        init(tmp.path()).unwrap();
+        assert!(list_submodules(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn list_submodules_outside_repo_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(list_submodules(tmp.path()).is_empty());
     }
 }

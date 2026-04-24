@@ -80,12 +80,38 @@ impl Context {
 
     /// Stage `.himitsu/` and commit if there are staged changes.
     ///
-    /// Returns `true` when a commit was actually created. Best-effort: a
-    /// missing git repo or a clean tree both yield `false` without erroring.
+    /// Returns `true` when a parent commit was created. Best-effort: missing
+    /// git repo or clean tree yields `false` without erroring.
+    ///
+    /// Submodules are committed first so the parent's pointer-bump references
+    /// a real commit on the submodule side. Without this, a write to a path
+    /// inside a submodule would strand the file — submodule dirty, parent
+    /// clean, nothing to push.
     pub fn commit(&self, message: &str) -> bool {
         let Some(git_root) = self.git_root() else {
             return false;
         };
+
+        for sm in crate::git::list_submodules(&git_root) {
+            let status = crate::git::run(&["status", "--porcelain"], &sm).unwrap_or_default();
+            if status.trim().is_empty() {
+                continue;
+            }
+            if let Err(e) = crate::git::ensure_on_branch(&sm) {
+                eprintln!(
+                    "warning: submodule at {} can't commit: {e}\n  \
+                     working tree left dirty — resolve manually.",
+                    sm.display()
+                );
+                continue;
+            }
+            let _ = crate::git::run(&["add", "-A"], &sm);
+            if crate::git::run(&["diff", "--cached", "--quiet"], &sm).is_err() {
+                let _ = crate::git::run(&["commit", "-m", message], &sm);
+                debug!("committed in submodule {}: {message}", sm.display());
+            }
+        }
+
         let _ = crate::git::run(&["add", ".himitsu"], &git_root);
 
         if crate::git::run(&["diff", "--cached", "--quiet"], &git_root).is_err() {
@@ -111,15 +137,19 @@ impl Context {
         if !crate::git::has_any_remote(&git_root) {
             return;
         }
-        if let Err(e) = crate::git::run(&["fetch", "origin"], &git_root) {
+        if let Err(e) = crate::git::run(&["fetch", "--recurse-submodules", "origin"], &git_root)
+        {
             eprintln!("warning: auto-pull fetch failed: {e}");
             return;
         }
         // --ff-only is intentional: the dispatcher's invariant is a clean
         // working tree, so a non-fast-forward state means someone modified
         // history out-of-band. Surface that loudly instead of silently
-        // creating a merge commit.
-        if let Err(e) = crate::git::run(&["pull", "--ff-only"], &git_root) {
+        // creating a merge commit. --recurse-submodules updates submodule
+        // working trees to match the fetched pointers.
+        if let Err(e) =
+            crate::git::run(&["pull", "--ff-only", "--recurse-submodules"], &git_root)
+        {
             eprintln!("warning: auto-pull skipped (not fast-forward or no upstream): {e}");
         }
     }
@@ -135,6 +165,40 @@ impl Context {
         let Some(git_root) = self.git_root() else {
             return;
         };
+
+        // Push submodules first. If any fail, hold back the parent push —
+        // otherwise the parent's pointer would reference a commit that
+        // doesn't exist on the submodule's remote, leaving a fresh clone
+        // with a dangling ref. Next invocation will retry.
+        let mut submodule_push_failed = false;
+        for sm in crate::git::list_submodules(&git_root) {
+            if !crate::git::has_any_remote(&sm) {
+                eprintln!(
+                    "warning: submodule at {} has no git remote — commit landed locally only.",
+                    sm.display()
+                );
+                submodule_push_failed = true;
+                continue;
+            }
+            if !crate::git::has_unpushed_commits(&sm) {
+                continue;
+            }
+            match crate::git::push(&sm) {
+                Ok(_) => debug!("pushed submodule {}", sm.display()),
+                Err(e) => {
+                    eprintln!(
+                        "warning: submodule push failed at {}: {e}\n  \
+                         parent push held back — retry after resolving.",
+                        sm.display()
+                    );
+                    submodule_push_failed = true;
+                }
+            }
+        }
+        if submodule_push_failed {
+            return;
+        }
+
         if !crate::git::has_any_remote(&git_root) {
             eprintln!(
                 "warning: store at {} has no git remote — commit landed locally only.\n  \
@@ -809,5 +873,169 @@ mod tests {
     fn pull_if_remote_noop_outside_git_repo() {
         let tmp = tempfile::tempdir().unwrap();
         ctx_for(tmp.path()).pull_if_remote();
+    }
+
+    // ── submodule commit + push ─────────────────────────────────────────
+
+    /// Build parent+submodule both tracking bare remotes. Returns
+    /// `(local_store, submodule_path, sub_bare_remote)` where `local_store`
+    /// is a fresh clone of the parent with the submodule initialized.
+    fn make_linked_repos_with_submodule(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let allow = "-c";
+        let allow_val = "protocol.file.allow=always";
+
+        let parent_remote = root.join("parent.git");
+        let sub_remote = root.join("sub.git");
+        crate::git::run(
+            &[
+                "init",
+                "--bare",
+                "-b",
+                "main",
+                parent_remote.to_str().unwrap(),
+            ],
+            root,
+        )
+        .unwrap();
+        crate::git::run(
+            &["init", "--bare", "-b", "main", sub_remote.to_str().unwrap()],
+            root,
+        )
+        .unwrap();
+
+        // Seed the submodule remote with one commit.
+        let sub_work = root.join("sub-work");
+        std::fs::create_dir_all(&sub_work).unwrap();
+        crate::git::run(&["init", "-b", "main"], &sub_work).unwrap();
+        crate::git::run(&["config", "user.email", "t@t"], &sub_work).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &sub_work).unwrap();
+        std::fs::write(sub_work.join("seed.txt"), "s").unwrap();
+        crate::git::run(&["add", "."], &sub_work).unwrap();
+        crate::git::run(&["commit", "-m", "seed-sub"], &sub_work).unwrap();
+        crate::git::run(
+            &["remote", "add", "origin", sub_remote.to_str().unwrap()],
+            &sub_work,
+        )
+        .unwrap();
+        crate::git::run(&["push", "-u", "origin", "main"], &sub_work).unwrap();
+
+        // Seed the parent remote and wire the submodule under `.himitsu/sub`.
+        let parent_work = root.join("parent-work");
+        std::fs::create_dir_all(&parent_work).unwrap();
+        crate::git::run(&["init", "-b", "main"], &parent_work).unwrap();
+        crate::git::run(&["config", "user.email", "t@t"], &parent_work).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &parent_work).unwrap();
+        std::fs::create_dir_all(parent_work.join(".himitsu")).unwrap();
+        std::fs::write(parent_work.join(".himitsu/.keep"), "").unwrap();
+        crate::git::run(&["add", "."], &parent_work).unwrap();
+        crate::git::run(&["commit", "-m", "seed-parent"], &parent_work).unwrap();
+        crate::git::run(
+            &[
+                allow,
+                allow_val,
+                "submodule",
+                "add",
+                sub_remote.to_str().unwrap(),
+                ".himitsu/sub",
+            ],
+            &parent_work,
+        )
+        .unwrap();
+        crate::git::run(&["commit", "-m", "add-sub"], &parent_work).unwrap();
+        crate::git::run(
+            &["remote", "add", "origin", parent_remote.to_str().unwrap()],
+            &parent_work,
+        )
+        .unwrap();
+        crate::git::run(&["push", "-u", "origin", "main"], &parent_work).unwrap();
+
+        // Fresh clone with recursed submodules — this is the "local store".
+        let local = root.join("local");
+        crate::git::run(
+            &[
+                allow,
+                allow_val,
+                "clone",
+                "--recurse-submodules",
+                parent_remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+            root,
+        )
+        .unwrap();
+        crate::git::run(&["config", "user.email", "t@t"], &local).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &local).unwrap();
+        let sub = local.join(".himitsu/sub");
+        crate::git::run(&["config", "user.email", "t@t"], &sub).unwrap();
+        crate::git::run(&["config", "user.name", "t"], &sub).unwrap();
+
+        (local, sub, sub_remote)
+    }
+
+    #[test]
+    fn commit_stages_and_commits_inside_dirty_submodule() {
+        let root = tempfile::tempdir().unwrap();
+        let (local, sub_path, _sub_remote) =
+            make_linked_repos_with_submodule(root.path());
+
+        // Simulate a mutation: a new encrypted secret inside the submodule.
+        std::fs::create_dir_all(sub_path.join("env")).unwrap();
+        std::fs::write(sub_path.join("env/FOO.age"), "ciphertext").unwrap();
+
+        let parent_head_before =
+            crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
+        let sub_head_before =
+            crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
+
+        let committed = ctx_for(&local).commit("himitsu: set env/FOO");
+        assert!(committed, "parent should commit the pointer bump");
+
+        let sub_head_after =
+            crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
+        let parent_head_after =
+            crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
+
+        assert_ne!(
+            sub_head_before.trim(),
+            sub_head_after.trim(),
+            "submodule HEAD should advance so the pointer bump is real"
+        );
+        assert_ne!(
+            parent_head_before.trim(),
+            parent_head_after.trim(),
+            "parent HEAD should advance with the pointer-bump commit"
+        );
+    }
+
+    #[test]
+    fn push_propagates_submodule_commits_to_sub_remote() {
+        let root = tempfile::tempdir().unwrap();
+        let (local, sub_path, sub_remote) =
+            make_linked_repos_with_submodule(root.path());
+
+        std::fs::create_dir_all(sub_path.join("env")).unwrap();
+        std::fs::write(sub_path.join("env/FOO.age"), "ciphertext").unwrap();
+
+        let ctx = ctx_for(&local);
+        ctx.commit("himitsu: set env/FOO");
+        ctx.push();
+
+        // Verify by cloning the sub remote fresh and checking the file lands.
+        let verify = root.path().join("verify-sub");
+        crate::git::run(
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "clone",
+                sub_remote.to_str().unwrap(),
+                verify.to_str().unwrap(),
+            ],
+            root.path(),
+        )
+        .unwrap();
+        assert!(
+            verify.join("env/FOO.age").exists(),
+            "sub remote should have the secret after push"
+        );
     }
 }
