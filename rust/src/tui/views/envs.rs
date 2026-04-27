@@ -636,10 +636,10 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    // envs_mut tests serialize HIMITSU_HOME because it's process-global.
+    // envs_mut tests serialize HIMITSU_CONFIG because it's process-global.
     // Use the same lock here so our fixtures don't stomp on their runs or
-    // each other — see `crate::config::envs_mut::HIMITSU_HOME_TEST_GUARD`.
-    use crate::config::envs_mut::HIMITSU_HOME_TEST_GUARD as ENV_GUARD;
+    // each other — see `crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD`.
+    use crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD as ENV_GUARD;
 
     struct Home {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -652,7 +652,7 @@ mod tests {
         fn new() -> Self {
             let guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
             let tmp = tempfile::tempdir().unwrap();
-            std::env::set_var("HIMITSU_HOME", tmp.path());
+            std::env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
             let path = tmp.path().to_path_buf();
             let orig_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             Self {
@@ -668,7 +668,7 @@ mod tests {
         fn drop(&mut self) {
             // Restore cwd first so other tests don't inherit a deleted dir.
             let _ = std::env::set_current_dir(&self._orig_cwd);
-            std::env::remove_var("HIMITSU_HOME");
+            std::env::remove_var("HIMITSU_CONFIG");
         }
     }
 

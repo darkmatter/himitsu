@@ -78,8 +78,9 @@ pub struct Config {
     #[serde(default)]
     pub key_provider: KeyProvider,
 
-    /// Override for the himitsu data directory (age keys).
-    /// Defaults to `~/.local/share/himitsu` when unset.
+    /// Override for the himitsu data directory.
+    /// Defaults to `~/.local/share/himitsu` or `~/Library/Application Support/himitsu`
+    /// when outside a repo. Otherwise, its .himitsu
     /// Override: `HIMITSU_DATA_DIR=/custom/path`
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -150,9 +151,9 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub generate: Option<GenerateConfig>,
 
-    /// Store-level overrides.
+    /// Recipients directory path override.
     #[serde(default)]
-    pub store: Option<StoreConfig>,
+    pub recipients_path: Option<String>,
 }
 
 /// A single entry in an env's secret list.
@@ -380,21 +381,13 @@ fn default_generate_format() -> String {
     "sops".to_string()
 }
 
-/// Store-level config overrides.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StoreConfig {
-    /// Override for the recipients directory path within the store.
-    #[serde(default)]
-    pub recipients_path: Option<String>,
-}
-
 impl Config {
     /// Load config from a YAML file, then apply any `HIMITSU_*` environment
     /// variable overrides on top.
     ///
     /// Missing file → all defaults. Unknown env vars are silently ignored.
-    /// `HIMITSU_HOME` is excluded because it controls test isolation at the
-    /// path level and is handled separately by [`config_dir`] / [`data_dir`].
+    /// `HIMITSU_CONFIG` is excluded because it points at the config file
+    /// itself and is handled by [`config_path`], not deserialized as a field.
     pub fn load(path: &Path) -> Result<Self> {
         use figment::{
             providers::{Env, Serialized},
@@ -411,7 +404,7 @@ impl Config {
 
         // Layer: file values as the base, env vars win over them.
         let config = Figment::from(Serialized::defaults(from_file))
-            .merge(Env::prefixed("HIMITSU_").ignore(&["HOME"]))
+            .merge(Env::prefixed("HIMITSU_").ignore(&["CONFIG"]))
             .extract()
             .map_err(|e| HimitsuError::InvalidConfig(e.to_string()))?;
 
@@ -446,49 +439,41 @@ impl Config {
 
 // ── XDG-style path helpers ─────────────────────────────────────────────────
 
-/// Config directory for `config.yaml`.
+/// Path to the global config file.
 ///
-/// | Platform | Default path                                  |
-/// |----------|-----------------------------------------------|
-/// | Linux    | `$XDG_CONFIG_HOME/himitsu` → `~/.config/himitsu` |
-/// | macOS    | `~/Library/Application Support/himitsu`       |
+/// `HIMITSU_CONFIG` (the entrypoint env var) wins if set — it points at the
+/// config file directly. Otherwise the XDG default location is used.
 ///
-/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/config`.
-///
-/// This is a fixed, bootstrap-level location that never depends on user
-/// config, so it can safely be read by `data_dir()` without a circular
-/// dependency.
-///
-/// On macOS `dirs::config_dir()` and `dirs::data_dir()` both return
-/// `~/Library/Application Support/`, so config and data share a root —
-/// this is correct macOS behaviour.
-pub fn config_dir() -> PathBuf {
-    if let Ok(val) = std::env::var("HIMITSU_HOME") {
-        return PathBuf::from(val).join("config");
+/// | Platform | Default path                                           |
+/// |----------|--------------------------------------------------------|
+/// | Linux    | `$XDG_CONFIG_HOME/himitsu/config.yaml`                 |
+/// | macOS    | `~/Library/Application Support/himitsu/config.yaml`    |
+pub fn config_path() -> PathBuf {
+    if let Ok(val) = std::env::var("HIMITSU_CONFIG") {
+        return PathBuf::from(val);
     }
     dirs::config_dir()
         .expect("cannot determine XDG config directory")
         .join("himitsu")
+        .join("config.yaml")
 }
 
-/// Path to the global config file: `config_dir()/config.yaml`.
-pub fn config_path() -> PathBuf {
-    config_dir().join("config.yaml")
+/// Directory containing the global config file.
+pub fn config_dir() -> PathBuf {
+    config_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(PathBuf::new)
 }
 
 /// Data directory — stores the age keypair and associated key material.
 ///
-/// | Platform | Default path                                  |
-/// |----------|-----------------------------------------------|
-/// | Linux    | `$XDG_DATA_HOME/himitsu` → `~/.local/share/himitsu` |
-/// | macOS    | `~/Library/Application Support/himitsu`       |
-///
-/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/share`.
-/// When `Config.data_dir` is set, that value overrides the platform default.
+/// Resolution order:
+/// 1. `Config.data_dir` field in the config file, if non-empty.
+/// 2. When `HIMITSU_CONFIG` is set explicitly, default to `<cfg-parent>/share`
+///    so tests and custom layouts co-locate under one root.
+/// 3. XDG default (`$XDG_DATA_HOME/himitsu` on Linux, Application Support on macOS).
 pub fn data_dir() -> PathBuf {
-    if let Ok(val) = std::env::var("HIMITSU_HOME") {
-        return PathBuf::from(val).join("share");
-    }
     // Best-effort: read custom data_dir from the config file.
     if let Ok(contents) = std::fs::read_to_string(config_path()) {
         if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
@@ -500,6 +485,9 @@ pub fn data_dir() -> PathBuf {
             }
         }
     }
+    if std::env::var("HIMITSU_CONFIG").is_ok() {
+        return config_dir().join("share");
+    }
     dirs::data_dir()
         .expect("cannot determine XDG data directory")
         .join("himitsu")
@@ -507,21 +495,12 @@ pub fn data_dir() -> PathBuf {
 
 /// State directory — stores the SQLite search index and remote store checkouts.
 ///
-/// | Platform | Default path                                      |
-/// |----------|---------------------------------------------------|
-/// | Linux    | `$XDG_STATE_HOME/himitsu` → `~/.local/state/himitsu` |
-/// | macOS    | `~/Library/Application Support/himitsu`           |
-///
-/// On macOS `dirs::state_dir()` returns `None` (the platform has no direct
-/// equivalent of `$XDG_STATE_HOME`), so state co-locates with data under
-/// `~/Library/Application Support/himitsu/` — everything in one place.
-///
-/// When `HIMITSU_HOME` is set (tests): `$HIMITSU_HOME/state`.
-/// When `Config.data_dir` is set, state lives at `<data_dir>/state/`.
+/// Resolution order:
+/// 1. `Config.data_dir` field in the config file → state lives at `<data_dir>/state/`.
+/// 2. When `HIMITSU_CONFIG` is set explicitly, default to `<cfg-parent>/state`.
+/// 3. XDG state dir (Linux) or fall through to [`data_dir`] (macOS has no
+///    dedicated state dir).
 pub fn state_dir() -> PathBuf {
-    if let Ok(val) = std::env::var("HIMITSU_HOME") {
-        return PathBuf::from(val).join("state");
-    }
     // When a custom data_dir is configured, state lives alongside it.
     if let Ok(contents) = std::fs::read_to_string(config_path()) {
         if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
@@ -532,6 +511,9 @@ pub fn state_dir() -> PathBuf {
                 }
             }
         }
+    }
+    if std::env::var("HIMITSU_CONFIG").is_ok() {
+        return config_dir().join("state");
     }
     // Use the platform state dir when available (Linux); otherwise fall back
     // to our own data_dir() — not dirs::data_dir() — so that any future
@@ -686,13 +668,12 @@ pub fn remote_store_path(slug: &str) -> Result<PathBuf> {
 pub fn ensure_store(slug: &str) -> Result<PathBuf> {
     // Accept full git URLs (e.g. git@github.com:org/repo.git) and extract
     // the org/repo slug automatically.
-    let (resolved, clone_url) =
-        if let Some(parsed) = crate::cli::init::parse_remote_slug(slug) {
-            let url = slug.to_string();
-            (parsed, Some(url))
-        } else {
-            (slug.to_string(), None)
-        };
+    let (resolved, clone_url) = if let Some(parsed) = crate::cli::init::parse_remote_slug(slug) {
+        let url = slug.to_string();
+        (parsed, Some(url))
+    } else {
+        (slug.to_string(), None)
+    };
 
     let (org, repo) = validate_remote_slug(&resolved)?;
     let path = store_checkout(org, repo);
@@ -884,11 +865,11 @@ mod tests {
     #[test]
     fn auto_pull_enabled_env_var_overrides_config() {
         // Serialize via the same mutex used by other env-touching tests.
-        let _guard = crate::config::envs_mut::HIMITSU_HOME_TEST_GUARD
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HIMITSU_HOME", tmp.path());
+        std::env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
 
         // Config absent → default false. Env override forces true.
         std::env::remove_var("HIMITSU_AUTO_PULL");
@@ -904,7 +885,7 @@ mod tests {
         }
 
         std::env::remove_var("HIMITSU_AUTO_PULL");
-        std::env::remove_var("HIMITSU_HOME");
+        std::env::remove_var("HIMITSU_CONFIG");
     }
 
     #[test]
@@ -925,7 +906,7 @@ mod tests {
     #[test]
     fn remote_store_path_errors_when_missing() {
         // Validate that a non-existent slug returns RemoteNotFound.
-        // We use a unique HIMITSU_HOME inside a tempdir so there's no collision.
+        // We use a unique tempdir so there's no collision.
         let tmp = tempfile::tempdir().unwrap();
         // The path will be tmp/state/stores/ghost/missing, which doesn't exist.
         let expected = tmp.path().join("state/stores/ghost/missing");
@@ -991,10 +972,8 @@ envs:
     #[test]
     fn config_validate_rejects_bad_env_label() {
         let mut cfg = Config::default();
-        cfg.envs.insert(
-            "foo/*/bar".into(),
-            vec![EnvEntry::Single("x".into())],
-        );
+        cfg.envs
+            .insert("foo/*/bar".into(), vec![EnvEntry::Single("x".into())]);
         assert!(cfg.validate().is_err());
     }
 
@@ -1164,19 +1143,13 @@ envs:
             vec![EnvEntry::Single("/$2/postgres-url".into())],
         );
         let err = validate_envs(&envs).unwrap_err();
-        assert!(
-            err.to_string().contains("$1"),
-            "unexpected error: {err}"
-        );
+        assert!(err.to_string().contains("$1"), "unexpected error: {err}");
     }
 
     #[test]
     fn validate_envs_rejects_bad_label() {
         let mut envs = BTreeMap::new();
-        envs.insert(
-            "foo/*/bar".to_string(),
-            vec![EnvEntry::Single("x".into())],
-        );
+        envs.insert("foo/*/bar".to_string(), vec![EnvEntry::Single("x".into())]);
         assert!(validate_envs(&envs).is_err());
     }
 

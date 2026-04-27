@@ -10,7 +10,7 @@ fn himitsu() -> Command {
 /// Set up a user home (keys/config) and a project store root.
 ///
 /// In the new model:
-/// - HIMITSU_HOME → data_dir = HIMITSU_HOME/share, state_dir = HIMITSU_HOME/state
+/// - HIMITSU_CONFIG → config_dir = parent of the file, data_dir = <parent>/share, state_dir = <parent>/state
 /// - `--store <path>` points to the store ROOT (not `.himitsu/` inside it)
 /// - Secrets are stored at `store_root/.himitsu/secrets/<path>.age`
 /// - Recipients at `store_root/.himitsu/recipients/`
@@ -19,7 +19,7 @@ fn setup() -> (TempDir, TempDir) {
     let store = TempDir::new().unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &store.path().to_string_lossy(), "init"])
         .assert()
         .success();
@@ -37,9 +37,9 @@ fn store_flag(store: &TempDir) -> String {
 #[test]
 fn init_creates_directory_tree() {
     let (home, store) = setup();
-    // Key files at data_dir (HIMITSU_HOME/share/)
+    // Key files at data_dir (<home>/share/)
     assert!(home.path().join("share/key").exists());
-    assert!(home.path().join("config/config.yaml").exists());
+    assert!(home.path().join("config.yaml").exists());
     // Store layout at store_root/.himitsu/
     assert!(store.path().join(".himitsu/secrets").exists());
     assert!(store.path().join(".himitsu/recipients").exists());
@@ -52,7 +52,7 @@ fn init_is_idempotent() {
     let key_before = std::fs::read_to_string(home.path().join("share/key")).unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &store_flag(&store), "init"])
         .assert()
         .success();
@@ -86,13 +86,13 @@ fn set_get_roundtrip() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/API_KEY", "secret123"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/API_KEY"])
         .assert()
         .success()
@@ -105,7 +105,7 @@ fn set_get_with_metadata_roundtrip() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -126,7 +126,7 @@ fn set_get_with_metadata_roundtrip() {
 
     // stdout must still be the bare value for piping.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/DB_PW"])
         .assert()
         .success()
@@ -143,7 +143,7 @@ fn set_rejects_invalid_totp() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store", &s, "set", "prod/BAD", "value", "--totp", "abc",
         ])
@@ -158,7 +158,7 @@ fn set_rejects_invalid_expires_at() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store", &s, "set", "prod/BAD", "value", "--expires-at", "30x",
         ])
@@ -174,7 +174,7 @@ fn set_normalizes_leading_slash() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "/dev/hello", "world"])
         .assert()
         .success()
@@ -193,7 +193,7 @@ fn set_rejects_traversal_path() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "../../etc/passwd", "oops"])
         .assert()
         .failure()
@@ -209,13 +209,13 @@ fn get_normalizes_leading_slash() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/hello", "world"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "/dev/hello"])
         .assert()
         .success()
@@ -228,7 +228,7 @@ fn set_creates_age_file() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/DB_PASS", "hunter2"])
         .assert()
         .success();
@@ -246,13 +246,13 @@ fn set_get_multiline_value() {
     let multiline = "line1\nline2\nline3";
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/MULTI", multiline])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/MULTI"])
         .assert()
         .success()
@@ -266,13 +266,13 @@ fn set_get_special_characters() {
     let special = r#"hello "world" \n back\slash"#;
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/SPECIAL", special])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/SPECIAL"])
         .assert()
         .success()
@@ -288,14 +288,14 @@ fn ls_lists_secrets() {
 
     for env in &["dev", "prod"] {
         himitsu()
-            .env("HIMITSU_HOME", home.path())
+            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
             .args(["--store", &s, "set", &format!("{env}/KEY"), "val"])
             .assert()
             .success();
     }
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "ls"])
         .assert()
         .success()
@@ -309,18 +309,18 @@ fn ls_filters_by_prefix() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/A_KEY", "a"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/B_KEY", "b"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "ls", "prod"])
         .assert()
         .success()
@@ -336,7 +336,7 @@ fn decrypt_errors_no_plaintext_at_rest() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "decrypt"])
         .assert()
         .failure()
@@ -351,20 +351,20 @@ fn rekey_re_encrypts_secrets() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/SECRET", "value"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "rekey"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Re-encrypted 1 secret"));
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/SECRET"])
         .assert()
         .success()
@@ -377,13 +377,13 @@ fn encrypt_deprecated_wrapper_still_works() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/SECRET", "value"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "encrypt"])
         .assert()
         .success()
@@ -399,7 +399,7 @@ fn recipient_add_self() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -434,7 +434,7 @@ fn recipient_add_explicit_key() {
         .unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -459,13 +459,13 @@ fn recipient_rm() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "add", "todelete", "--self"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "rm", "todelete"])
         .assert()
         .success();
@@ -482,7 +482,7 @@ fn recipient_ls() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "ls"])
         .assert()
         .success()
@@ -500,13 +500,13 @@ fn search_matches_keys() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/STRIPE_KEY", "sk_test"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "search", "STRIPE", "--refresh"])
         .assert()
         .success()
@@ -519,7 +519,7 @@ fn search_no_matches_returns_empty() {
 
     // search without --store: scans stores_dir which is empty
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["search", "NONEXISTENT", "--refresh"])
         .assert()
         .success()
@@ -546,7 +546,7 @@ fn version_subcommand_prints_without_initializing() {
     let home = TempDir::new().unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .arg("version")
         .assert()
         .success()
@@ -603,14 +603,14 @@ fn recipient_show_existing() {
 
     // Add a self recipient so there's something to find.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "add", "mykey", "--self"])
         .assert()
         .success();
 
     // show should print the public key (plus metadata headers).
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "show", "mykey"])
         .assert()
         .success()
@@ -624,7 +624,7 @@ fn recipient_show_nonexistent() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "recipient", "show", "nobody"])
         .assert()
         .failure()
@@ -633,14 +633,14 @@ fn recipient_show_nonexistent() {
 
 // ============ --remote flag tests ============
 
-/// Create and initialise a remote store at `HIMITSU_HOME/state/stores/<org>/<repo>`.
+/// Create and initialise a remote store at `<home>/state/stores/<org>/<repo>`.
 /// This is where `--remote slug` looks for stores.
 fn create_remote_store(home: &TempDir, slug: &str) -> std::path::PathBuf {
     let (org, repo) = slug.split_once('/').unwrap();
     let dest = home.path().join("state/stores").join(org).join(repo);
     std::fs::create_dir_all(&dest).unwrap();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &dest.to_string_lossy(), "init"])
         .assert()
         .success();
@@ -655,7 +655,7 @@ fn remote_flag_resolves_to_stores_dir() {
 
     // Write a secret directly into the remote store.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &remote_store.to_string_lossy(),
@@ -668,7 +668,7 @@ fn remote_flag_resolves_to_stores_dir() {
 
     // Read it back via the short `-r` flag — must return the same value.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["-r", slug, "get", "prod/REMOTE_KEY"])
         .assert()
         .success()
@@ -682,7 +682,7 @@ fn remote_flag_long_form_resolves() {
     let remote_store = create_remote_store(&home, slug);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &remote_store.to_string_lossy(),
@@ -694,7 +694,7 @@ fn remote_flag_long_form_resolves() {
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", slug, "get", "dev/DB_PASS"])
         .assert()
         .success()
@@ -706,7 +706,7 @@ fn remote_flag_fails_for_unknown_slug() {
     let (home, _store) = setup();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["-r", "ghost/missing", "ls"])
         .assert()
         .failure()
@@ -718,7 +718,7 @@ fn remote_flag_rejects_invalid_slug() {
     let (home, _store) = setup();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["-r", "notaslug", "ls"])
         .assert()
         .failure()
@@ -732,7 +732,7 @@ fn remote_flag_conflicts_with_store() {
 
     // clap enforces mutual exclusion at parse time — must fail before dispatch.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "--remote", "org/repo", "ls"])
         .assert()
         .failure();
@@ -772,7 +772,7 @@ fn remote_add_clones_local_repo() {
     create_local_git_repo(source.path());
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -786,7 +786,7 @@ fn remote_add_clones_local_repo() {
         .success()
         .stdout(predicate::str::contains("Added remote 'test-org/my-repo'"));
 
-    // The remote should be cloned into stores_dir = HIMITSU_HOME/state/stores/
+    // The remote should be cloned into stores_dir = <home>/state/stores/
     assert!(home.path().join("state/stores/test-org/my-repo").exists());
 }
 
@@ -799,7 +799,7 @@ fn remote_add_resolves_via_remote_flag() {
     create_local_git_repo(source.path());
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -814,7 +814,7 @@ fn remote_add_resolves_via_remote_flag() {
 
     // After adding, `-r acme/repo` must not fail with "remote not found".
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["-r", "acme/repo", "ls"])
         .assert()
         .stderr(predicate::str::contains("remote not found").not());
@@ -830,14 +830,14 @@ fn remote_add_duplicate_fails() {
     let url = source.path().to_string_lossy().to_string();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
         .assert()
         .success();
 
     // Second add with the same slug must fail.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
         .assert()
         .failure()
@@ -850,7 +850,7 @@ fn remote_add_invalid_slug_fails() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "add", "notaslug"])
         .assert()
         .failure()
@@ -866,7 +866,7 @@ fn remote_list_shows_all() {
     create_remote_store(&home, "acme/secrets");
     create_remote_store(&home, "myorg/keys");
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "list"])
         .assert()
         .success()
@@ -879,7 +879,7 @@ fn remote_list_empty() {
     let (home, store) = setup();
     let s = store_flag(&store);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "list"])
         .assert()
         .success()
@@ -891,7 +891,7 @@ fn remote_default_shows_none() {
     let (home, store) = setup();
     let s = store_flag(&store);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "default"])
         .assert()
         .success()
@@ -904,14 +904,14 @@ fn remote_default_sets_and_shows() {
     let s = store_flag(&store);
     // Set a default store slug.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "default", "acme/secrets"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Default store set to"));
     // Read it back — should echo the slug.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "default"])
         .assert()
         .success()
@@ -925,7 +925,7 @@ fn remote_remove_deletes_checkout() {
     let remote_path = create_remote_store(&home, "acme/vault");
     assert!(remote_path.exists());
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "remove", "acme/vault"])
         .assert()
         .success()
@@ -938,7 +938,7 @@ fn remote_remove_nonexistent_fails() {
     let (home, store) = setup();
     let s = store_flag(&store);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "remove", "ghost/missing"])
         .assert()
         .failure();
@@ -951,20 +951,20 @@ fn remote_remove_clears_default() {
     create_remote_store(&home, "acme/vault");
     // Set acme/vault as the default.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "default", "acme/vault"])
         .assert()
         .success();
     // Remove the store.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "remove", "acme/vault"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Cleared default store"));
     // Default should now be "none set".
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "remote", "default"])
         .assert()
         .success()
@@ -979,7 +979,7 @@ fn sync_no_stores_shows_hint() {
     // Note: no --store flag; sync resolves stores independently via list_remotes().
     let (home, _store) = setup();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["sync"])
         .assert()
         .success()
@@ -993,7 +993,7 @@ fn sync_specific_store() {
     let s = store_flag(&store);
     create_remote_store(&home, "acme/vault");
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "sync", "acme/vault"])
         .assert()
         .success()
@@ -1007,7 +1007,7 @@ fn sync_no_rekey_flag_skips_rekey() {
     let s = store_flag(&store);
     create_remote_store(&home, "acme/vault");
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "sync", "acme/vault", "--no-rekey"])
         .assert()
         .success()
@@ -1021,7 +1021,7 @@ fn sync_invalid_slug_fails() {
     let (home, store) = setup();
     let s = store_flag(&store);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "sync", "notaslug"])
         .assert()
         .failure();
@@ -1074,7 +1074,7 @@ fn git_store_scoped_status() {
     let remote = create_remote_store(&home, "acme/vault");
     init_git_repo(&remote);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/vault", "git", "status"])
         .assert()
         .success();
@@ -1087,7 +1087,7 @@ fn git_defaults_to_status() {
     let remote = create_remote_store(&home, "acme/vault");
     init_git_repo(&remote);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/vault", "git"])
         .assert()
         .success()
@@ -1105,7 +1105,7 @@ fn git_all_runs_in_each_store() {
     init_git_repo(&r1);
     init_git_repo(&r2);
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["git", "--all", "status"])
         .assert()
         .success()
@@ -1118,7 +1118,7 @@ fn git_no_store_no_all_errors() {
     // Without --remote, --store, or --all, git returns a clear error.
     let (home, _store) = setup();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["git", "status"])
         .assert()
         .failure();
@@ -1132,7 +1132,7 @@ fn git_passthrough_respects_flags() {
     init_git_repo(&remote);
     // `git log` on a repo with one commit should succeed and show the message.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/vault", "git", "log", "--oneline"])
         .assert()
         .success()
@@ -1150,7 +1150,7 @@ fn auto_init_on_first_command() {
     let cwd = TempDir::new().unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", &fake_home)
+        .env("HIMITSU_CONFIG", fake_home.join("config.yaml"))
         .current_dir(cwd.path())
         .args(["ls"])
         .assert()
@@ -1167,7 +1167,7 @@ fn auto_init_prints_notice_to_stderr() {
     let cwd = TempDir::new().unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", &fake_home)
+        .env("HIMITSU_CONFIG", fake_home.join("config.yaml"))
         .current_dir(cwd.path())
         .args(["ls"])
         .assert()
@@ -1184,7 +1184,7 @@ fn auto_init_then_command_continues() {
 
     // ls with no stores: returns 0 and prints nothing (empty).
     himitsu()
-        .env("HIMITSU_HOME", &fake_home)
+        .env("HIMITSU_CONFIG", fake_home.join("config.yaml"))
         .current_dir(cwd.path())
         .args(["ls"])
         .assert()
@@ -1199,13 +1199,13 @@ fn explicit_store_prompt_creates_store_on_accept() {
     let store = home.path().join("new-store");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .write_stdin("\n")
         .args(["--store", &store.to_string_lossy(), "ls"])
         .assert()
@@ -1226,13 +1226,13 @@ fn explicit_store_prompt_aborts_on_decline() {
     let store = home.path().join("declined-store");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init"])
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .write_stdin("n\n")
         .args(["--store", &store.to_string_lossy(), "ls"])
         .assert()
@@ -1254,7 +1254,7 @@ fn init_shows_wizard_output_on_first_run() {
 
     // First-ever init: wizard summary.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init"])
         .assert()
         .success()
@@ -1269,7 +1269,7 @@ fn init_idempotent_shows_already_initialized() {
 
     // Second run: already-initialized message.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &store_flag(&store), "init"])
         .assert()
         .success()
@@ -1283,7 +1283,7 @@ fn init_with_name_registers_store_as_default() {
     let slug = "myorg/myproject";
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init", "--name", slug])
         .assert()
         .success()
@@ -1309,7 +1309,7 @@ fn lazy_clone_failure_shows_helpful_tip() {
     let (home, _store) = setup();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["-r", "ghost/nonexistent", "ls"])
         .assert()
         .failure()
@@ -1329,14 +1329,14 @@ fn resolve_store_via_global_config_default() {
 
     // Set the default store in global config.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["remote", "default", slug])
         .assert()
         .success();
 
     // Now `ls` should succeed without any --remote or --store flag.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["ls"])
         .assert()
         .success();
@@ -1358,7 +1358,7 @@ fn resolve_store_via_project_config() {
 
     // Running `ls` from the project directory should resolve via the project config.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .current_dir(project_dir.path())
         .args(["ls"])
         .assert()
@@ -1383,7 +1383,7 @@ fn resolve_store_remote_flag_overrides_project_config() {
 
     // With --remote, the override store should be used (not the project config one).
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .current_dir(project_dir.path())
         .args(["-r", override_slug, "ls"])
         .assert()
@@ -1402,7 +1402,7 @@ fn resolve_store_project_config_over_global_config() {
 
     // Set global default.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["remote", "default", global_slug])
         .assert()
         .success();
@@ -1410,7 +1410,7 @@ fn resolve_store_project_config_over_global_config() {
     // Write a secret to the project store so we can tell which one was used.
     let project_path = home.path().join("state/stores/myorg/local");
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &project_path.to_string_lossy(),
@@ -1430,7 +1430,7 @@ fn resolve_store_project_config_over_global_config() {
 
     // Should read the secret from the project store, not the global one.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .current_dir(project_dir.path())
         .args(["get", "prod/MARKER"])
         .assert()
@@ -1447,7 +1447,7 @@ fn resolve_store_single_implicit() {
 
     // `rekey` is in `needs_store` and is safe to run (no-ops on an empty store).
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["rekey"])
         .assert()
         .success();
@@ -1464,7 +1464,7 @@ fn resolve_store_ambiguous_error_is_actionable() {
     // `get` is in `needs_store`, so it calls resolve_store and hits the
     // ambiguous-store error when no default is configured.
     let output = himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["get", "prod/SOME_KEY"])
         .assert()
         .failure();
@@ -1491,12 +1491,12 @@ fn generate_basic_stdout() {
 
     // Set secrets in the store.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/DB_PASSWORD", "hunter2"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/API_KEY", "sk_dev_123"])
         .assert()
         .success();
@@ -1509,7 +1509,7 @@ fn generate_basic_stdout() {
     );
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1526,7 +1526,7 @@ fn generate_alias_entry() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/DB_PASSWORD", "secretpass"])
         .assert()
         .success();
@@ -1539,7 +1539,7 @@ fn generate_alias_entry() {
     );
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1556,7 +1556,7 @@ fn generate_glob_entry() {
     // Set multiple secrets under dev/
     for (path, val) in [("dev/ALPHA", "alpha123"), ("dev/BETA", "beta456")] {
         himitsu()
-            .env("HIMITSU_HOME", home.path())
+            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
             .args(["--store", &s, "set", path, val])
             .assert()
             .success();
@@ -1566,7 +1566,7 @@ fn generate_glob_entry() {
     write_project_config(project_dir.path(), "envs:\n  dev:\n    - \"dev/*\"\n");
 
     let out = himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1584,12 +1584,12 @@ fn generate_single_entry_only_that_key() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/API_KEY", "only_this"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/OTHER", "not_this"])
         .assert()
         .success();
@@ -1599,7 +1599,7 @@ fn generate_single_entry_only_that_key() {
     write_project_config(project_dir.path(), "envs:\n  dev:\n    - dev/API_KEY\n");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1620,7 +1620,7 @@ fn generate_no_project_config_errors() {
     let empty_dir = tempfile::tempdir().unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout"])
         .current_dir(empty_dir.path())
         .assert()
@@ -1637,7 +1637,7 @@ fn generate_unknown_env_errors() {
     write_project_config(project_dir.path(), "envs:\n  dev:\n    - dev/X\n");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -1659,7 +1659,7 @@ fn project_config_discovers_dotconfig_variant() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/KEY", "dotcfg_val"])
         .assert()
         .success();
@@ -1674,7 +1674,7 @@ fn project_config_discovers_dotconfig_variant() {
     .unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1690,7 +1690,7 @@ fn project_config_discovers_dothimitsu_variant() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/SECRET", "dothimitsu_val"])
         .assert()
         .success();
@@ -1705,7 +1705,7 @@ fn project_config_discovers_dothimitsu_variant() {
     .unwrap();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
@@ -1721,12 +1721,12 @@ fn generate_all_envs_stdout() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/D_KEY", "devval"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/P_KEY", "prodval"])
         .assert()
         .success();
@@ -1738,7 +1738,7 @@ fn generate_all_envs_stdout() {
     );
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout"])
         .current_dir(project_dir.path())
         .assert()
@@ -1755,7 +1755,7 @@ fn generate_all_envs_stdout() {
 /// Returns the home TempDir with keys and config.
 fn setup_named_store(home: &TempDir, slug: &str) {
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init", "--name", slug])
         .assert()
         .success();
@@ -1770,7 +1770,7 @@ fn get_with_qualified_provider_prefix() {
 
     // Store a secret in the named store via --remote.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--remote",
             "acme/secrets",
@@ -1783,7 +1783,7 @@ fn get_with_qualified_provider_prefix() {
 
     // Retrieve via provider-prefixed qualified ref (no --remote needed).
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["get", "github:acme/secrets/prod/API_KEY"])
         .assert()
         .success()
@@ -1798,14 +1798,14 @@ fn set_with_qualified_provider_prefix() {
 
     // Store via provider-prefixed qualified ref.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["set", "github:acme/secrets/staging/DB_PASS", "dbpass456"])
         .assert()
         .success();
 
     // Verify by reading back with --remote.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/secrets", "get", "staging/DB_PASS"])
         .assert()
         .success()
@@ -1820,12 +1820,12 @@ fn ls_with_qualified_provider_prefix_lists_store_secrets() {
 
     // Populate a few secrets.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/secrets", "set", "prod/API_KEY", "v1"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/secrets", "set", "dev/API_KEY", "v2"])
         .assert()
         .success();
@@ -1833,7 +1833,7 @@ fn ls_with_qualified_provider_prefix_lists_store_secrets() {
     // `ls github:acme/secrets` → depth 1 by default, so subdirectories are
     // collapsed: shows "dev/" and "prod/" but not their children.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["ls", "github:acme/secrets"])
         .assert()
         .success()
@@ -1842,7 +1842,7 @@ fn ls_with_qualified_provider_prefix_lists_store_secrets() {
 
     // With -R (recursive) all leaf paths are visible.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["ls", "-R", "github:acme/secrets"])
         .assert()
         .success()
@@ -1856,12 +1856,12 @@ fn ls_with_qualified_prefix_filters_secrets() {
     setup_named_store(&home, "acme/secrets");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/secrets", "set", "prod/API_KEY", "v1"])
         .assert()
         .success();
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--remote", "acme/secrets", "set", "dev/API_KEY", "v2"])
         .assert()
         .success();
@@ -1870,7 +1870,7 @@ fn ls_with_qualified_prefix_filters_secrets() {
     // prod/API_KEY is one level under prod/ so it shows as a leaf.
     // dev/* must be absent.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["ls", "github:acme/secrets/prod"])
         .assert()
         .success()
@@ -1883,7 +1883,7 @@ fn get_qualified_unknown_store_returns_error() {
     let home = TempDir::new().unwrap();
     // Init home (keys only, no named store).
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["init"])
         .assert()
         .success();
@@ -1894,7 +1894,7 @@ fn get_qualified_unknown_store_returns_error() {
     setup_named_store(&home, "dummy/store");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["get", "github:no/such/prod/KEY"])
         .assert()
         .failure();
@@ -1919,14 +1919,14 @@ fn set_and_get_with_custom_recipients_path() {
 
     // `set` should find recipients in the custom directory.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "prod/TOKEN", "value123"])
         .assert()
         .success();
 
     // `get` should decrypt the secret successfully.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "prod/TOKEN"])
         .assert()
         .success()
@@ -1940,7 +1940,7 @@ fn rekey_with_custom_recipients_path() {
 
     // First set a secret using the default path.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "set", "dev/SECRET", "rekey_me"])
         .assert()
         .success();
@@ -1956,14 +1956,14 @@ fn rekey_with_custom_recipients_path() {
 
     // `rekey` should work with the custom recipients path.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "rekey"])
         .assert()
         .success();
 
     // `get` should still decrypt correctly after rekey.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "get", "dev/SECRET"])
         .assert()
         .success()
@@ -2000,7 +2000,7 @@ fn recipient_add_with_custom_recipients_path() {
     };
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
             "--store",
             &s,
@@ -2120,7 +2120,7 @@ fn test_check_up_to_date() {
     let _bare = setup_synced_store(&home, "myorg", "mypkg");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["check", "myorg/mypkg", "--offline"])
         .assert()
         .success()
@@ -2136,7 +2136,7 @@ fn test_check_behind_exits_nonzero() {
     make_store_behind(&bare, &stores_dir);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["check", "myorg/behind", "--offline"])
         .assert()
         .failure()
@@ -2150,7 +2150,7 @@ fn test_check_no_stores() {
     // No stores in stores_dir → should print a message and exit 0.
     // (setup() creates a --store-based init, not a slug-based remote store.)
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["check"])
         .assert()
         .success()
@@ -2195,7 +2195,7 @@ fn test_check_offline_skips_fetch() {
     // --offline: fetch is skipped, no network error.  No remote tracking branch
     // means the command prints a warning about no tracking branch but exits 0.
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["check", "myorg/offline", "--offline"])
         .assert()
         .success()
@@ -2210,14 +2210,14 @@ fn write_and_read_roundtrip() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "write", "prod/TOKEN", "abc123"])
         .assert()
         .success()
         .stdout("");
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "read", "prod/TOKEN"])
         .assert()
         .success()
@@ -2230,14 +2230,14 @@ fn write_reads_from_stdin_when_no_value() {
     let s = store_flag(&store);
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "write", "prod/FROM_STDIN"])
         .write_stdin("piped-value")
         .assert()
         .success();
 
     himitsu()
-        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "read", "prod/FROM_STDIN"])
         .assert()
         .success()

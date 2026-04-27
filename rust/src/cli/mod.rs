@@ -658,7 +658,7 @@ fn prompt_to_create_store(store: &Path, data_dir: &Path, state_dir: &Path) -> Re
 /// Determine the recipients directory override for a resolved store.
 ///
 /// Resolution order (first `Some` wins):
-/// 1. Store-internal `.himitsu/config.yaml` → `StoreConfig.recipients_path`
+/// 1. Store-internal `.himitsu/config.yaml` → `recipients_path`
 /// 2. Project config (walked up from CWD) → `store.recipients_path`
 /// 3. `None` → use default `.himitsu/recipients/` layout
 fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
@@ -675,10 +675,8 @@ fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
 
     // 2. Check project config
     if let Some((project_cfg, _)) = crate::config::load_project_config() {
-        if let Some(ref store_cfg) = project_cfg.store {
-            if store_cfg.recipients_path.is_some() {
-                return store_cfg.recipients_path.clone();
-            }
+        if project_cfg.recipients_path.is_some() {
+            return project_cfg.recipients_path;
         }
     }
 

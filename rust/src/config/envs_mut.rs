@@ -243,23 +243,21 @@ pub fn read(
     Ok((resolved, envs))
 }
 
-/// Process-global mutex guarding mutations to `HIMITSU_HOME` in tests.
+/// Process-global mutex guarding mutations to `HIMITSU_CONFIG` in tests.
 ///
 /// Several test modules (this one plus `tui::views::envs`) need to swap the
-/// global config dir under their feet. Those tests MUST acquire this lock
-/// before mutating the env var so they never clobber each other under
+/// global config file path under their feet. Those tests MUST acquire this
+/// lock before mutating the env var so they never clobber each other under
 /// `cargo test`'s default parallelism.
 #[cfg(test)]
-pub(crate) static HIMITSU_HOME_TEST_GUARD: std::sync::Mutex<()> =
+pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> =
     std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Re-export the shared guard under the old local name so the existing
-    // tests in this file keep reading naturally.
-    use super::HIMITSU_HOME_TEST_GUARD as ENV_GUARD;
+    use super::HIMITSU_CONFIG_TEST_GUARD as ENV_GUARD;
 
     struct HimitsuHome {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -271,7 +269,7 @@ mod tests {
         fn new() -> Self {
             let guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
             let tmp = tempfile::tempdir().unwrap();
-            std::env::set_var("HIMITSU_HOME", tmp.path());
+            std::env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
             let path = tmp.path().to_path_buf();
             Self {
                 _guard: guard,
@@ -283,7 +281,7 @@ mod tests {
 
     impl Drop for HimitsuHome {
         fn drop(&mut self) {
-            std::env::remove_var("HIMITSU_HOME");
+            std::env::remove_var("HIMITSU_CONFIG");
         }
     }
 
