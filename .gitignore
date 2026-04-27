@@ -9,3 +9,12 @@ node_modules
 # bv (beads viewer) local config and caches
 .bv/
 *.local.json
+
+# Editor and workspace artifacts
+.zed/
+.claude/worktrees/
+.meta/
+
+# Local demo and scratch files
+amp
+demo/
