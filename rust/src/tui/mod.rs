@@ -10,6 +10,7 @@ mod app;
 mod event;
 #[cfg(test)]
 mod harness;
+mod icons;
 pub mod keymap;
 mod terminal;
 mod theme;
@@ -37,6 +38,7 @@ pub fn run(ctx: &Context) -> Result<()> {
     // user sees typos immediately instead of silently losing customization.
     let tui = Config::load(&config_path())?.tui;
     theme::set_theme(&tui.theme)?;
+    icons::set_use_nerd_fonts(tui.nerd_fonts);
     let keymap = tui.keys;
 
     let _guard = terminal::install()?;
@@ -56,6 +58,7 @@ pub fn run(ctx: &Context) -> Result<()> {
 pub fn run_init_flow() -> Result<()> {
     let tui = Config::load(&config_path())?.tui;
     theme::set_theme(&tui.theme)?;
+    icons::set_use_nerd_fonts(tui.nerd_fonts);
 
     let mut guard = Some(terminal::install()?);
     let mut terminal = Some(terminal::new()?);
@@ -111,6 +114,7 @@ pub fn run_init_flow() -> Result<()> {
 
     let tui = Config::load(&config_path())?.tui;
     theme::set_theme(&tui.theme)?;
+    icons::set_use_nerd_fonts(tui.nerd_fonts);
 
     let ctx = Context {
         data_dir: crate::config::data_dir(),

@@ -479,18 +479,13 @@ impl NewSecretView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let header = Line::from(vec![
-            Span::styled(
-                " himitsu ",
-                Style::default()
-                    .fg(theme::on_accent())
-                    .bg(theme::accent())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("new secret", Style::default().add_modifier(Modifier::BOLD)),
-        ]);
-        frame.render_widget(Paragraph::new(header), area);
+        let mut spans = theme::brand_chip("秘 himitsu");
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "new secret",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn draw_single_line(

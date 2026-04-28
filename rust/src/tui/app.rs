@@ -120,6 +120,9 @@ impl App {
                     self.view = View::Search(SearchView::new(&self.ctx));
                     self.push_toast(format!("switched to {label}"), ToastKind::Info);
                 }
+                SearchAction::ShowHelp => {
+                    self.help = Some(self.help_for_current_view());
+                }
                 SearchAction::Copied(path) => {
                     self.push_toast(format!("copied {path}"), ToastKind::Success);
                 }

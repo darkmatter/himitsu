@@ -320,23 +320,18 @@ impl EnvsView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let header = Line::from(vec![
-            Span::styled(
-                " himitsu ",
-                Style::default()
-                    .fg(theme::on_accent())
-                    .bg(theme::accent())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("envs", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled(
-                format!("{} labels", self.label_count()),
-                Style::default().fg(theme::muted()),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(header), area);
+        let mut spans = theme::brand_chip("秘 himitsu");
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "envs",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} labels", self.label_count()),
+            Style::default().fg(theme::muted()),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn label_count(&self) -> usize {

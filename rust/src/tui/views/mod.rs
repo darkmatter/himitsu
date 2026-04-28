@@ -1,5 +1,6 @@
 //! Top-level view modules for the ratatui TUI.
 
+pub mod command_palette;
 pub mod envs;
 pub mod help;
 pub mod init_wizard;

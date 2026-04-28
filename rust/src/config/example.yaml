@@ -69,6 +69,11 @@ auto_pull: false
 # tui:
 #   theme: apathy-storm
 #
+#   # Opt in to Nerd Font glyphs (e.g. git logo for the sync state pill).
+#   # Default is false because there's no reliable way to detect Nerd Font
+#   # support at runtime. Enable only if your terminal uses a patched font.
+#   nerd_fonts: false
+#
 # Customize keybindings for the interactive terminal UI. Any binding left out
 # keeps its default. Bindings are lists — assign multiple keys to one action.
 #

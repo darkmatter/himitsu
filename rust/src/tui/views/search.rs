@@ -24,7 +24,9 @@ use crate::cli::search::{humanize_age, parse_ts, search_core, SearchResult};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
+use crate::tui::icons;
 use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
@@ -40,6 +42,9 @@ pub enum SearchAction {
     OpenEnvs,
     /// User picked a new active store via the embedded picker overlay.
     SwitchStore(PathBuf),
+    /// User picked "show help" from the command palette — the router
+    /// should open the contextual help overlay just like pressing `?`.
+    ShowHelp,
     /// User pressed Esc / Ctrl-C — root view, so quit the app.
     Quit,
     /// User pressed Ctrl+Y and we successfully copied the selected secret
@@ -108,6 +113,10 @@ pub struct SearchView {
     ctx: Context,
     /// Embedded store-picker overlay. When `Some`, it intercepts every key.
     picker: Option<StorePicker>,
+    /// Embedded command-palette overlay. When `Some`, it intercepts every
+    /// key just like the store picker. Mutually exclusive with `picker`
+    /// because both are modal popups.
+    palette: Option<CommandPalette>,
     /// Health of the active store's git checkout, checked once at startup.
     store_health: StoreHealth,
 }
@@ -128,6 +137,7 @@ impl SearchView {
             list_state: ListState::default(),
             ctx: ctx_owned,
             picker: None,
+            palette: None,
             store_health,
         };
         view.refresh_results();
@@ -135,6 +145,21 @@ impl SearchView {
     }
 
     pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> SearchAction {
+        // Palette overlay swallows every key while open.
+        if let Some(palette) = self.palette.as_mut() {
+            match palette.on_key(key) {
+                CommandPaletteOutcome::Pending => return SearchAction::None,
+                CommandPaletteOutcome::Cancelled => {
+                    self.palette = None;
+                    return SearchAction::None;
+                }
+                CommandPaletteOutcome::Selected(cmd) => {
+                    self.palette = None;
+                    return self.dispatch_command(cmd);
+                }
+            }
+        }
+
         // Picker overlay swallows every key while open.
         if let Some(picker) = self.picker.as_mut() {
             match picker.on_key(key) {
@@ -155,6 +180,10 @@ impl SearchView {
         // new_secret to a printable character still has an escape hatch.
         if keymap.quit.matches(&key) {
             return SearchAction::Quit;
+        }
+        if keymap.command_palette.matches(&key) {
+            self.palette = Some(CommandPalette::new());
+            return SearchAction::None;
         }
         if keymap.new_secret.matches(&key) {
             return SearchAction::NewSecret;
@@ -325,9 +354,34 @@ impl SearchView {
         self.draw_results(frame, chunks[3]);
         self.draw_footer(frame, chunks[5]);
 
-        // Render the picker overlay last so it sits on top of the rest.
+        // Render the picker / palette overlays last so they sit on top of
+        // the rest of the chrome.
         if let Some(picker) = self.picker.as_mut() {
             picker.draw(frame);
+        }
+        if let Some(palette) = self.palette.as_mut() {
+            palette.draw(frame);
+        }
+    }
+
+    /// Translate a [`Command`] picked from the palette into a
+    /// [`SearchAction`] the router already knows how to handle. For
+    /// commands that need the next view to open via state mutation
+    /// (currently just SwitchStore), we install the picker here and
+    /// return [`SearchAction::None`] so the next frame draws the picker.
+    fn dispatch_command(&mut self, cmd: Command) -> SearchAction {
+        match cmd {
+            Command::NewSecret => SearchAction::NewSecret,
+            Command::SwitchStore => {
+                self.picker = Some(StorePicker::new(
+                    &self.ctx.stores_dir(),
+                    self.ctx.store.clone(),
+                ));
+                SearchAction::None
+            }
+            Command::Envs => SearchAction::OpenEnvs,
+            Command::Help => SearchAction::ShowHelp,
+            Command::Quit => SearchAction::Quit,
         }
     }
 
@@ -358,30 +412,37 @@ impl SearchView {
             .split(area);
 
         // Left: brand chip + active view name. The chip carries the project's
-        // namesake kanji (秘 = "secret", first half of 秘密 / himitsu) so the
-        // logo reads as a brand mark and not just plain text on a colored
-        // background.
-        let left = Line::from(vec![
-            Span::styled(
-                " 秘 himitsu ",
-                Style::default()
-                    .fg(theme::on_accent())
-                    .bg(theme::accent())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("search", Style::default().add_modifier(Modifier::BOLD)),
-        ]);
-        frame.render_widget(Paragraph::new(left), cols[0]);
+        // namesake kanji (秘 = "secret", first half of 秘密 / himitsu).
+        let mut left_spans = theme::brand_chip("秘 himitsu");
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled(
+            "search",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
 
-        // Right: store health pill, right-aligned within the second column.
-        let right = Line::from(vec![
-            Span::styled("●", Style::default().fg(health_color)),
-            Span::raw(" "),
-            Span::styled(health_label, Style::default().fg(health_color)),
-            Span::raw(" "),
-        ]);
-        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
+        // Right: store health indicator, right-aligned within the second
+        // column. The healthy steady-state (`Synced`) renders as a quiet
+        // colored dot + label on the default background — we don't want a
+        // bright green pill screaming at the user when nothing is wrong.
+        // Every other state still uses the colored pill so problems remain
+        // visually loud.
+        let right_spans = if matches!(self.store_health, StoreHealth::Synced) {
+            vec![
+                Span::styled(icons::health(), Style::default().fg(health_color)),
+                Span::raw(" "),
+                Span::styled(health_label, Style::default().fg(health_color)),
+            ]
+        } else {
+            theme::pill_with(
+            format!("{} {health_label}", icons::health()),
+            health_color,
+            theme::on_accent(),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
+            cols[1],
+        );
     }
 
     fn draw_input(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -587,25 +648,24 @@ impl SearchView {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        // Note: `ctrl-s switch store` is intentionally hidden here — it lives
-        // only in the help overlay (`?`) to keep the visible footer focused
-        // on the most-used bindings.
+        // The footer keeps only the most-used bindings. Anything else —
+        // envs, help, switch-store, and any future commands — is reachable
+        // through the command palette (Ctrl+P), so the row stays short and
+        // doesn't need to grow as the catalog of commands does.
         let footer = Style::default().fg(theme::footer_text());
         let line = Line::from(vec![
             Span::styled("↑/↓", Style::default().fg(theme::accent())),
-            Span::styled(" navigate    ", footer),
+            Span::styled(" navigate    ", footer),
             Span::styled("enter", Style::default().fg(theme::accent())),
-            Span::styled(" open    ", footer),
-            Span::styled("ctrl-n", Style::default().fg(theme::accent())),
-            Span::styled(" new    ", footer),
-            Span::styled("ctrl-y", Style::default().fg(theme::accent())),
-            Span::styled(" copy    ", footer),
-            Span::styled("E", Style::default().fg(theme::accent())),
-            Span::styled(" envs    ", footer),
-            Span::styled("?", Style::default().fg(theme::accent())),
-            Span::styled(" help    ", footer),
+            Span::styled(" open    ", footer),
+            Span::styled("^n", Style::default().fg(theme::accent())),
+            Span::styled(" new    ", footer),
+            Span::styled("^y", Style::default().fg(theme::accent())),
+            Span::styled(" copy    ", footer),
+            Span::styled("^p", Style::default().fg(theme::accent())),
+            Span::styled(" commands    ", footer),
             Span::styled("esc", Style::default().fg(theme::accent())),
-            Span::styled(" quit", footer),
+            Span::styled(" quit", footer),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -787,6 +847,7 @@ impl SearchView {
             ("↑/↓", "navigate"),
             ("enter", "open selection"),
             ("backspace", "delete char"),
+            ("ctrl-p", "open command palette"),
             ("ctrl-n", "new secret"),
             ("ctrl-s", "switch store"),
             ("ctrl-y", "copy selection to clipboard"),

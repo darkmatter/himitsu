@@ -128,6 +128,14 @@ pub struct TuiConfig {
     #[serde(default = "default_tui_theme")]
     pub theme: String,
 
+    /// Opt in to Nerd Font glyphs (e.g.  for git,  for stores).
+    /// Defaults to `false` because there is no reliable way to detect
+    /// font support at runtime — if the user's terminal lacks a Nerd Font
+    /// the icons render as tofu boxes. Tools like starship and lazygit
+    /// handle this the same way.
+    #[serde(default)]
+    pub nerd_fonts: bool,
+
     /// User-configurable keybindings. Missing entries fall back to the
     /// defaults in [`KeyMap::default`].
     #[serde(default)]
@@ -138,6 +146,7 @@ impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             theme: default_tui_theme(),
+            nerd_fonts: false,
             keys: KeyMap::default(),
         }
     }

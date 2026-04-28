@@ -8,7 +8,8 @@
 use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
 
 use crate::error::{HimitsuError, Result};
 
@@ -151,6 +152,32 @@ fn pick_random_theme_name() -> &'static str {
 /// [`Color::Reset`] to inherit the terminal's native background.
 pub(crate) fn background() -> Color {
     current().background
+}
+
+/// Render `label` as a single accent-background chip with one cell of
+/// horizontal padding on either side. Returns a one-span vector so callers
+/// can extend the surrounding [`Line`] without special-casing pill vs
+/// non-pill output.
+pub(crate) fn brand_chip(label: &str) -> Vec<Span<'_>> {
+    chip(label, accent(), on_accent(), true)
+}
+
+/// Like [`brand_chip`] but with caller-chosen background and foreground;
+/// used for status badges (sync state, toasts) where the chip color is
+/// state-dependent.
+pub(crate) fn pill_with(label: String, bg: Color, fg: Color) -> Vec<Span<'static>> {
+    chip(&label, bg, fg, false)
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect()
+}
+
+fn chip(label: &str, bg: Color, fg: Color, bold: bool) -> Vec<Span<'_>> {
+    let mut style = Style::default().fg(fg).bg(bg);
+    if bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    vec![Span::styled(format!(" {label} "), style)]
 }
 
 /// Highlight / hotkey / selected-row background. The dominant brand color.

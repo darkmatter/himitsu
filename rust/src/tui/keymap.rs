@@ -361,6 +361,10 @@ pub struct KeyMap {
     pub help: Vec<KeyBinding>,
 
     // ── Search view ──────────────────────────────────────────────────
+    /// Open the command palette overlay (default: Ctrl+P). The palette is
+    /// the canonical way to discover and run commands; individual hotkeys
+    /// remain as power-user shortcuts.
+    pub command_palette: Vec<KeyBinding>,
     /// Open the new-secret form from the search view (default: Ctrl+N).
     pub new_secret: Vec<KeyBinding>,
     /// Open the store-picker overlay (default: Ctrl+S).
@@ -402,6 +406,7 @@ impl Default for KeyMap {
             quit: vec![KeyBinding::bare(KeyCode::Esc), KeyBinding::ctrl('c')],
             help: vec![KeyBinding::bare(KeyCode::Char('?'))],
 
+            command_palette: vec![KeyBinding::ctrl('p')],
             new_secret: vec![KeyBinding::ctrl('n')],
             switch_store: vec![KeyBinding::ctrl('s')],
             copy_selected: vec![KeyBinding::ctrl('y')],
