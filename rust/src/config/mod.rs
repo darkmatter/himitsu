@@ -58,6 +58,7 @@ impl std::str::FromStr for KeyProvider {
 /// | `data_dir`       | `HIMITSU_DATA_DIR`        |
 /// | `context`        | `HIMITSU_CONTEXT`         |
 /// | `auto_pull`      | `HIMITSU_AUTO_PULL`       |
+/// | `tui.theme`      | `HIMITSU_TUI_THEME`       |
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default remote store slug (e.g. `"myorg/secrets"`).
@@ -94,7 +95,7 @@ pub struct Config {
     #[serde(default)]
     pub auto_pull: bool,
 
-    /// TUI-specific settings — currently just the configurable keymap.
+    /// TUI-specific settings — theme selection plus configurable keymap.
     /// Users override individual actions under `tui.keys`; anything left
     /// out falls back to [`KeyMap::default`], which reproduces the
     /// hardcoded bindings that shipped before this section existed.
@@ -120,16 +121,30 @@ impl Config {
 }
 
 /// `tui:` section of the global config.
-///
-/// Currently holds a single `keys` field, but is kept in its own struct so
-/// future TUI settings (themes, initial view, double-width handling…) can
-/// land without breaking existing config files.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TuiConfig {
+    /// Built-in color theme name. Missing values fall back to `random`,
+    /// which picks one of the bundled palettes on each launch.
+    #[serde(default = "default_tui_theme")]
+    pub theme: String,
+
     /// User-configurable keybindings. Missing entries fall back to the
     /// defaults in [`KeyMap::default`].
     #[serde(default)]
     pub keys: KeyMap,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_tui_theme(),
+            keys: KeyMap::default(),
+        }
+    }
+}
+
+fn default_tui_theme() -> String {
+    "random".to_string()
 }
 
 /// Per-project config discovered by walking up from the current directory.
@@ -1182,8 +1197,7 @@ generate:
   age_recipients:
     - age1abc
     - age1def
-store:
-  recipients_path: keys/recipients
+recipients_path: keys/recipients
 "#;
         let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
@@ -1202,7 +1216,6 @@ store:
         assert_eq!(gen.format, "sops");
         assert_eq!(gen.age_recipients, vec!["age1abc", "age1def"]);
 
-        let store = cfg.store.unwrap();
-        assert_eq!(store.recipients_path.as_deref(), Some("keys/recipients"));
+        assert_eq!(cfg.recipients_path.as_deref(), Some("keys/recipients"));
     }
 }

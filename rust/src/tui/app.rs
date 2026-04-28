@@ -9,11 +9,13 @@
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::widgets::Clear;
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Clear};
 use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::theme;
 pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::envs::{EnvsAction, EnvsView};
 use crate::tui::views::help::{HelpAction, HelpView};
@@ -233,6 +235,12 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
+        // Paint the theme's background across the entire frame before any
+        // view draws. Themes that want to inherit the terminal's native
+        // background use `Color::Reset`, which is a no-op visually.
+        let bg = Block::default().style(Style::default().bg(theme::background()));
+        frame.render_widget(bg, frame.area());
+
         match &mut self.view {
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
@@ -273,9 +281,7 @@ impl App {
     /// currently active.
     fn help_for_current_view(&self) -> HelpView {
         match &self.view {
-            View::Search(_) => {
-                HelpView::new(SearchView::help_entries(), SearchView::help_title())
-            }
+            View::Search(_) => HelpView::new(SearchView::help_entries(), SearchView::help_title()),
             View::SecretViewer(_) => HelpView::new(
                 SecretViewerView::help_entries(),
                 SecretViewerView::help_title(),
@@ -283,9 +289,7 @@ impl App {
             View::NewSecret(_) => {
                 HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
             }
-            View::Envs(_) => {
-                HelpView::new(EnvsView::help_entries(), EnvsView::help_title())
-            }
+            View::Envs(_) => HelpView::new(EnvsView::help_entries(), EnvsView::help_title()),
         }
     }
 }

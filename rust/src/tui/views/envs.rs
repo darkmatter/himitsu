@@ -14,7 +14,9 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -167,10 +169,7 @@ impl EnvsView {
 
     fn row_index_for(&self, label: &str, scope: Scope) -> Option<usize> {
         self.rows.iter().position(|r| match r {
-            Row::Label {
-                label: l,
-                scope: s,
-            } => l == label && *s == scope,
+            Row::Label { label: l, scope: s } => l == label && *s == scope,
             _ => false,
         })
     }
@@ -235,10 +234,7 @@ impl EnvsView {
                     self.confirm = None;
                     return self.perform_delete(label, scope);
                 }
-                KeyCode::Esc
-                | KeyCode::Char('n')
-                | KeyCode::Char('N')
-                | KeyCode::Enter => {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
                     self.confirm = None;
                     return EnvsAction::None;
                 }
@@ -328,8 +324,8 @@ impl EnvsView {
             Span::styled(
                 " himitsu ",
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(theme::on_accent())
+                    .bg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
@@ -337,7 +333,7 @@ impl EnvsView {
             Span::raw("  "),
             Span::styled(
                 format!("{} labels", self.label_count()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
         ]);
         frame.render_widget(Paragraph::new(header), area);
@@ -351,7 +347,10 @@ impl EnvsView {
     }
 
     fn draw_labels(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let outer = Block::default().borders(Borders::ALL).title(" labels ");
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(" labels ")
+            .title_style(Style::default().fg(theme::border_label()));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
@@ -360,7 +359,7 @@ impl EnvsView {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     msg,
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::muted()),
                 ))),
                 inner,
             );
@@ -380,27 +379,29 @@ impl EnvsView {
                         }
                     ),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme::accent())
                         .add_modifier(Modifier::BOLD),
                 ))),
-                Row::Label { label, .. } => ListItem::new(Line::from(vec![
-                    Span::raw("  "),
-                    Span::raw(label.clone()),
-                ])),
+                Row::Label { label, .. } => {
+                    ListItem::new(Line::from(vec![Span::raw("  "), Span::raw(label.clone())]))
+                }
             })
             .collect();
 
         let list = List::new(items).highlight_style(
             Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
+                .bg(theme::accent())
+                .fg(theme::on_accent())
                 .add_modifier(Modifier::BOLD),
         );
         frame.render_stateful_widget(list, inner, &mut self.list_state);
     }
 
     fn draw_preview(&self, frame: &mut Frame<'_>, area: Rect) {
-        let outer = Block::default().borders(Borders::ALL).title(" preview ");
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(" preview ")
+            .title_style(Style::default().fg(theme::border_label()));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
@@ -408,7 +409,7 @@ impl EnvsView {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     "  select a label",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::muted()),
                 ))),
                 inner,
             );
@@ -426,7 +427,7 @@ impl EnvsView {
             Ok(node) => render_node(&node, 0),
             Err(e) => vec![Line::from(Span::styled(
                 format!("  error: {e}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::danger()),
             ))],
         };
         frame.render_widget(Paragraph::new(lines), inner);
@@ -442,13 +443,10 @@ impl EnvsView {
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| ".himitsu.yaml".to_string())
                 ),
-                Color::Cyan,
+                theme::accent(),
             ),
-            Some((_, Scope::Global)) => (
-                "scope: global".to_string(),
-                Color::Cyan,
-            ),
-            None => ("scope: —".to_string(), Color::DarkGray),
+            Some((_, Scope::Global)) => ("scope: global".to_string(), theme::accent()),
+            None => ("scope: —".to_string(), theme::muted()),
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
@@ -457,15 +455,16 @@ impl EnvsView {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
+        let footer = Style::default().fg(theme::footer_text());
         let line = Line::from(vec![
-            Span::styled("↑/↓ / j/k", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("d", Style::default().fg(Color::Cyan)),
-            Span::raw(" delete  "),
-            Span::styled("?", Style::default().fg(Color::Cyan)),
-            Span::raw(" help  "),
-            Span::styled("esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back"),
+            Span::styled("↑/↓ / j/k", Style::default().fg(theme::accent())),
+            Span::styled(" navigate    ", footer),
+            Span::styled("d", Style::default().fg(theme::accent())),
+            Span::styled(" delete    ", footer),
+            Span::styled("?", Style::default().fg(theme::accent())),
+            Span::styled(" help    ", footer),
+            Span::styled("esc", Style::default().fg(theme::accent())),
+            Span::styled(" back", footer),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -476,12 +475,12 @@ impl EnvsView {
         };
         let area = centered_rect(50, 20, frame.area());
         frame.render_widget(Clear, area);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " confirm delete ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            " confirm delete ",
+            Style::default()
+                .fg(theme::border_label())
+                .add_modifier(Modifier::BOLD),
+        ));
         let scope_str = match pending.scope {
             Scope::Project => "project",
             Scope::Global => "global",
@@ -493,7 +492,7 @@ impl EnvsView {
                 Span::styled(
                     format!("`{}`", pending.label),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(theme::warning())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(" from {scope_str} scope?")),
@@ -501,9 +500,9 @@ impl EnvsView {
             Line::from(""),
             Line::from(vec![
                 Span::raw("  "),
-                Span::styled("[y]", Style::default().fg(Color::Red)),
+                Span::styled("[y]", Style::default().fg(theme::danger())),
                 Span::raw(" yes    "),
-                Span::styled("[N]", Style::default().fg(Color::Cyan)),
+                Span::styled("[N]", Style::default().fg(theme::accent())),
                 Span::raw(" cancel"),
             ]),
         ];
@@ -524,10 +523,7 @@ fn render_node(node: &EnvNode, depth: usize) -> Vec<Line<'static>> {
         EnvNode::Leaf { secret_path } => {
             out.push(Line::from(vec![
                 Span::raw("  ".repeat(depth + 1)),
-                Span::styled(
-                    "→ ",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled("→ ", Style::default().fg(theme::muted())),
                 Span::raw(secret_path.clone()),
             ]));
         }
@@ -535,7 +531,7 @@ fn render_node(node: &EnvNode, depth: usize) -> Vec<Line<'static>> {
             if depth == 0 && children.is_empty() {
                 out.push(Line::from(Span::styled(
                     "  (empty)",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::muted()),
                 )));
                 return out;
             }
@@ -547,13 +543,10 @@ fn render_node(node: &EnvNode, depth: usize) -> Vec<Line<'static>> {
                             Span::styled(
                                 key.clone(),
                                 Style::default()
-                                    .fg(Color::Cyan)
+                                    .fg(theme::accent())
                                     .add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(
-                                " = ",
-                                Style::default().fg(Color::DarkGray),
-                            ),
+                            Span::styled(" = ", Style::default().fg(theme::muted())),
                             Span::raw(secret_path.clone()),
                         ]));
                     }
@@ -563,7 +556,7 @@ fn render_node(node: &EnvNode, depth: usize) -> Vec<Line<'static>> {
                             Span::styled(
                                 format!("{key}/"),
                                 Style::default()
-                                    .fg(Color::Yellow)
+                                    .fg(theme::warning())
                                     .add_modifier(Modifier::BOLD),
                             ),
                         ]));
@@ -719,14 +712,24 @@ mod tests {
 
         // Expect: [Header(Project), Label(dev), Label(prod), Header(Global), Label(shared)]
         assert_eq!(view.rows.len(), 5);
-        assert!(matches!(&view.rows[0], Row::Header { scope: Scope::Project }));
+        assert!(matches!(
+            &view.rows[0],
+            Row::Header {
+                scope: Scope::Project
+            }
+        ));
         assert!(
             matches!(&view.rows[1], Row::Label { label, scope: Scope::Project } if label == "dev")
         );
         assert!(
             matches!(&view.rows[2], Row::Label { label, scope: Scope::Project } if label == "prod")
         );
-        assert!(matches!(&view.rows[3], Row::Header { scope: Scope::Global }));
+        assert!(matches!(
+            &view.rows[3],
+            Row::Header {
+                scope: Scope::Global
+            }
+        ));
         assert!(
             matches!(&view.rows[4], Row::Label { label, scope: Scope::Global } if label == "shared")
         );

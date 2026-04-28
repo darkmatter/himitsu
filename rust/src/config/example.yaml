@@ -11,6 +11,7 @@
 #   key_provider   →  HIMITSU_KEY_PROVIDER
 #   data_dir       →  HIMITSU_DATA_DIR
 #   auto_pull      →  HIMITSU_AUTO_PULL  (accepts 1, true, yes)
+#   tui.theme      →  HIMITSU_TUI_THEME
 #
 # See also: project-level config in `himitsu.yaml` (per-repo overrides).
 # ──────────────────────────────────────────────────────────────────────────────
@@ -51,13 +52,29 @@ auto_pull: false
 # TUI settings
 # ──────────────────────────────────────────────────────────────────────────────
 #
+# Customize the interactive terminal UI.
+#
+# Built-in themes:
+#   random           — default; picks one of the bundled palettes on each launch
+#   himitsu          — pastel cyan theme
+#   apathy          — apathy-theme base
+#   apathy-minted   — apathy /// minted
+#   apathy-theory   — apathy /// theory
+#   apathy-storm    — apathy /// storm / apathetic ocean
+#   ayu             — Ayu Dark inspired
+#   catppuccin      — Catppuccin Mocha inspired
+#   material        — Material Ocean inspired
+#   rose-pine       — Rosé Pine inspired
+#
+# tui:
+#   theme: apathy-storm
+#
 # Customize keybindings for the interactive terminal UI. Any binding left out
 # keeps its default. Bindings are lists — assign multiple keys to one action.
 #
 # Key format:   <mod>+<key>  (modifiers: ctrl, alt/opt, shift)
 # Examples:     ctrl+n, shift+tab, esc, F2, ?, r
 #
-# tui:
 #   keys:
 #     # ── Global ──────────────────────────────────────────────────────────
 #     quit:           [esc, ctrl+c]       # exit the app

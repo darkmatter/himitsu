@@ -26,7 +26,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
@@ -391,22 +393,20 @@ impl NewSecretView {
 
         let full = self.path.trim().to_string();
 
-        let recipients = match age::collect_recipients(
-            &self.ctx.store,
-            self.ctx.recipients_path.as_deref(),
-        ) {
-            Ok(r) if !r.is_empty() => r,
-            Ok(_) => {
-                let msg = "no recipients configured for this store".to_string();
-                self.status = Some(msg.clone());
-                return NewSecretAction::Failed(msg);
-            }
-            Err(e) => {
-                let msg = format!("{e}");
-                self.status = Some(msg.clone());
-                return NewSecretAction::Failed(msg);
-            }
-        };
+        let recipients =
+            match age::collect_recipients(&self.ctx.store, self.ctx.recipients_path.as_deref()) {
+                Ok(r) if !r.is_empty() => r,
+                Ok(_) => {
+                    let msg = "no recipients configured for this store".to_string();
+                    self.status = Some(msg.clone());
+                    return NewSecretAction::Failed(msg);
+                }
+                Err(e) => {
+                    let msg = format!("{e}");
+                    self.status = Some(msg.clone());
+                    return NewSecretAction::Failed(msg);
+                }
+            };
 
         let sv = match self.build_secret_value() {
             Ok(sv) => sv,
@@ -483,8 +483,8 @@ impl NewSecretView {
             Span::styled(
                 " himitsu ",
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(theme::on_accent())
+                    .bg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
@@ -505,6 +505,7 @@ impl NewSecretView {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title.to_string())
+            .title_style(Style::default().fg(theme::border_label()))
             .border_style(Self::border_style(focused));
         let mut text = content.to_string();
         if focused {
@@ -518,6 +519,7 @@ impl NewSecretView {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" value ")
+            .title_style(Style::default().fg(theme::border_label()))
             .border_style(Self::border_style(focused));
         let mut text = self.value.clone();
         if focused {
@@ -531,9 +533,9 @@ impl NewSecretView {
 
     fn border_style(focused: bool) -> Style {
         if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(theme::accent())
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme::muted())
         }
     }
 
@@ -541,20 +543,21 @@ impl NewSecretView {
         let line = if let Some(msg) = &self.status {
             Line::from(Span::styled(
                 msg.clone(),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::danger()),
             ))
         } else {
+            let footer = Style::default().fg(theme::footer_text());
             Line::from(vec![
-                Span::styled("tab", Style::default().fg(Color::Cyan)),
-                Span::raw(" next  "),
-                Span::styled("shift-tab", Style::default().fg(Color::Cyan)),
-                Span::raw(" prev  "),
-                Span::styled("ctrl-s / ctrl-w", Style::default().fg(Color::Cyan)),
-                Span::raw(" save  "),
-                Span::styled("esc", Style::default().fg(Color::Cyan)),
-                Span::raw(" cancel  "),
-                Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
-                Span::raw(" quit"),
+                Span::styled("tab", Style::default().fg(theme::accent())),
+                Span::styled(" next    ", footer),
+                Span::styled("shift-tab", Style::default().fg(theme::accent())),
+                Span::styled(" prev    ", footer),
+                Span::styled("ctrl-s / ctrl-w", Style::default().fg(theme::accent())),
+                Span::styled(" save    ", footer),
+                Span::styled("esc", Style::default().fg(theme::accent())),
+                Span::styled(" cancel    ", footer),
+                Span::styled("ctrl-c", Style::default().fg(theme::accent())),
+                Span::styled(" quit", footer),
             ])
         };
         frame.render_widget(Paragraph::new(line), area);

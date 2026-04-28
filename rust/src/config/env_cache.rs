@@ -165,10 +165,7 @@ impl EnvCache {
         }
 
         // Slow path: replace atomically.
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(map_sqlite_err)?;
+        let tx = self.conn.unchecked_transaction().map_err(map_sqlite_err)?;
 
         tx.execute(
             "DELETE FROM envs WHERE scope = ?1 AND config_path = ?2",
@@ -221,7 +218,11 @@ impl EnvCache {
                 .map_err(map_sqlite_err)?;
             let rows = stmt
                 .query_map(params![scope_str, &canonical_str], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(map_sqlite_err)?;
             for row in rows {
@@ -234,7 +235,11 @@ impl EnvCache {
                 .map_err(map_sqlite_err)?;
             let rows = stmt
                 .query_map(params![scope_str], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(map_sqlite_err)?;
             for row in rows {
@@ -255,12 +260,7 @@ impl EnvCache {
     }
 
     /// Look up a single env by (label, scope, config_path).
-    pub fn get(
-        &self,
-        label: &str,
-        scope: Scope,
-        config_path: &Path,
-    ) -> Result<Option<CachedEnv>> {
+    pub fn get(&self, label: &str, scope: Scope, config_path: &Path) -> Result<Option<CachedEnv>> {
         let canonical = canonicalize(config_path);
         let canonical_str = canonical.to_string_lossy().into_owned();
         let scope_str = scope.as_str();
@@ -311,9 +311,8 @@ fn read_entries(conn: &Connection, env_id: i64) -> Result<Vec<EnvEntry>> {
             "single" => EnvEntry::Single(value),
             "glob" => EnvEntry::Glob(value),
             "alias" => EnvEntry::Alias {
-                key: alias_key.ok_or_else(|| {
-                    HimitsuError::Index("alias row missing alias_key".into())
-                })?,
+                key: alias_key
+                    .ok_or_else(|| HimitsuError::Index("alias row missing alias_key".into()))?,
                 path: value,
             },
             other => {
@@ -339,9 +338,7 @@ fn cache_matches(
 ) -> Result<bool> {
     // All stored hashes identical to new_hash?
     let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT config_hash FROM envs WHERE scope = ?1 AND config_path = ?2",
-        )
+        .prepare("SELECT DISTINCT config_hash FROM envs WHERE scope = ?1 AND config_path = ?2")
         .map_err(map_sqlite_err)?;
     let mut hashes: Vec<String> = Vec::new();
     let rows = stmt
@@ -371,8 +368,7 @@ fn cache_matches(
     for row in rows {
         stored.insert(row.map_err(map_sqlite_err)?);
     }
-    let desired: std::collections::BTreeSet<&str> =
-        envs.keys().map(|k| k.as_str()).collect();
+    let desired: std::collections::BTreeSet<&str> = envs.keys().map(|k| k.as_str()).collect();
     if stored.len() != desired.len() {
         return Ok(false);
     }
@@ -414,10 +410,7 @@ mod tests {
                 EnvEntry::Glob("dev".into()),
             ],
         );
-        m.insert(
-            "prod".to_string(),
-            vec![EnvEntry::Glob("prod".into())],
-        );
+        m.insert("prod".to_string(), vec![EnvEntry::Glob("prod".into())]);
         m
     }
 
@@ -547,14 +540,13 @@ mod tests {
         let global_yaml = write_yaml(tmp.path(), "global.yaml", "stub: g\n");
 
         let mut proj_envs = BTreeMap::new();
-        proj_envs.insert(
-            "only-project".into(),
-            vec![EnvEntry::Single("x/y".into())],
-        );
+        proj_envs.insert("only-project".into(), vec![EnvEntry::Single("x/y".into())]);
         let mut global_envs = BTreeMap::new();
         global_envs.insert("only-global".into(), vec![EnvEntry::Single("a/b".into())]);
 
-        cache.refresh(&proj_yaml, Scope::Project, &proj_envs).unwrap();
+        cache
+            .refresh(&proj_yaml, Scope::Project, &proj_envs)
+            .unwrap();
         cache
             .refresh(&global_yaml, Scope::Global, &global_envs)
             .unwrap();
@@ -585,10 +577,7 @@ mod tests {
         let cache = EnvCache::open_at(&db).unwrap();
 
         let mut bad = BTreeMap::new();
-        bad.insert(
-            "foo/*/bar".to_string(),
-            vec![EnvEntry::Single("x".into())],
-        );
+        bad.insert("foo/*/bar".to_string(), vec![EnvEntry::Single("x".into())]);
         let err = cache.refresh(&yaml, Scope::Project, &bad).unwrap_err();
         assert!(matches!(err, HimitsuError::InvalidConfig(_)), "got {err:?}");
 
@@ -661,7 +650,10 @@ mod tests {
             .conn
             .query_row("SELECT COUNT(*) FROM envs", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count_before, count_after, "transaction must have rolled back");
+        assert_eq!(
+            count_before, count_after,
+            "transaction must have rolled back"
+        );
         let rows = cache.list(Scope::Project, Some(&yaml)).unwrap();
         assert_eq!(rows.len(), 2, "original two envs (dev, prod) still present");
     }

@@ -126,10 +126,7 @@ fn load_envs(resolved: &ResolvedScope) -> Result<BTreeMap<String, Vec<EnvEntry>>
 /// preserving any other fields already present. Performs an atomic
 /// temp-file + rename write and creates parent directories for the global
 /// config if they do not exist yet.
-fn write_envs(
-    resolved: &ResolvedScope,
-    new_envs: &BTreeMap<String, Vec<EnvEntry>>,
-) -> Result<()> {
+fn write_envs(resolved: &ResolvedScope, new_envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
     // Make sure parent exists (common for a fresh global config).
     if let Some(parent) = resolved.config_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -250,8 +247,7 @@ pub fn read(
 /// lock before mutating the env var so they never clobber each other under
 /// `cargo test`'s default parallelism.
 #[cfg(test)]
-pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -382,13 +378,7 @@ mod tests {
         let original = "default_store: acme/secrets\n";
         std::fs::write(&cfg, original).unwrap();
 
-        let err = upsert(
-            "foo/*/bar",
-            vec![single("x/y")],
-            ScopeHint::Auto,
-            &proj_dir,
-        )
-        .unwrap_err();
+        let err = upsert("foo/*/bar", vec![single("x/y")], ScopeHint::Auto, &proj_dir).unwrap_err();
         assert!(matches!(err, HimitsuError::InvalidConfig(_)));
 
         // File untouched.
@@ -434,13 +424,7 @@ mod tests {
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join(".himitsu.yaml"), "").unwrap();
 
-        upsert(
-            "dev",
-            vec![single("dev/API")],
-            ScopeHint::Auto,
-            &proj_dir,
-        )
-        .unwrap();
+        upsert("dev", vec![single("dev/API")], ScopeHint::Auto, &proj_dir).unwrap();
 
         // Delete known.
         delete("dev", ScopeHint::Auto, &proj_dir).unwrap();
@@ -492,13 +476,7 @@ mod tests {
         let cfg = proj_dir.join(".himitsu.yaml");
         std::fs::write(&cfg, "").unwrap();
 
-        upsert(
-            "dev",
-            vec![single("dev/TOKEN")],
-            ScopeHint::Auto,
-            &proj_dir,
-        )
-        .unwrap();
+        upsert("dev", vec![single("dev/TOKEN")], ScopeHint::Auto, &proj_dir).unwrap();
 
         assert!(!cfg.with_extension("yaml.tmp").exists());
         let contents = std::fs::read_to_string(&cfg).unwrap();

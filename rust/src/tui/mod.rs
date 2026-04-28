@@ -12,6 +12,7 @@ mod event;
 mod harness;
 pub mod keymap;
 mod terminal;
+mod theme;
 mod toast;
 mod views;
 
@@ -31,13 +32,12 @@ pub fn run(ctx: &Context) -> Result<()> {
         return run_init_flow();
     }
 
-    // Load the keymap from the user's global config. A missing file yields
-    // the defaults; a malformed `tui.keys` section surfaces as a hard error
-    // so the user sees the typo immediately instead of silently losing a
-    // rebinding.
-    let keymap = Config::load(&config_path())
-        .map(|cfg| cfg.tui.keys)
-        .unwrap_or_default();
+    // Load TUI settings from the user's global config. A missing file yields
+    // the defaults; malformed `tui` settings surface as hard errors so the
+    // user sees typos immediately instead of silently losing customization.
+    let tui = Config::load(&config_path())?.tui;
+    theme::set_theme(&tui.theme)?;
+    let keymap = tui.keys;
 
     let _guard = terminal::install()?;
     let mut terminal = terminal::new()?;
@@ -54,6 +54,9 @@ pub fn run(ctx: &Context) -> Result<()> {
 /// completes we re-derive the context (the user may have moved the data
 /// directory) and hand control to the normal dashboard event loop.
 pub fn run_init_flow() -> Result<()> {
+    let tui = Config::load(&config_path())?.tui;
+    theme::set_theme(&tui.theme)?;
+
     let mut guard = Some(terminal::install()?);
     let mut terminal = Some(terminal::new()?);
     let mut wizard = InitWizardView::new();
@@ -105,6 +108,9 @@ pub fn run_init_flow() -> Result<()> {
     // terminal is cleanly restored if dashboard setup fails.
     drop(terminal);
     drop(guard);
+
+    let tui = Config::load(&config_path())?.tui;
+    theme::set_theme(&tui.theme)?;
 
     let ctx = Context {
         data_dir: crate::config::data_dir(),

@@ -67,9 +67,9 @@ pub fn resolve(
 ) -> Result<EnvNode> {
     validate_env_label(target)?;
 
-    let entries = envs.get(target).ok_or_else(|| {
-        HimitsuError::InvalidConfig(format!("unknown env label '{target}'"))
-    })?;
+    let entries = envs
+        .get(target)
+        .ok_or_else(|| HimitsuError::InvalidConfig(format!("unknown env label '{target}'")))?;
 
     let prefix_segments = label_prefix_segments(target);
 
@@ -182,10 +182,7 @@ fn resolve_wildcard(
         children.insert(capture.clone(), EnvNode::Branch(leaf_map));
     }
 
-    Ok(wrap_in_segments(
-        prefix_segments,
-        EnvNode::Branch(children),
-    ))
+    Ok(wrap_in_segments(prefix_segments, EnvNode::Branch(children)))
 }
 
 fn entry_is_glob(e: &EnvEntry) -> bool {
@@ -203,11 +200,7 @@ fn entry_is_glob(e: &EnvEntry) -> bool {
 ///
 /// A leading `/` on the pattern is normalised away so `/$1/foo` and
 /// `$1/foo` behave identically.
-fn match_dollar_one(
-    pattern: &str,
-    secrets: &[String],
-    is_glob_prefix: bool,
-) -> Vec<String> {
+fn match_dollar_one(pattern: &str, secrets: &[String], is_glob_prefix: bool) -> Vec<String> {
     let pat = pattern.strip_prefix('/').unwrap_or(pattern);
     let pat_segs: Vec<&str> = pat.split('/').collect();
 
@@ -331,10 +324,7 @@ mod tests {
     use super::*;
 
     fn envs(pairs: Vec<(&str, Vec<EnvEntry>)>) -> BTreeMap<String, Vec<EnvEntry>> {
-        pairs
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect()
+        pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
     }
 
     fn strs(xs: &[&str]) -> Vec<String> {
@@ -447,10 +437,7 @@ mod tests {
 
     #[test]
     fn wildcard_capture_in_single_entry_path() {
-        let e = envs(vec![(
-            "svc/*",
-            vec![EnvEntry::Single("$1/API_KEY".into())],
-        )]);
+        let e = envs(vec![("svc/*", vec![EnvEntry::Single("$1/API_KEY".into())])]);
         let secrets = strs(&["alpha/API_KEY", "beta/API_KEY"]);
         let tree = resolve(&e, "svc/*", &secrets).unwrap();
         let svc = branch(branch(&tree).get("svc").unwrap());
@@ -512,7 +499,10 @@ mod tests {
 
     #[test]
     fn concrete_single_with_absolute_path_uses_last_segment() {
-        let e = envs(vec![("env1", vec![EnvEntry::Single("/dev/postgres-url".into())])]);
+        let e = envs(vec![(
+            "env1",
+            vec![EnvEntry::Single("/dev/postgres-url".into())],
+        )]);
         let tree = resolve(&e, "env1", &[]).unwrap();
         let env1 = branch(branch(&tree).get("env1").unwrap());
         assert_eq!(
@@ -535,10 +525,10 @@ mod tests {
             }],
         )]);
         let secrets = strs(&[
-            "alpha/x",       // matches, $1 = "alpha"
-            "beta/x",        // matches, $1 = "beta"
-            "gamma/y",       // second segment wrong
-            "foo/bar/x",     // too deep
+            "alpha/x",   // matches, $1 = "alpha"
+            "beta/x",    // matches, $1 = "beta"
+            "gamma/y",   // second segment wrong
+            "foo/bar/x", // too deep
         ]);
         let tree = resolve(&e, "foo/*", &secrets).unwrap();
         let foo = branch(branch(&tree).get("foo").unwrap());

@@ -16,10 +16,12 @@
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+
+use super::theme;
 
 /// Severity bucket for a toast. Drives the foreground colour and the
 /// `[icon]` prefix on the rendered line.
@@ -72,15 +74,12 @@ impl Toast {
     /// reserving the row via `Layout`; this function only paints into it.
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
         let (fg, tag) = match self.kind {
-            ToastKind::Info => (Color::Cyan, "[info] "),
-            ToastKind::Success => (Color::Green, "[ok] "),
-            ToastKind::Error => (Color::Red, "[err] "),
+            ToastKind::Info => (theme::accent(), "[info] "),
+            ToastKind::Success => (theme::success(), "[ok] "),
+            ToastKind::Error => (theme::danger(), "[err] "),
         };
         let line = Line::from(vec![
-            Span::styled(
-                tag,
-                Style::default().fg(fg).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(tag, Style::default().fg(fg).add_modifier(Modifier::BOLD)),
             Span::styled(self.message.clone(), Style::default().fg(fg)),
         ]);
         frame.render_widget(Paragraph::new(line), area);

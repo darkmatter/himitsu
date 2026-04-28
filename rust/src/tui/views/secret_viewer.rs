@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
@@ -233,10 +235,7 @@ impl SecretViewerView {
     pub fn finish_edit(&mut self, result: std::result::Result<Option<String>, String>) {
         match result {
             Ok(None) => {
-                self.status = Some((
-                    "edit cancelled (no changes)".to_string(),
-                    StatusKind::Info,
-                ));
+                self.status = Some(("edit cancelled (no changes)".to_string(), StatusKind::Info));
             }
             Ok(Some(doc)) => match self.persist_edited(&doc) {
                 Ok(new_value) => {
@@ -418,11 +417,11 @@ impl SecretViewerView {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" confirm delete ")
-            .style(Style::default().fg(Color::Red));
+            .style(Style::default().fg(theme::danger()));
         let line = Line::from(vec![Span::styled(
             prompt,
             Style::default()
-                .fg(Color::White)
+                .fg(theme::primary())
                 .add_modifier(Modifier::BOLD),
         )]);
         frame.render_widget(ratatui::widgets::Clear, rect);
@@ -434,14 +433,14 @@ impl SecretViewerView {
             Span::styled(
                 " himitsu ",
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(theme::on_accent())
+                    .bg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled("secret", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("  "),
-            Span::styled(&self.store_label, Style::default().fg(Color::DarkGray)),
+            Span::styled(&self.store_label, Style::default().fg(theme::muted())),
         ]);
         frame.render_widget(Paragraph::new(header), area);
     }
@@ -455,8 +454,13 @@ impl SecretViewerView {
             .constraints([Constraint::Length(meta_height), Constraint::Min(3)])
             .split(area);
 
-        let block = Block::default().borders(Borders::ALL).title(" metadata ");
-        let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" metadata ")
+            .title_style(Style::default().fg(theme::border_label()));
+        let p = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(p, rows[0]);
         self.draw_value(frame, rows[1]);
     }
@@ -519,20 +523,25 @@ impl SecretViewerView {
     }
 
     fn draw_value(&self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" value ");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" value ")
+            .title_style(Style::default().fg(theme::border_label()));
 
         let content: Line = match &self.value {
             ValueState::Hidden => Line::from(Span::styled(
                 "  ●●●●●●●●  (press r to reveal)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )),
             ValueState::Revealed(v) => Line::from(Span::styled(
                 format!("  {v}"),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme::warning()),
             )),
         };
         frame.render_widget(
-            Paragraph::new(content).block(block).wrap(Wrap { trim: false }),
+            Paragraph::new(content)
+                .block(block)
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -540,26 +549,27 @@ impl SecretViewerView {
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let line = if let Some((msg, kind)) = &self.status {
             let color = match kind {
-                StatusKind::Info => Color::Green,
-                StatusKind::Error => Color::Red,
+                StatusKind::Info => theme::success(),
+                StatusKind::Error => theme::danger(),
             };
             Line::from(Span::styled(msg.clone(), Style::default().fg(color)))
         } else {
+            let footer = Style::default().fg(theme::footer_text());
             Line::from(vec![
-                Span::styled("r", Style::default().fg(Color::Cyan)),
-                Span::raw(" reveal  "),
-                Span::styled("y", Style::default().fg(Color::Cyan)),
-                Span::raw(" copy  "),
-                Span::styled("e", Style::default().fg(Color::Cyan)),
-                Span::raw(" edit  "),
-                Span::styled("R", Style::default().fg(Color::Cyan)),
-                Span::raw(" rekey  "),
-                Span::styled("d", Style::default().fg(Color::Cyan)),
-                Span::raw(" delete  "),
-                Span::styled("esc", Style::default().fg(Color::Cyan)),
-                Span::raw(" back  "),
-                Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
-                Span::raw(" quit"),
+                Span::styled("r", Style::default().fg(theme::accent())),
+                Span::styled(" reveal    ", footer),
+                Span::styled("y", Style::default().fg(theme::accent())),
+                Span::styled(" copy    ", footer),
+                Span::styled("e", Style::default().fg(theme::accent())),
+                Span::styled(" edit    ", footer),
+                Span::styled("R", Style::default().fg(theme::accent())),
+                Span::styled(" rekey    ", footer),
+                Span::styled("d", Style::default().fg(theme::accent())),
+                Span::styled(" delete    ", footer),
+                Span::styled("esc", Style::default().fg(theme::accent())),
+                Span::styled(" back    ", footer),
+                Span::styled("ctrl-c", Style::default().fg(theme::accent())),
+                Span::styled(" quit", footer),
             ])
         };
         frame.render_widget(Paragraph::new(line), area);
@@ -680,14 +690,14 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
 
 fn labeled_line(label: &'static str, value: impl Into<String>) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {label} "), Style::default().fg(theme::muted())),
         Span::raw(value.into()),
     ])
 }
 
 fn labeled_line_owned(label: String, value: String) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {label} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {label} "), Style::default().fg(theme::muted())),
         Span::raw(value),
     ])
 }
@@ -699,15 +709,12 @@ fn expires_line(dt: chrono::DateTime<chrono::Utc>) -> Line<'static> {
     let (msg, sev) = duration::describe_remaining(dt, chrono::Utc::now());
     let text = format!("{}  ({msg})", dt.to_rfc3339());
     let color = match sev {
-        duration::ExpirySeverity::Distant => Color::Gray,
-        duration::ExpirySeverity::Soon => Color::Yellow,
-        duration::ExpirySeverity::Expired => Color::Red,
+        duration::ExpirySeverity::Distant => theme::neutral(),
+        duration::ExpirySeverity::Soon => theme::warning(),
+        duration::ExpirySeverity::Expired => theme::danger(),
     };
     Line::from(vec![
-        Span::styled(
-            "  expires_at   ",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("  expires_at   ", Style::default().fg(theme::muted())),
         Span::styled(text, Style::default().fg(color)),
     ])
 }
@@ -824,7 +831,10 @@ mod tests {
         let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
-        assert_eq!(view.on_key(press(KeyCode::Esc), &km), SecretViewerAction::Back);
+        assert_eq!(
+            view.on_key(press(KeyCode::Esc), &km),
+            SecretViewerAction::Back
+        );
     }
 
     #[test]
@@ -970,14 +980,16 @@ mod tests {
     fn e_emits_edit_value_action_with_document() {
         let km = KeyMap::default();
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         match view.on_key(press(KeyCode::Char('e')), &km) {
             SecretViewerAction::EditValue(doc) => {
                 assert!(doc.contains("description:"), "doc missing header: {doc}");
                 assert!(doc.contains("expires_at:"), "doc missing expires_at: {doc}");
                 assert!(doc.contains("\n---\n"), "doc missing separator: {doc}");
-                assert!(doc.ends_with("s3cret"), "doc should end with plaintext: {doc}");
+                assert!(
+                    doc.ends_with("s3cret"),
+                    "doc should end with plaintext: {doc}"
+                );
             }
             other => panic!("expected EditValue, got {other:?}"),
         }
@@ -1002,8 +1014,7 @@ mod tests {
     #[test]
     fn finish_edit_applies_metadata_fields() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
 description: prod database password
 url: https://db.example.com
@@ -1030,8 +1041,7 @@ hunter2";
     #[test]
     fn finish_edit_clears_expires_when_blank() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         // First set an expiry.
         let with_exp = "\
 description:
@@ -1068,8 +1078,7 @@ s3cret";
     #[test]
     fn finish_edit_with_invalid_expires_sets_error_status() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
 description:
 url:
@@ -1090,8 +1099,7 @@ s3cret";
     #[test]
     fn finish_edit_with_missing_separator_errors() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         view.finish_edit(Ok(Some("description: oops\n".to_string())));
         assert!(matches!(view.status, Some((_, StatusKind::Error))));
     }
@@ -1147,8 +1155,7 @@ body";
     #[test]
     fn finish_edit_with_no_change_reports_cancelled() {
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         view.finish_edit(Ok(None));
         match &view.status {
             Some((msg, StatusKind::Info)) => {
@@ -1167,8 +1174,7 @@ body";
         use ratatui::Terminal;
 
         let (_dir, ctx, path) = seeded_store_with_secret();
-        let mut view =
-            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let backend = TestBackend::new(120, 20);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| view.draw(f)).unwrap();
@@ -1180,7 +1186,13 @@ body";
             }
             rendered.push('\n');
         }
-        assert!(rendered.contains("e edit"), "missing 'e edit' hint: {rendered}");
-        assert!(rendered.contains("R rekey"), "missing 'R rekey' hint: {rendered}");
+        assert!(
+            rendered.contains("e edit"),
+            "missing 'e edit' hint: {rendered}"
+        );
+        assert!(
+            rendered.contains("R rekey"),
+            "missing 'R rekey' hint: {rendered}"
+        );
     }
 }

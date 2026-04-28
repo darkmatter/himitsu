@@ -10,8 +10,10 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -55,8 +57,14 @@ pub enum SearchAction {
 /// prefix within a store.
 #[derive(Debug, Clone)]
 enum Row {
-    Store { name: String, count: usize },
-    Folder { name: String, count: usize },
+    Store {
+        name: String,
+        count: usize,
+    },
+    Folder {
+        name: String,
+        count: usize,
+    },
     Secret {
         result: SearchResult,
         /// Indentation depth in list-item cells (2 spaces per level). Level
@@ -274,20 +282,48 @@ impl SearchView {
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
+
+        // Always require a small margin around the center column
+        let chunks = Layout::default()
+            .constraints(Constraint::from_mins([0]))
+            .horizontal_margin(4)
+            .vertical_margin(4)
+            .split(area);
+        let with_margin = chunks[0];
+        // Allow resizing within a constraint. When developing, alaways develop against
+        // the minimum size.
+        let center_column = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Max(80),
+                Constraint::Fill(1),
+            ])
+            .split(with_margin)[1];
+        let center_row = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Max(30), //
+                Constraint::Fill(1),
+            ])
+            .split(center_column)[1];
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
+                Constraint::Length(1), // header (brand + view name + health)
+                Constraint::Length(1), // -- spacer --
+                Constraint::Length(3), // search-input
+                Constraint::Min(1),    // results
+                Constraint::Length(0), // -- spacer --
+                Constraint::Length(1), // footer
             ])
-            .split(area);
+            .split(center_row);
 
         self.draw_header(frame, chunks[0]);
-        self.draw_input(frame, chunks[1]);
-        self.draw_results(frame, chunks[2]);
-        self.draw_footer(frame, chunks[3]);
+        self.draw_input(frame, chunks[2]);
+        self.draw_results(frame, chunks[3]);
+        self.draw_footer(frame, chunks[5]);
 
         // Render the picker overlay last so it sits on top of the rest.
         if let Some(picker) = self.picker.as_mut() {
@@ -297,60 +333,86 @@ impl SearchView {
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
         let (health_label, health_color) = match &self.store_health {
-            StoreHealth::Synced => ("synced".to_string(), Color::Green),
-            StoreHealth::Behind(n) => (format!("{n} behind remote"), Color::Yellow),
-            StoreHealth::Dirty => ("uncommitted changes".to_string(), Color::Red),
-            StoreHealth::BehindAndDirty(n) => {
-                (format!("{n} behind + dirty"), Color::Red)
-            }
-            StoreHealth::NotGit => ("not a git repo".to_string(), Color::Yellow),
-            StoreHealth::NoRemote => {
-                ("no remote — run: himitsu remote add".to_string(), Color::Yellow)
-            }
-            StoreHealth::NotPushed => {
-                ("not pushed — run: himitsu git push -u origin main".to_string(), Color::Yellow)
-            }
-            StoreHealth::Unknown => ("unknown".to_string(), Color::DarkGray),
+            StoreHealth::Synced => ("synced".to_string(), theme::success()),
+            StoreHealth::Behind(n) => (format!("{n} behind remote"), theme::warning()),
+            StoreHealth::Dirty => ("uncommitted changes".to_string(), theme::danger()),
+            StoreHealth::BehindAndDirty(n) => (format!("{n} behind + dirty"), theme::danger()),
+            StoreHealth::NotGit => ("not a git repo".to_string(), theme::warning()),
+            StoreHealth::NoRemote => (
+                "no remote — run: himitsu remote add".to_string(),
+                theme::warning(),
+            ),
+            StoreHealth::NotPushed => (
+                "not pushed — run: himitsu git push -u origin main".to_string(),
+                theme::warning(),
+            ),
+            StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
         };
 
-        let header = Line::from(vec![
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(20),
+                Constraint::Length((health_label.len() as u16).saturating_add(4)),
+            ])
+            .split(area);
+
+        // Left: brand chip + active view name. The chip carries the project's
+        // namesake kanji (秘 = "secret", first half of 秘密 / himitsu) so the
+        // logo reads as a brand mark and not just plain text on a colored
+        // background.
+        let left = Line::from(vec![
             Span::styled(
-                " himitsu ",
+                " 秘 himitsu ",
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(theme::on_accent())
+                    .bg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled("search", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled(
-                format!(
-                    "{} result{}",
-                    self.results.len(),
-                    if self.results.len() == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw("  "),
+        ]);
+        frame.render_widget(Paragraph::new(left), cols[0]);
+
+        // Right: store health pill, right-aligned within the second column.
+        let right = Line::from(vec![
             Span::styled("●", Style::default().fg(health_color)),
             Span::raw(" "),
             Span::styled(health_label, Style::default().fg(health_color)),
+            Span::raw(" "),
         ]);
-        frame.render_widget(Paragraph::new(header), area);
+        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
     }
 
     fn draw_input(&self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" query ");
+        let count = self.results.len();
+        let count_label = format!(" {count} result{} ", if count == 1 { "" } else { "s" });
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(theme::border()))
+            .title(" query ")
+            .title_style(Style::default().fg(theme::border_label()))
+            .title_top(
+                Line::from(Span::styled(
+                    count_label,
+                    Style::default().fg(theme::muted()),
+                ))
+                .right_aligned(),
+            );
         let text = Line::from(vec![
             Span::raw(&self.query),
-            Span::styled("█", Style::default().fg(Color::Cyan)),
+            Span::styled("█", Style::default().fg(theme::accent())),
         ]);
         frame.render_widget(Paragraph::new(text).block(block), area);
     }
 
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let outer = Block::default().borders(Borders::ALL).title(" results ");
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::new().fg(theme::border()))
+            .title(" results ")
+            .title_style(Style::default().fg(theme::border_label()));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
@@ -362,7 +424,7 @@ impl SearchView {
             };
             let p = Paragraph::new(Line::from(Span::styled(
                 msg,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )));
             frame.render_widget(p, inner);
             return;
@@ -383,7 +445,10 @@ impl SearchView {
                 Row::Secret { result, indent } => {
                     let prefix = "  ".repeat(*indent);
                     let padded_path = format!("{prefix}{}", result.path);
-                    let ts = result.updated_at.as_deref().or(result.created_at.as_deref());
+                    let ts = result
+                        .updated_at
+                        .as_deref()
+                        .or(result.created_at.as_deref());
                     let updated = ts
                         .and_then(parse_ts)
                         .map(|t| humanize_age(now, t))
@@ -436,7 +501,7 @@ impl SearchView {
             .split(inner);
 
         let header_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(theme::muted())
             .add_modifier(Modifier::BOLD);
         let mut header_spans = vec![
             Span::styled(
@@ -470,14 +535,11 @@ impl SearchView {
                         Span::styled(
                             format!("■ {name}"),
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(theme::accent())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
-                        Span::styled(
-                            format!("({count})"),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("({count})"), Style::default().fg(theme::muted())),
                     ]);
                     ListItem::new(line)
                 }
@@ -486,14 +548,11 @@ impl SearchView {
                         Span::styled(
                             format!("▸ {name}/"),
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(theme::warning())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
-                        Span::styled(
-                            format!("({count})"),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("({count})"), Style::default().fg(theme::muted())),
                     ]);
                     ListItem::new(line)
                 }
@@ -503,14 +562,14 @@ impl SearchView {
                         Span::raw(format!("{padded_path:<path_w$}  ")),
                         Span::styled(
                             format!("{updated:<updated_w$}  "),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(theme::muted()),
                         ),
                         Span::raw(format!("{desc:<desc_w$}  ")),
                     ];
                     if !has_store_headers {
                         spans.push(Span::styled(
                             format!("{:<store_w$}", result.store, store_w = store_w),
-                            Style::default().fg(Color::Cyan),
+                            Style::default().fg(theme::accent()),
                         ));
                     }
                     ListItem::new(Line::from(spans))
@@ -520,31 +579,33 @@ impl SearchView {
 
         let list = List::new(items).highlight_style(
             Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
+                .bg(theme::accent())
+                .fg(theme::on_accent())
                 .add_modifier(Modifier::BOLD),
         );
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
+        // Note: `ctrl-s switch store` is intentionally hidden here — it lives
+        // only in the help overlay (`?`) to keep the visible footer focused
+        // on the most-used bindings.
+        let footer = Style::default().fg(theme::footer_text());
         let line = Line::from(vec![
-            Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" open  "),
-            Span::styled("ctrl-n", Style::default().fg(Color::Cyan)),
-            Span::raw(" new  "),
-            Span::styled("ctrl-s", Style::default().fg(Color::Cyan)),
-            Span::raw(" switch store  "),
-            Span::styled("ctrl-y", Style::default().fg(Color::Cyan)),
-            Span::raw(" copy  "),
-            Span::styled("E", Style::default().fg(Color::Cyan)),
-            Span::raw(" envs  "),
-            Span::styled("?", Style::default().fg(Color::Cyan)),
-            Span::raw(" help  "),
-            Span::styled("esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
+            Span::styled("↑/↓", Style::default().fg(theme::accent())),
+            Span::styled(" navigate    ", footer),
+            Span::styled("enter", Style::default().fg(theme::accent())),
+            Span::styled(" open    ", footer),
+            Span::styled("ctrl-n", Style::default().fg(theme::accent())),
+            Span::styled(" new    ", footer),
+            Span::styled("ctrl-y", Style::default().fg(theme::accent())),
+            Span::styled(" copy    ", footer),
+            Span::styled("E", Style::default().fg(theme::accent())),
+            Span::styled(" envs    ", footer),
+            Span::styled("?", Style::default().fg(theme::accent())),
+            Span::styled(" help    ", footer),
+            Span::styled("esc", Style::default().fg(theme::accent())),
+            Span::styled(" quit", footer),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -864,7 +925,10 @@ mod tests {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        assert!(matches!(view.on_key(key(KeyCode::Esc), &km), SearchAction::Quit));
+        assert!(matches!(
+            view.on_key(key(KeyCode::Esc), &km),
+            SearchAction::Quit
+        ));
     }
 
     #[test]
@@ -944,12 +1008,18 @@ mod tests {
             rendered.push('\n');
         }
         assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
-        assert!(rendered.contains("UPDATED"), "missing UPDATED header: {rendered}");
+        assert!(
+            rendered.contains("UPDATED"),
+            "missing UPDATED header: {rendered}"
+        );
         assert!(
             rendered.contains("DESCRIPTION"),
             "missing DESCRIPTION header: {rendered}"
         );
-        assert!(rendered.contains("STORE"), "missing STORE header: {rendered}");
+        assert!(
+            rendered.contains("STORE"),
+            "missing STORE header: {rendered}"
+        );
     }
 
     /// Seed two stores under `<tmp>/state/stores/<org>/<repo>/.himitsu/secrets/`
@@ -1096,7 +1166,10 @@ mod tests {
         assert!(view.selected_result().is_some());
         let action = view.on_key(ctrl('y'), &km);
         assert!(
-            matches!(action, SearchAction::Copied(_) | SearchAction::CopyFailed(_)),
+            matches!(
+                action,
+                SearchAction::Copied(_) | SearchAction::CopyFailed(_)
+            ),
             "ctrl-y should always emit a copy action, got {action:?}"
         );
     }

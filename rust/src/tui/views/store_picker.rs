@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -84,10 +86,7 @@ impl StorePicker {
         if !entries.is_empty() {
             // If the current store is one of the enumerated entries, start
             // the cursor on it; otherwise start at the top.
-            let start = entries
-                .iter()
-                .position(|e| e.path == current)
-                .unwrap_or(0);
+            let start = entries.iter().position(|e| e.path == current).unwrap_or(0);
             list_state.select(Some(start));
         }
         // When there are no managed stores, start with focus on the input —
@@ -141,7 +140,9 @@ impl StorePicker {
                 self.input.pop();
                 StorePickerOutcome::Pending
             }
-            (KeyCode::Char(c), mods) if self.focus == Focus::Input && !mods.contains(KeyModifiers::CONTROL) => {
+            (KeyCode::Char(c), mods)
+                if self.focus == Focus::Input && !mods.contains(KeyModifiers::CONTROL) =>
+            {
                 self.input.push(c);
                 StorePickerOutcome::Pending
             }
@@ -163,7 +164,11 @@ impl StorePicker {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
-        let next = if i == 0 { self.entries.len() - 1 } else { i - 1 };
+        let next = if i == 0 {
+            self.entries.len() - 1
+        } else {
+            i - 1
+        };
         self.list_state.select(Some(next));
     }
 
@@ -231,7 +236,8 @@ impl StorePicker {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" switch store ");
+            .title(" switch store ")
+            .title_style(Style::default().fg(theme::border_label()));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -255,12 +261,15 @@ impl StorePicker {
         } else {
             " stores "
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(Style::default().fg(theme::border_label()));
 
         if self.entries.is_empty() {
             let msg = Paragraph::new(Line::from(Span::styled(
                 "  no managed stores — type a path below",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )))
             .block(block);
             frame.render_widget(msg, area);
@@ -273,7 +282,7 @@ impl StorePicker {
             .map(|e| {
                 let marker = if e.path == self.current { "• " } else { "  " };
                 ListItem::new(Line::from(vec![
-                    Span::styled(marker, Style::default().fg(Color::Cyan)),
+                    Span::styled(marker, Style::default().fg(theme::accent())),
                     Span::raw(e.slug.clone()),
                 ]))
             })
@@ -281,8 +290,8 @@ impl StorePicker {
 
         let list = List::new(items).block(block).highlight_style(
             Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
+                .bg(theme::accent())
+                .fg(theme::on_accent())
                 .add_modifier(Modifier::BOLD),
         );
         frame.render_stateful_widget(list, area, &mut self.list_state);
@@ -294,7 +303,10 @@ impl StorePicker {
         } else {
             " path "
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(Style::default().fg(theme::border_label()));
         let display = if self.focus == Focus::Input {
             format!("{}_", self.input)
         } else {
@@ -307,16 +319,17 @@ impl StorePicker {
         let line = if let Some(err) = &self.error {
             Line::from(Span::styled(
                 format!("error: {err}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::danger()),
             ))
         } else {
+            let footer = Style::default().fg(theme::footer_text());
             Line::from(vec![
-                Span::styled("tab", Style::default().fg(Color::Cyan)),
-                Span::raw(" switch focus  "),
-                Span::styled("enter", Style::default().fg(Color::Cyan)),
-                Span::raw(" select  "),
-                Span::styled("esc", Style::default().fg(Color::Cyan)),
-                Span::raw(" cancel"),
+                Span::styled("tab", Style::default().fg(theme::accent())),
+                Span::styled(" switch focus    ", footer),
+                Span::styled("enter", Style::default().fg(theme::accent())),
+                Span::styled(" select    ", footer),
+                Span::styled("esc", Style::default().fg(theme::accent())),
+                Span::styled(" cancel", footer),
             ])
         };
         frame.render_widget(Paragraph::new(line), area);
@@ -473,7 +486,10 @@ mod tests {
     fn picker_cancels_on_esc() {
         let tmp = tempdir().unwrap();
         let mut picker = StorePicker::new(tmp.path(), PathBuf::new());
-        assert_eq!(picker.on_key(press(KeyCode::Esc)), StorePickerOutcome::Cancelled);
+        assert_eq!(
+            picker.on_key(press(KeyCode::Esc)),
+            StorePickerOutcome::Cancelled
+        );
     }
 
     #[test]

@@ -9,10 +9,12 @@
 //! plugs them in when the overlay is opened.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 /// Outcome of handling a key while the help overlay is active.
@@ -31,10 +33,7 @@ pub struct HelpView {
 }
 
 impl HelpView {
-    pub fn new(
-        entries: &'static [(&'static str, &'static str)],
-        title: &'static str,
-    ) -> Self {
+    pub fn new(entries: &'static [(&'static str, &'static str)], title: &'static str) -> Self {
         Self { entries, title }
     }
 
@@ -51,19 +50,24 @@ impl HelpView {
         // Clear the area first so underlying content is blanked out.
         frame.render_widget(Clear, area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                format!(" {} ", self.title),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            format!(" {} ", self.title),
+            Style::default()
+                .fg(theme::border_label())
+                .add_modifier(Modifier::BOLD),
+        ));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        let key_w = self
-            .entries
-            .iter()
-            .map(|(k, _)| k.len())
-            .max()
-            .unwrap_or(0);
+        // Reserve the bottom row for the active theme indicator so users can
+        // tell which palette is loaded (especially relevant when `theme: random`
+        // picked something for them).
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let key_w = self.entries.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
 
         let items: Vec<ListItem> = self
             .entries
@@ -74,7 +78,7 @@ impl HelpView {
                     Span::styled(
                         format!("{:<key_w$}", k, key_w = key_w),
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme::accent())
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw("  "),
@@ -84,8 +88,19 @@ impl HelpView {
             })
             .collect();
 
-        let list = List::new(items).block(block);
-        frame.render_widget(list, area);
+        frame.render_widget(List::new(items), rows[0]);
+
+        let footer = Line::from(vec![
+            Span::styled("theme ", Style::default().fg(theme::footer_text())),
+            Span::styled(
+                theme::current_theme_name(),
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ]);
+        frame.render_widget(Paragraph::new(footer).alignment(Alignment::Right), rows[1]);
     }
 }
 
@@ -131,10 +146,7 @@ mod tests {
     #[test]
     fn question_mark_closes_overlay() {
         let mut view = HelpView::new(SAMPLE, "help");
-        assert_eq!(
-            view.on_key(press(KeyCode::Char('?'))),
-            HelpAction::Close
-        );
+        assert_eq!(view.on_key(press(KeyCode::Char('?'))), HelpAction::Close);
     }
 
     #[test]

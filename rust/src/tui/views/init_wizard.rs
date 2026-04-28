@@ -2,7 +2,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+
+use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -222,6 +224,12 @@ impl InitWizardView {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
+        // Paint the active theme's background across the wizard frame so
+        // first-run users see their selected theme immediately.
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::background())),
+            area,
+        );
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -278,7 +286,7 @@ impl InitWizardView {
                 lines.push(Line::from("  Default store on GitHub (blank to skip)"));
                 lines.push(Line::from(Span::styled(
                     "  format: org/repo",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::muted()),
                 )));
                 lines.push(Line::from(""));
                 lines.push(self.text_input_line(&self.remote_input));
@@ -291,7 +299,7 @@ impl InitWizardView {
                     let selected = i == self.provider_index;
                     let style = if selected {
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme::accent())
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
@@ -318,13 +326,13 @@ impl InitWizardView {
                 lines.push(Line::from(Span::styled(
                     "  ✓ Initialized",
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(theme::success())
                         .add_modifier(Modifier::BOLD),
                 )));
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::raw("  Public key: "),
-                    Span::styled(self.pubkey.clone(), Style::default().fg(Color::Cyan)),
+                    Span::styled(self.pubkey.clone(), Style::default().fg(theme::accent())),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from("  Press Enter to continue to the dashboard."));
@@ -335,7 +343,7 @@ impl InitWizardView {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 format!("  ! {err}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::danger()),
             )));
         }
 
@@ -344,9 +352,9 @@ impl InitWizardView {
 
     fn text_input_line<'a>(&self, value: &'a str) -> Line<'a> {
         Line::from(vec![
-            Span::styled("  > ", Style::default().fg(Color::Cyan)),
+            Span::styled("  > ", Style::default().fg(theme::accent())),
             Span::raw(value),
-            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::styled("▏", Style::default().fg(theme::accent())),
         ])
     }
 }
