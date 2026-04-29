@@ -16,8 +16,9 @@ pub struct InitArgs {
     pub json: bool,
 
     /// Register an initial store by slug (e.g. `org/repo`) and set it as the
-    /// default. The store is created at `stores_dir/<org>/<repo>` if it does
-    /// not already exist.
+    /// default. The store is created at `stores_dir/<org>/<repo>` and gets an
+    /// `origin` remote of `git@github.com:<org>/<repo>.git` if it does not
+    /// already have a git remote.
     #[arg(long)]
     pub name: Option<String>,
 
@@ -125,15 +126,9 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
     let name_registered = if let Some(ref slug) = args.name {
         let (org, repo) = config::validate_remote_slug(slug)?;
         let dest = config::store_checkout(org, repo);
-        if !dest.exists() {
-            // Create a fresh local store at stores_dir/<org>/<repo>
-            std::fs::create_dir_all(crate::remote::store::secrets_dir(&dest))?;
-            let recipients_dir = crate::remote::store::recipients_dir(&dest);
-            std::fs::create_dir_all(&recipients_dir)?;
-            if !pubkey.is_empty() {
-                std::fs::write(recipients_dir.join("self.pub"), format!("{pubkey}\n"))?;
-            }
-        }
+        ensure_store_layout(&dest, &pubkey)?;
+        ensure_default_origin(&dest, &state_dir.join("stores"));
+
         // Set (or update) default_store in global config
         let mut cfg = config::Config::load(&config_path)?;
         cfg.default_store = Some(slug.clone());
@@ -209,10 +204,19 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
         }
         println!("✓ Created state directory");
 
-        // Prompt to add a remote store if none was set up.
+        // Prompt to create a primary store if none was set up.
         if store.as_os_str().is_empty() && !name_registered {
             println!();
-            println!("Run `himitsu remote add <org/repo>` to add a secret store.");
+            let suggested_primary = suggested_remote_slug();
+            if suggested_primary.is_empty() {
+                println!(
+                    "Run `himitsu init --name <your-github-username>/secrets` to create your primary personal GitHub store."
+                );
+            } else {
+                println!(
+                    "Run `himitsu init --name {suggested_primary}` to create your primary personal GitHub store."
+                );
+            }
         }
     }
 
@@ -221,38 +225,37 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
 
 // ── Interactive wizard helpers ─────────────────────────────────────────────
 
-/// Build a default remote slug suggestion for the init wizard.
+/// Build a default primary-store slug suggestion for the init wizard.
 ///
-/// Resolution order: GitHub org from the current repo's `origin` remote →
-/// `git config github.user` → `$USER`. Returns an empty string if nothing
-/// plausible can be discovered.
+/// A himitsu primary store should usually live under the user's personal
+/// GitHub account rather than under whichever project/org the current repo
+/// belongs to. Resolution order therefore prefers explicit personal-account
+/// hints, falling back to the current repo's origin only when nothing better is
+/// available.
 pub(crate) fn suggested_remote_slug() -> String {
-    detect_github_username()
+    detect_personal_github_username()
+        .or_else(detect_origin_github_org)
         .or_else(|| std::env::var("USER").ok().filter(|u| !u.is_empty()))
         .map(|u| format!("{u}/secrets"))
         .unwrap_or_default()
 }
 
-/// Try to discover a GitHub-style username for the default remote suggestion.
+/// Try to discover a personal GitHub username for the default primary-store
+/// suggestion.
 ///
 /// Resolution order:
-/// 1. Parse the org from the current repo's `origin` remote URL.
-/// 2. `git config github.user`
-/// 3. System `$USER` env var (handled by the caller as a fallback).
-fn detect_github_username() -> Option<String> {
-    // 1. From the current repo's origin remote
-    if let Some(slug) = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| config::find_git_root(&cwd))
-        .as_ref()
-        .and_then(detect_origin_remote)
-    {
-        if let Some((org, _)) = slug.split_once('/') {
-            return Some(org.to_string());
+/// 1. `$GITHUB_USER` / `$GITHUB_USERNAME`.
+/// 2. `git config github.user`.
+fn detect_personal_github_username() -> Option<String> {
+    for var in ["GITHUB_USER", "GITHUB_USERNAME"] {
+        if let Ok(user) = std::env::var(var) {
+            let user = user.trim().to_string();
+            if !user.is_empty() {
+                return Some(user);
+            }
         }
     }
 
-    // 2. git config github.user
     let output = std::process::Command::new("git")
         .args(["config", "github.user"])
         .output()
@@ -265,6 +268,16 @@ fn detect_github_username() -> Option<String> {
     }
 
     None
+}
+
+fn detect_origin_github_org() -> Option<String> {
+    let slug = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| config::find_git_root(&cwd))
+        .as_ref()
+        .and_then(detect_origin_remote)?;
+    let (org, _) = slug.split_once('/')?;
+    Some(org.to_string())
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

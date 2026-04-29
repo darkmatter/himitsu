@@ -78,6 +78,55 @@ fn init_adds_self_as_recipient() {
     assert!(contents.starts_with("age1"));
 }
 
+#[test]
+fn init_name_creates_git_store_with_origin() {
+    let home = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["init", "--name", "alice/secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ Registered store alice/secrets (default)",
+        ));
+
+    let store = home.path().join("state/stores/alice/secrets");
+    assert!(store.join(".himitsu/secrets").exists());
+    assert!(store.join(".himitsu/recipients/self.pub").exists());
+    assert!(store.join(".git").exists());
+
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "git@github.com:alice/secrets.git"
+    );
+
+    let config = std::fs::read_to_string(home.path().join("config.yaml")).unwrap();
+    assert!(config.contains("default_store: alice/secrets"));
+}
+
+#[test]
+fn init_without_store_recommends_personal_github_store() {
+    let home = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .env("GITHUB_USER", "alice")
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "himitsu init --name alice/secrets",
+        ))
+        .stdout(predicate::str::contains("primary personal GitHub store"));
+}
+
 // ============ set / get tests ============
 
 #[test]

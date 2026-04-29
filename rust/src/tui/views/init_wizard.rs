@@ -283,9 +283,11 @@ impl InitWizardView {
             }
             Step::Remote => {
                 lines.push(Line::from(""));
-                lines.push(Line::from("  Default store on GitHub (blank to skip)"));
+                lines.push(Line::from(
+                    "  Primary store on your personal GitHub (blank to skip)",
+                ));
                 lines.push(Line::from(Span::styled(
-                    "  format: org/repo",
+                    "  format: your-github-username/repo (for example, alice/secrets)",
                     Style::default().fg(theme::muted()),
                 )));
                 lines.push(Line::from(""));
