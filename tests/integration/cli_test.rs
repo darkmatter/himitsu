@@ -1295,7 +1295,7 @@ fn init_with_name_registers_store_as_default() {
     assert!(home.path().join("state/stores/myorg/myproject").exists());
 
     // The global config should have default_store set.
-    let cfg_text = std::fs::read_to_string(home.path().join("config/config.yaml")).unwrap();
+    let cfg_text = std::fs::read_to_string(home.path().join("config.yaml")).unwrap();
     assert!(cfg_text.contains("myorg/myproject"));
 }
 
