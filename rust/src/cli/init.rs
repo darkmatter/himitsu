@@ -294,10 +294,8 @@ pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
     let recipients_dir = crate::remote::store::recipients_dir(store);
     std::fs::create_dir_all(&recipients_dir)?;
     let self_pub = recipients_dir.join("self.pub");
-    let mut wrote_self = false;
     if !self_pub.exists() && !pubkey.is_empty() {
         std::fs::write(&self_pub, format!("{pubkey}\n"))?;
-        wrote_self = true;
     }
 
     // Ensure the store is a git repo. Idempotent: skips if .git already exists
@@ -520,8 +518,7 @@ mod tests {
         // as the slug and created `stores/git@github.com:foo/bar/`. We must
         // not configure an origin for those — the slug is not valid.
         let tmp = tempfile::tempdir().unwrap();
-        let (stores, store) =
-            make_store_under(tmp.path(), "git@github.com:foo", "secrets");
+        let (stores, store) = make_store_under(tmp.path(), "git@github.com:foo", "secrets");
 
         ensure_default_origin(&store, &stores);
 

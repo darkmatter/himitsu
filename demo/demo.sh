@@ -21,7 +21,7 @@ set -euo pipefail
 HIMITSU_BIN="$(cd "$(dirname "$0")/.." && pwd)/target/release/himitsu"
 DEMO_HOME="$(mktemp -d)"
 DEMO_STORE="$DEMO_HOME/store/.himitsu"
-export HIMITSU_HOME="$DEMO_HOME"
+export HIMITSU_CONFIG="$DEMO_HOME/config.yaml"
 
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -164,7 +164,7 @@ sleep 0.15
 
 # ----------------------------------------------------------
 banner "12. File layout"
-type_cmd 'find $HIMITSU_HOME -type f | sort'
+type_cmd 'find $DEMO_HOME -type f | sort'
 find "$DEMO_HOME" -type f | sed "s|$DEMO_HOME|~/.himitsu|" | sort
 echo
 

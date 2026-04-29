@@ -21,7 +21,7 @@ Type "[ -x $HIMITSU_BIN ] || { echo 'missing binary – run cargo build --releas
 Enter
 Type "SHIM=$(mktemp -d) && ln -s $HIMITSU_BIN $SHIM/himitsu && export PATH=$SHIM:$PATH"
 Enter
-Type "export DEMO_HOME=/tmp/hdemo && export HIMITSU_HOME=/tmp/hdemo"
+Type "export DEMO_HOME=/tmp/hdemo && export HIMITSU_CONFIG=/tmp/hdemo/config.yaml"
 Enter
 Type "DEMO_STORE=$DEMO_HOME/store/.himitsu"
 Enter

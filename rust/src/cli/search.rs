@@ -352,6 +352,36 @@ pub(crate) fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
 /// freshness. Months use a 30-day approximation and years use 365; this
 /// matches every other "time ago" formatter in the wild and is good
 /// enough for a list view.
+/// Compact age formatter for narrow table cells: `now`, `5m`, `14h`,
+/// `6d`, `3w`, `2mo`, `1y`. Trades the readability of [`humanize_age`]
+/// for a fixed 2–4 character footprint that doesn't blow out a column.
+pub(crate) fn humanize_age_compact(now: DateTime<Utc>, ts: DateTime<Utc>) -> String {
+    let delta = now.signed_duration_since(ts);
+    let secs = delta.num_seconds();
+    if secs < 60 {
+        return "now".to_string();
+    }
+    let mins = delta.num_minutes();
+    if mins < 60 {
+        return format!("{mins}m");
+    }
+    let hours = delta.num_hours();
+    if hours < 24 {
+        return format!("{hours}h");
+    }
+    let days = delta.num_days();
+    if days < 7 {
+        return format!("{days}d");
+    }
+    if days < 30 {
+        return format!("{}w", days / 7);
+    }
+    if days < 365 {
+        return format!("{}mo", days / 30);
+    }
+    format!("{}y", days / 365)
+}
+
 pub(crate) fn humanize_age(now: DateTime<Utc>, ts: DateTime<Utc>) -> String {
     let delta = now.signed_duration_since(ts);
     let secs = delta.num_seconds();

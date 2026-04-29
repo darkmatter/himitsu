@@ -20,7 +20,7 @@ use ratatui::Frame;
 
 use chrono::Utc;
 
-use crate::cli::search::{humanize_age, parse_ts, search_core, SearchResult};
+use crate::cli::search::{humanize_age_compact, parse_ts, search_core, SearchResult};
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
@@ -119,6 +119,17 @@ pub struct SearchView {
     palette: Option<CommandPalette>,
     /// Health of the active store's git checkout, checked once at startup.
     store_health: StoreHealth,
+    /// Whether to render the STORE column in the results table. Off by
+    /// default — most users work in a single store at a time, so the
+    /// column is dead weight. Toggled via the command palette
+    /// ("toggle store column"). When the table groups results by store
+    /// (multi-store searches) the column is hidden regardless because the
+    /// store name is already in a group header row.
+    show_store_column: bool,
+    /// Map of secret path → list of env labels that reference it. Built
+    /// once at view-construction time from the project + global configs.
+    /// Used to render the ENVS column in the results table.
+    env_index: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl SearchView {
@@ -130,6 +141,7 @@ impl SearchView {
             recipients_path: ctx.recipients_path.clone(),
         };
         let store_health = check_store_health(&ctx_owned.store);
+        let env_index = build_env_index();
         let mut view = Self {
             query: String::new(),
             results: Vec::new(),
@@ -139,6 +151,8 @@ impl SearchView {
             picker: None,
             palette: None,
             store_health,
+            show_store_column: false,
+            env_index,
         };
         view.refresh_results();
         view
@@ -379,6 +393,10 @@ impl SearchView {
                 ));
                 SearchAction::None
             }
+            Command::ToggleStoreColumn => {
+                self.show_store_column = !self.show_store_column;
+                SearchAction::None
+            }
             Command::Envs => SearchAction::OpenEnvs,
             Command::Help => SearchAction::ShowHelp,
             Command::Quit => SearchAction::Quit,
@@ -435,10 +453,11 @@ impl SearchView {
             ]
         } else {
             theme::pill_with(
-            format!("{} {health_label}", icons::health()),
-            health_color,
-            theme::on_accent(),
-        );
+                format!("{} {health_label}", icons::health()),
+                health_color,
+                theme::on_accent(),
+            )
+        };
         frame.render_widget(
             Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
             cols[1],
@@ -494,57 +513,83 @@ impl SearchView {
         // When multi-store grouping is active the store name is already in
         // the header row and we drop the redundant per-row store column.
         let has_store_headers = self.rows.iter().any(|r| matches!(r, Row::Store { .. }));
+        let show_store = self.show_store_column && !has_store_headers;
 
         let now = Utc::now();
 
-        // Pre-compute humanized timestamps and descriptions for each secret
-        // row so column widths account for the rendered text, not raw data.
-        let row_data: Vec<Option<(String, String, String)>> = self
+        // Pre-compute the rendered cells for each secret row so column
+        // widths account for the rendered text, not raw data.
+        struct SecretCells {
+            indent: usize,
+            parent_dim: String, // path prefix up to (but not including) the basename
+            basename: String,
+            updated: String,
+            desc: String,
+            envs: String,
+        }
+        let row_data: Vec<Option<SecretCells>> = self
             .rows
             .iter()
             .map(|row| match row {
                 Row::Secret { result, indent } => {
-                    let prefix = "  ".repeat(*indent);
-                    let padded_path = format!("{prefix}{}", result.path);
+                    let (parent, name) = split_path_basename(&result.path);
                     let ts = result
                         .updated_at
                         .as_deref()
                         .or(result.created_at.as_deref());
                     let updated = ts
                         .and_then(parse_ts)
-                        .map(|t| humanize_age(now, t))
+                        .map(|t| humanize_age_compact(now, t))
                         .unwrap_or_else(|| "—".to_string());
                     let desc = result.description.clone().unwrap_or_default();
-                    Some((padded_path, updated, desc))
+                    let envs = self
+                        .env_index
+                        .get(&result.path)
+                        .map(|labels| labels.join(", "))
+                        .unwrap_or_default();
+                    Some(SecretCells {
+                        indent: *indent,
+                        parent_dim: parent.to_string(),
+                        basename: name.to_string(),
+                        updated,
+                        desc,
+                        envs,
+                    })
                 }
                 _ => None,
             })
             .collect();
 
         // Column widths are computed against the widest secret row and the
-        // header label itself, so short paths still leave room for "PATH" /
-        // "STORE" to read cleanly.
+        // header label itself.
         let path_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|(p, _, _)| p.len()))
+            .filter_map(|d| {
+                d.as_ref()
+                    .map(|c| c.indent * 2 + c.parent_dim.len() + c.basename.len())
+            })
             .max()
             .unwrap_or(0)
             .max("PATH".len());
         let updated_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|(_, u, _)| u.len()))
+            .filter_map(|d| d.as_ref().map(|c| c.updated.len()))
             .max()
             .unwrap_or(0)
             .max("UPDATED".len());
+        let envs_w = row_data
+            .iter()
+            .filter_map(|d| d.as_ref().map(|c| c.envs.len()))
+            .max()
+            .unwrap_or(0)
+            .max("ENVS".len());
         let desc_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|(_, _, d)| d.len()))
+            .filter_map(|d| d.as_ref().map(|c| c.desc.len()))
             .max()
             .unwrap_or(0)
             .max("DESCRIPTION".len());
-        let store_w = if has_store_headers {
-            0
-        } else {
+        let store_w = if show_store {
             self.rows
                 .iter()
                 .filter_map(|row| match row {
@@ -554,6 +599,8 @@ impl SearchView {
                 .max()
                 .unwrap_or(0)
                 .max("STORE".len())
+        } else {
+            0
         };
 
         let chunks = Layout::default()
@@ -574,11 +621,15 @@ impl SearchView {
                 header_style,
             ),
             Span::styled(
+                format!("{:<envs_w$}  ", "ENVS", envs_w = envs_w),
+                header_style,
+            ),
+            Span::styled(
                 format!("{:<desc_w$}  ", "DESCRIPTION", desc_w = desc_w),
                 header_style,
             ),
         ];
-        if !has_store_headers {
+        if show_store {
             header_spans.push(Span::styled(
                 format!("{:<store_w$}", "STORE", store_w = store_w),
                 header_style,
@@ -618,16 +669,31 @@ impl SearchView {
                     ListItem::new(line)
                 }
                 Row::Secret { result, .. } => {
-                    let (padded_path, updated, desc) = data.as_ref().unwrap();
+                    let cells = data.as_ref().unwrap();
+                    // Compose the path cell from three styled spans:
+                    // indent, dimmed parent prefix, full-bright basename.
+                    let indent = "  ".repeat(cells.indent);
+                    let consumed = indent.len() + cells.parent_dim.len() + cells.basename.len();
+                    let pad = path_w.saturating_sub(consumed);
                     let mut spans = vec![
-                        Span::raw(format!("{padded_path:<path_w$}  ")),
+                        Span::raw(indent),
                         Span::styled(
-                            format!("{updated:<updated_w$}  "),
+                            cells.parent_dim.clone(),
+                            Style::default().fg(theme::path_dim()),
+                        ),
+                        Span::raw(cells.basename.clone()),
+                        Span::raw(format!("{:<pad$}  ", "", pad = pad)),
+                        Span::styled(
+                            format!("{:<updated_w$}  ", cells.updated, updated_w = updated_w),
                             Style::default().fg(theme::muted()),
                         ),
-                        Span::raw(format!("{desc:<desc_w$}  ")),
+                        Span::styled(
+                            format!("{:<envs_w$}  ", cells.envs, envs_w = envs_w),
+                            Style::default().fg(theme::accent()),
+                        ),
+                        Span::raw(format!("{:<desc_w$}  ", cells.desc, desc_w = desc_w)),
                     ];
-                    if !has_store_headers {
+                    if show_store {
                         spans.push(Span::styled(
                             format!("{:<store_w$}", result.store, store_w = store_w),
                             Style::default().fg(theme::accent()),
@@ -669,6 +735,57 @@ impl SearchView {
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
+}
+
+/// Split a slash-delimited secret path into `(parent_with_slash, basename)`.
+/// `"foo/bar/baz"` becomes `("foo/bar/", "baz")`. A path without slashes
+/// returns an empty parent. Kept here as a free function so the table
+/// renderer can dim the parent prefix without re-walking the path.
+fn split_path_basename(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(idx) => path.split_at(idx + 1),
+        None => ("", path),
+    }
+}
+
+/// Build a `secret_path → [env labels]` map from the project + global
+/// configs. Glob entries (`prefix/*`) match every secret whose path starts
+/// with `prefix/`; aliases and singles match their explicit path. Keeps
+/// the result sorted within each entry so render order stays stable.
+fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
+    use crate::config::{self, EnvEntry};
+    use std::collections::{BTreeSet, HashMap};
+
+    let mut by_path: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut record = |path: String, label: &str| {
+        by_path.entry(path).or_default().insert(label.to_string());
+    };
+    let mut walk = |envs: &std::collections::BTreeMap<String, Vec<EnvEntry>>| {
+        for (label, entries) in envs {
+            for entry in entries {
+                match entry {
+                    EnvEntry::Single(path) => record(path.clone(), label),
+                    EnvEntry::Alias { path, .. } => record(path.clone(), label),
+                    // Glob: skip — we don't have a way to expand against the
+                    // result set here without more plumbing. The label still
+                    // shows up against any explicit Single/Alias references.
+                    EnvEntry::Glob(_) => {}
+                }
+            }
+        }
+    };
+
+    if let Ok(global) = config::Config::load(&config::config_path()) {
+        walk(&global.envs);
+    }
+    if let Some((project, _)) = config::load_project_config() {
+        walk(&project.envs);
+    }
+
+    by_path
+        .into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect()
 }
 
 /// Decrypt a search result's ciphertext to its UTF-8 value, using the
@@ -1057,29 +1174,48 @@ mod tests {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        let backend = TestBackend::new(120, 20);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| view.draw(f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut rendered = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                rendered.push_str(buf[(x, y)].symbol());
+
+        let render = |view: &mut SearchView| -> String {
+            let backend = TestBackend::new(120, 20);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| view.draw(f)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let mut rendered = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    rendered.push_str(buf[(x, y)].symbol());
+                }
+                rendered.push('\n');
             }
-            rendered.push('\n');
-        }
+            rendered
+        };
+
+        // Default render: PATH / UPDATED / ENVS / DESCRIPTION are always
+        // shown; STORE is hidden until the user toggles it on via the
+        // command palette.
+        let rendered = render(&mut view);
         assert!(rendered.contains("PATH"), "missing PATH header: {rendered}");
         assert!(
             rendered.contains("UPDATED"),
             "missing UPDATED header: {rendered}"
         );
+        assert!(rendered.contains("ENVS"), "missing ENVS header: {rendered}");
         assert!(
             rendered.contains("DESCRIPTION"),
             "missing DESCRIPTION header: {rendered}"
         );
         assert!(
+            !rendered.contains("STORE"),
+            "STORE header should be hidden by default: {rendered}"
+        );
+
+        // Toggling the column on through the dispatch path (same code the
+        // command palette runs) makes STORE appear.
+        view.dispatch_command(Command::ToggleStoreColumn);
+        let rendered = render(&mut view);
+        assert!(
             rendered.contains("STORE"),
-            "missing STORE header: {rendered}"
+            "STORE header should appear after toggle: {rendered}"
         );
     }
 

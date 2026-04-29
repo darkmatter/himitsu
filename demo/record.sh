@@ -32,7 +32,7 @@ fi
 
 DEMO_HOME="$(mktemp -d)"
 DEMO_STORE="$DEMO_HOME/store/.himitsu"
-export HIMITSU_HOME="$DEMO_HOME"
+export HIMITSU_CONFIG="$DEMO_HOME/config.yaml"
 
 cleanup() { rm -rf "$DEMO_HOME"; }
 trap cleanup EXIT
@@ -268,7 +268,7 @@ ts_add 0.3
 
 # ----------------------------------------------------------
 banner "12. File layout"
-type_cmd 'find $HIMITSU_HOME -type f | sort'
+type_cmd 'find $DEMO_HOME -type f | sort'
 _file_tree=$(find "$DEMO_HOME" -type f | sed "s|$DEMO_HOME|~/.himitsu|" | sort)
 emit "$_file_tree"$'\n'
 ts_add 0.3

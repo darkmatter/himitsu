@@ -25,6 +25,7 @@ use crate::tui::theme;
 pub enum Command {
     NewSecret,
     SwitchStore,
+    ToggleStoreColumn,
     Envs,
     Help,
     Quit,
@@ -35,6 +36,7 @@ impl Command {
         match self {
             Command::NewSecret => "new secret",
             Command::SwitchStore => "switch store",
+            Command::ToggleStoreColumn => "toggle store column",
             Command::Envs => "browse envs",
             Command::Help => "show help",
             Command::Quit => "quit",
@@ -45,6 +47,7 @@ impl Command {
         match self {
             Command::NewSecret => "ctrl-n",
             Command::SwitchStore => "ctrl-s",
+            Command::ToggleStoreColumn => "",
             Command::Envs => "shift-e",
             Command::Help => "?",
             Command::Quit => "esc",
@@ -55,6 +58,7 @@ impl Command {
         match self {
             Command::NewSecret => "Create a new encrypted secret",
             Command::SwitchStore => "Pick a different remote / checkout",
+            Command::ToggleStoreColumn => "Show/hide the STORE column in the results table",
             Command::Envs => "Browse env presets defined in himitsu.yaml",
             Command::Help => "Open the contextual key reference",
             Command::Quit => "Exit the TUI",
@@ -84,6 +88,7 @@ pub struct CommandPalette {
 const COMMANDS: &[Command] = &[
     Command::NewSecret,
     Command::SwitchStore,
+    Command::ToggleStoreColumn,
     Command::Envs,
     Command::Help,
     Command::Quit,

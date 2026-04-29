@@ -2,12 +2,14 @@
 # Shared fixture builder for the TUI Phase 2 demos (US-008..US-013).
 #
 # Each demo (VHS tape or asciinema driver) sources this file and calls
-# `tui_demo_prepare` to get an ephemeral HIMITSU_HOME populated with a
-# sample store. The `launch_tui()` code path resolves the store from
-# `stores_dir()` (not from `-s`), so the primary demo store is placed at
-# `$HIMITSU_HOME/state/stores/demo/main`. Demos that need a second store
+# `tui_demo_prepare` to get an ephemeral demo root populated with a sample
+# store. We point `HIMITSU_CONFIG` at `$DEMO_HOME/config.yaml`; the binary
+# then derives data/state from the config's parent directory. The
+# `launch_tui()` code path resolves the store from `stores_dir()` (not
+# from `-s`), so the primary demo store is placed at
+# `$DEMO_HOME/state/stores/demo/main`. Demos that need a second store
 # for the picker also call `tui_demo_register_second_store`, which adds
-# `acme/infra` and writes `config/config.yaml` to disambiguate.
+# `acme/infra` and writes `config.yaml` to disambiguate.
 #
 # The caller is responsible for calling `tui_demo_cleanup` on exit.
 
@@ -25,7 +27,8 @@ tui_demo_prepare() {
 
   local name="${DEMO_NAME:-tui-demo}"
   DEMO_HOME="$(mktemp -d -t "himitsu-${name}.XXXXXX")"
-  export HIMITSU_HOME="$DEMO_HOME"
+  export DEMO_HOME
+  export HIMITSU_CONFIG="$DEMO_HOME/config.yaml"
   # Primary store lives under stores_dir so `launch_tui()` auto-resolves it.
   export DEMO_STORE="$DEMO_HOME/state/stores/demo/main"
   mkdir -p "$(dirname "$DEMO_STORE")"
@@ -41,14 +44,13 @@ tui_demo_prepare() {
 # pointing default_store at the primary, so the ambiguous-store resolver
 # still opens the right dashboard.
 tui_demo_register_second_store() {
-  local second="$HIMITSU_HOME/state/stores/acme/infra"
+  local second="$DEMO_HOME/state/stores/acme/infra"
   mkdir -p "$(dirname "$second")"
   "$HIMITSU_BIN" -s "$second" init >/dev/null
   "$HIMITSU_BIN" -s "$second" set prod/SHARED_KEY "team-secret-123"         >/dev/null
   "$HIMITSU_BIN" -s "$second" set prod/SHARED_URL "https://api.acme.internal" >/dev/null
 
-  mkdir -p "$HIMITSU_HOME/config"
-  cat > "$HIMITSU_HOME/config/config.yaml" <<YAML
+  cat > "$HIMITSU_CONFIG" <<YAML
 default_store: demo/main
 YAML
 }

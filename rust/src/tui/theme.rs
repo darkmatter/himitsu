@@ -41,6 +41,11 @@ pub(crate) struct Palette {
     pub footer_text: Color,
     pub warning: Color,
     pub danger: Color,
+    /// Distinctly recessed text color used for content the user is meant
+    /// to scan past, like the parent path of a hierarchical entry. Sits
+    /// between [`background`] and [`muted`] so it reads as backgrounded
+    /// without disappearing entirely.
+    pub path_dim: Color,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +241,13 @@ pub(crate) fn danger() -> Color {
     current().danger
 }
 
+/// Heavily recessed text — noticeably dimmer than [`muted`]. Reserved for
+/// content the eye is meant to skim past, like the parent prefix of a
+/// hierarchical secret path.
+pub(crate) fn path_dim() -> Color {
+    current().path_dim
+}
+
 impl Palette {
     fn named(name: &str) -> Result<Self> {
         match normalize_name(name).as_str() {
@@ -274,6 +286,7 @@ impl Palette {
             footer_text: rgb(125, 137, 158),
             warning: rgb(251, 191, 36),
             danger: rgb(248, 113, 113),
+            path_dim: rgb(82, 95, 117),
         }
     }
 
@@ -291,6 +304,7 @@ impl Palette {
             footer_text: hex(0x747277),
             warning: hex(0xe6986b),
             danger: hex(0xff6188),
+            path_dim: hex(0x3e3c47),
         }
     }
 
@@ -308,6 +322,7 @@ impl Palette {
             footer_text: hex(0x747277),
             warning: hex(0xffca85),
             danger: hex(0xff6767),
+            path_dim: hex(0x3e3c47),
         }
     }
 
@@ -325,6 +340,7 @@ impl Palette {
             footer_text: hex(0x7d7a8b),
             warning: hex(0xffca85),
             danger: hex(0xff6188),
+            path_dim: hex(0x3e3c47),
         }
     }
 
@@ -342,6 +358,7 @@ impl Palette {
             footer_text: hex(0x747277),
             warning: hex(0xffca85),
             danger: hex(0xff6767),
+            path_dim: hex(0x3e3c47),
         }
     }
 
@@ -359,6 +376,10 @@ impl Palette {
             footer_text: hex(0x6c7380),
             warning: hex(0xffb454),
             danger: hex(0xf07178),
+            // Ayu UI/separator gray — sits between the #0b0e14 background
+            // and the #626a73 muted comment so the parent path reads as
+            // recessed without bleeding into the panel.
+            path_dim: hex(0x4d5566),
         }
     }
 
@@ -376,6 +397,9 @@ impl Palette {
             footer_text: hex(0x7f849c),
             warning: hex(0xf9e2af),
             danger: hex(0xf38ba8),
+            // Catppuccin Mocha Overlay0 — one step up from Surface2; reads
+            // as a recessed-but-still-legible gray on the #1e1e2e base.
+            path_dim: hex(0x6c7086),
         }
     }
 
@@ -393,6 +417,7 @@ impl Palette {
             footer_text: hex(0x697098),
             warning: hex(0xffcb6b),
             danger: hex(0xf07178),
+            path_dim: hex(0x3b475a),
         }
     }
 
@@ -410,6 +435,7 @@ impl Palette {
             footer_text: hex(0x6e6a86),
             warning: hex(0xf6c177),
             danger: hex(0xeb6f92),
+            path_dim: hex(0x403c54),
         }
     }
 }
