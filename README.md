@@ -190,8 +190,9 @@ The keyring lives separately:
 Create an age keypair and scaffold the store. Adds `self.pub` as a recipient automatically.
 
 ```bash
-himitsu init                   # interactive TUI wizard
-himitsu init --name org/repo   # headless, registers a named store
+himitsu init                              # interactive TUI wizard
+himitsu init --name you/secrets           # headless, creates/restores a primary store
+himitsu init --name org/repo --url <url>  # restore from a custom git remote
 ```
 
 ### `himitsu set <path> <value>`

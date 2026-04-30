@@ -381,6 +381,7 @@ impl Cli {
                 init::InitArgs {
                     json: false,
                     name: None,
+                    url: None,
                     home: None,
                     key_provider: None,
                     no_tui: true,

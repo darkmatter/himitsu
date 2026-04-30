@@ -215,6 +215,7 @@ impl InitWizardView {
         self.pending_init = Some(InitArgs {
             json: false,
             name,
+            url: None,
             home: None,
             key_provider,
             no_tui: true,

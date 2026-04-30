@@ -59,6 +59,10 @@ pub fn clone_noninteractive(url: &str, dest: &Path) -> Result<String> {
         // Disable interactive prompts so the call fails fast instead of hanging.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "echo")
+        .env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=3 -o ConnectionAttempts=1",
+        )
         .output()
         .map_err(|e| HimitsuError::Git(format!("failed to execute git clone: {e}")))?;
 
@@ -87,6 +91,50 @@ pub fn push(cwd: &Path) -> Result<String> {
 /// Pull from the remote origin.
 pub fn pull(cwd: &Path) -> Result<String> {
     run(&["pull"], cwd)
+}
+
+/// Fetch origin and update the working tree to the remote default branch.
+///
+/// Uses a normal fast-forward pull when an upstream is configured. For local
+/// stores that were initialized before an upstream existed, falls back to
+/// checking out `origin/HEAD` (or `origin/main`/`origin/master`) so adding an
+/// existing store restores the files instead of leaving the checkout empty.
+pub fn pull_or_checkout_origin(cwd: &Path) -> Result<()> {
+    run(&["fetch", "--quiet", "origin"], cwd)?;
+    if run(&["pull", "--ff-only", "--recurse-submodules"], cwd).is_ok() {
+        return Ok(());
+    }
+
+    let branch = origin_default_branch(cwd)?;
+    run(
+        &["checkout", "-B", &branch, &format!("origin/{branch}")],
+        cwd,
+    )?;
+    let _ = run(&["submodule", "update", "--init", "--recursive"], cwd);
+    Ok(())
+}
+
+fn origin_default_branch(cwd: &Path) -> Result<String> {
+    if let Ok(default) = run(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd,
+    ) {
+        if let Some(branch) = default.trim().strip_prefix("origin/") {
+            if !branch.is_empty() {
+                return Ok(branch.to_string());
+            }
+        }
+    }
+
+    for branch in ["main", "master"] {
+        if run(&["rev-parse", "--verify", &format!("origin/{branch}")], cwd).is_ok() {
+            return Ok(branch.to_string());
+        }
+    }
+
+    Err(HimitsuError::Git(
+        "could not determine origin default branch".to_string(),
+    ))
 }
 
 /// Get the git status (short form).

@@ -59,15 +59,23 @@ pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
             let dest = config::stores_dir().join(org).join(repo);
 
             if dest.exists() {
-                return Err(HimitsuError::Remote(format!(
-                    "remote '{resolved_slug}' already exists at {}",
-                    dest.display()
-                )));
+                if !dest.join(".git").exists() {
+                    return Err(HimitsuError::Remote(format!(
+                        "remote '{resolved_slug}' already exists at {} but is not a git checkout",
+                        dest.display()
+                    )));
+                }
+                if !git::has_any_remote(&dest) {
+                    git::add_remote(&dest, "origin", &clone_url)?;
+                }
+                println!("Updating {resolved_slug} from origin");
+                git::pull_or_checkout_origin(&dest)?;
+                println!("Updated remote '{resolved_slug}'");
+            } else {
+                println!("Cloning {clone_url} → {}", dest.display());
+                git::clone(&clone_url, &dest)?;
+                println!("Added remote '{resolved_slug}'");
             }
-
-            println!("Cloning {clone_url} → {}", dest.display());
-            git::clone(&clone_url, &dest)?;
-            println!("Added remote '{resolved_slug}'");
         }
 
         RemoteCommand::Default { slug } => match slug {
@@ -135,8 +143,6 @@ pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Verify that a full SSH URL is resolved to the correct slug and clone URL.
     #[test]
     fn slug_from_ssh_url() {

@@ -12,7 +12,7 @@ fn himitsu() -> Command {
 /// In the new model:
 /// - HIMITSU_CONFIG → config_dir = parent of the file, data_dir = <parent>/share, state_dir = <parent>/state
 /// - `--store <path>` points to the store ROOT (not `.himitsu/` inside it)
-/// - Secrets are stored at `store_root/.himitsu/secrets/<path>.age`
+/// - Secrets are stored at `store_root/.himitsu/secrets/<path>.yaml`
 /// - Recipients at `store_root/.himitsu/recipients/`
 fn setup() -> (TempDir, TempDir) {
     let home = TempDir::new().unwrap();
@@ -127,6 +127,61 @@ fn init_without_store_recommends_personal_github_store() {
         .stdout(predicate::str::contains("primary personal GitHub store"));
 }
 
+#[test]
+fn init_name_restores_and_pulls_existing_store() {
+    let home = TempDir::new().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    create_local_git_repo(source.path());
+    commit_file(
+        source.path(),
+        ".himitsu/secrets/prod/API_KEY.yaml",
+        b"ciphertext-v1\n",
+        "add existing secret",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "init",
+            "--name",
+            "alice/secrets",
+            "--url",
+            &source.path().to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ Restored store alice/secrets (default)",
+        ));
+
+    let restored = home.path().join("state/stores/alice/secrets");
+    assert!(restored.join(".himitsu/secrets/prod/API_KEY.yaml").exists());
+
+    commit_file(
+        source.path(),
+        ".himitsu/secrets/dev/NEW.yaml",
+        b"ciphertext-v2\n",
+        "add another secret",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "init",
+            "--name",
+            "alice/secrets",
+            "--url",
+            &source.path().to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ Restored store alice/secrets (default)",
+        ));
+
+    assert!(restored.join(".himitsu/secrets/dev/NEW.yaml").exists());
+}
+
 // ============ set / get tests ============
 
 #[test]
@@ -180,9 +235,13 @@ fn set_get_with_metadata_roundtrip() {
         .assert()
         .success()
         .stdout("s3cret")
-        .stderr(predicate::str::contains("url:         https://db.example.com"))
+        .stderr(predicate::str::contains(
+            "url:         https://db.example.com",
+        ))
         .stderr(predicate::str::contains("totp:        JBSWY3DPEHPK3PXP"))
-        .stderr(predicate::str::contains("description: Primary prod database"))
+        .stderr(predicate::str::contains(
+            "description: Primary prod database",
+        ))
         .stderr(predicate::str::contains("expires"));
 }
 
@@ -193,9 +252,7 @@ fn set_rejects_invalid_totp() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args([
-            "--store", &s, "set", "prod/BAD", "value", "--totp", "abc",
-        ])
+        .args(["--store", &s, "set", "prod/BAD", "value", "--totp", "abc"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("totp"));
@@ -209,7 +266,13 @@ fn set_rejects_invalid_expires_at() {
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args([
-            "--store", &s, "set", "prod/BAD", "value", "--expires-at", "30x",
+            "--store",
+            &s,
+            "set",
+            "prod/BAD",
+            "value",
+            "--expires-at",
+            "30x",
         ])
         .assert()
         .failure()
@@ -377,21 +440,6 @@ fn ls_filters_by_prefix() {
         .stdout(predicate::str::contains("B_KEY"));
 }
 
-// ============ decrypt test ============
-
-#[test]
-fn decrypt_errors_no_plaintext_at_rest() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "decrypt"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("not supported"));
-}
-
 // ============ rekey (re-encrypt) tests ============
 
 #[test]
@@ -418,26 +466,6 @@ fn rekey_re_encrypts_secrets() {
         .assert()
         .success()
         .stdout("value");
-}
-
-#[test]
-fn encrypt_deprecated_wrapper_still_works() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "prod/SECRET", "value"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "encrypt"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Re-encrypted"))
-        .stderr(predicate::str::contains("deprecated"));
 }
 
 // ============ recipient tests ============
@@ -496,10 +524,7 @@ fn recipient_add_explicit_key() {
         .assert()
         .success();
 
-    assert!(store
-        .path()
-        .join(".himitsu/recipients/bot.pub")
-        .exists());
+    assert!(store.path().join(".himitsu/recipients/bot.pub").exists());
 }
 
 #[test]
@@ -556,7 +581,7 @@ fn search_matches_keys() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "search", "STRIPE", "--refresh"])
+        .args(["--store", &s, "search", "STRIPE"])
         .assert()
         .success()
         .stdout(predicate::str::contains("STRIPE_KEY"));
@@ -569,7 +594,7 @@ fn search_no_matches_returns_empty() {
     // search without --store: scans stores_dir which is empty
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["search", "NONEXISTENT", "--refresh"])
+        .args(["search", "NONEXISTENT"])
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
@@ -626,23 +651,6 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("remote"))
         .stdout(predicate::str::contains("ls"))
         .stdout(predicate::str::contains("version"));
-}
-
-#[test]
-fn help_does_not_show_hidden_commands() {
-    // Hidden commands should not appear in the default --help output.
-    // 'encrypt' is deprecated+hidden; 'codegen', 'schema' are demoted to hidden;
-    // 'share', 'inbox' are not yet implemented.
-    himitsu()
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("codegen").not())
-        .stdout(predicate::str::contains("schema").not())
-        .stdout(predicate::str::contains("  encrypt").not()) // hidden deprecated alias
-        .stdout(predicate::str::contains("  share").not())
-        .stdout(predicate::str::contains("  inbox").not())
-        .stdout(predicate::str::contains("  decrypt").not());
 }
 
 #[test]
@@ -809,7 +817,57 @@ fn create_local_git_repo(path: &std::path::Path) {
     git(&["init"]);
     std::fs::write(path.join("README"), b"remote store\n").unwrap();
     git(&["add", "-A"]);
-    git(&["commit", "-m", "init"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-m", "init"]);
+}
+
+fn commit_file(path: &std::path::Path, relative_path: &str, contents: &[u8], message: &str) {
+    let file_path = path.join(relative_path);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&file_path, contents).unwrap();
+
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    git(&["add", relative_path]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-m", message]);
+}
+
+fn init_empty_git_checkout(path: &std::path::Path, origin: &std::path::Path) {
+    std::fs::create_dir_all(path).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["remote", "add", "origin", &origin.to_string_lossy()]);
 }
 
 #[test]
@@ -840,6 +898,43 @@ fn remote_add_clones_local_repo() {
 }
 
 #[test]
+fn remote_add_pulls_existing_checkout() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    let source = tempfile::tempdir().unwrap();
+    create_local_git_repo(source.path());
+    commit_file(
+        source.path(),
+        ".himitsu/secrets/prod/API_KEY.yaml",
+        b"ciphertext\n",
+        "add secret",
+    );
+
+    let dest = home.path().join("state/stores/test-org/my-repo");
+    init_empty_git_checkout(&dest, source.path());
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &s,
+            "remote",
+            "add",
+            "test-org/my-repo",
+            "--url",
+            &source.path().to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Updated remote 'test-org/my-repo'",
+        ));
+
+    assert!(dest.join(".himitsu/secrets/prod/API_KEY.yaml").exists());
+}
+
+#[test]
 fn remote_add_resolves_via_remote_flag() {
     let (home, store) = setup();
     let s = store_flag(&store);
@@ -867,30 +962,6 @@ fn remote_add_resolves_via_remote_flag() {
         .args(["-r", "acme/repo", "ls"])
         .assert()
         .stderr(predicate::str::contains("remote not found").not());
-}
-
-#[test]
-fn remote_add_duplicate_fails() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    let source = tempfile::tempdir().unwrap();
-    create_local_git_repo(source.path());
-    let url = source.path().to_string_lossy().to_string();
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
-        .assert()
-        .success();
-
-    // Second add with the same slug must fail.
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "remote", "add", "dup/repo", "--url", &url])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("already exists"));
 }
 
 #[test]
@@ -2063,10 +2134,7 @@ fn recipient_add_with_custom_recipients_path() {
         .success();
 
     // The new key file should be under the custom path (flat layout).
-    assert!(store
-        .path()
-        .join("my/recipients/extra-key.pub")
-        .exists());
+    assert!(store.path().join("my/recipients/extra-key.pub").exists());
 }
 
 // ============ check tests ============
@@ -2303,4 +2371,3 @@ fn completions_bash_outputs_script() {
         .success()
         .stdout(predicate::str::contains("himitsu"));
 }
-

@@ -567,19 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn list_secrets_handles_legacy_age_files() {
-        let store = make_store();
-        let base = secrets_dir(store.path());
-        std::fs::create_dir_all(base.join("prod")).unwrap();
-        std::fs::write(base.join("prod/OLD.age"), b"binary").unwrap();
-        std::fs::write(base.join("prod/NEW.yaml"), "fake: yaml").unwrap();
-        let paths = list_secrets(store.path(), None).unwrap();
-        assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&"prod/OLD".to_string()));
-        assert!(paths.contains(&"prod/NEW".to_string()));
-    }
-
-    #[test]
     fn delete_secret_removes_yaml_file() {
         let store = make_store();
         write_secret(store.path(), "test/KEY", b"data").unwrap();

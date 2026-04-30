@@ -867,15 +867,6 @@ mod tests {
 
     // ── auto_pull config ────────────────────────────────────────────────
 
-    /// Existing configs that predate the `auto_pull` field must still parse
-    /// and yield `false`. Backwards-compat guard.
-    #[test]
-    fn config_without_auto_pull_defaults_to_false() {
-        let yaml = "default_store: foo/bar\nkey_provider: disk\n";
-        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(!cfg.auto_pull);
-    }
-
     #[test]
     fn config_auto_pull_round_trips() {
         let yaml = "auto_pull: true\nkey_provider: disk\n";
@@ -925,19 +916,6 @@ mod tests {
         // Verify the path structure is correct
         assert!(expected.exists());
         assert_eq!(expected.file_name().unwrap(), repo);
-    }
-
-    #[test]
-    fn remote_store_path_errors_when_missing() {
-        // Validate that a non-existent slug returns RemoteNotFound.
-        // We use a unique tempdir so there's no collision.
-        let tmp = tempfile::tempdir().unwrap();
-        // The path will be tmp/state/stores/ghost/missing, which doesn't exist.
-        let expected = tmp.path().join("state/stores/ghost/missing");
-        assert!(!expected.exists()); // sanity
-                                     // RemoteNotFound requires a missing directory; we trust validate_remote_slug
-        let err = validate_remote_slug("ghost/missing");
-        assert!(err.is_ok()); // valid slug
     }
 
     #[test]

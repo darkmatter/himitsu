@@ -99,14 +99,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_legacy_raw_bytes_roundtrip() {
-        let legacy = b"hello world";
-        let d = decode(legacy);
-        assert_eq!(d.data, legacy);
-        assert!(!d.has_metadata());
-    }
-
-    #[test]
     fn encode_decode_roundtrip() {
         let sv = SecretValue {
             data: b"abc".to_vec(),

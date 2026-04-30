@@ -22,6 +22,10 @@ pub struct InitArgs {
     #[arg(long)]
     pub name: Option<String>,
 
+    /// Git URL to restore the named store from (default: git@github.com:<org>/<repo>.git).
+    #[arg(long, requires = "name")]
+    pub url: Option<String>,
+
     /// Override the himitsu data directory (persisted to ~/.config/himitsu/home).
     #[arg(long, hide = true)]
     pub home: Option<String>,
@@ -123,19 +127,17 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
     }
 
     // ── 5. Handle --name: register a named remote store and set as default ─
-    let name_registered = if let Some(ref slug) = args.name {
-        let (org, repo) = config::validate_remote_slug(slug)?;
-        let dest = config::store_checkout(org, repo);
-        ensure_store_layout(&dest, &pubkey)?;
-        ensure_default_origin(&dest, &state_dir.join("stores"));
+    let (name_registered, name_restored) = if let Some(ref slug) = args.name {
+        let restored =
+            restore_or_create_named_store(slug, args.url.as_deref(), &pubkey, state_dir)?;
 
         // Set (or update) default_store in global config
         let mut cfg = config::Config::load(&config_path)?;
         cfg.default_store = Some(slug.clone());
         cfg.save(&config_path)?;
-        true
+        (true, restored)
     } else {
-        false
+        (false, false)
     };
 
     // ── 6. Detect git context for suggestions ─────────────────────────────
@@ -197,7 +199,11 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
         }
         if name_registered {
             let slug = args.name.as_deref().unwrap_or("");
-            println!("✓ Registered store {slug} (default)");
+            if name_restored {
+                println!("✓ Restored store {slug} (default)");
+            } else {
+                println!("✓ Registered store {slug} (default)");
+            }
         }
         if args.key_provider.is_some() {
             println!("✓ Key provider: {key_provider}");
@@ -295,6 +301,64 @@ pub(crate) fn read_public_key(data_dir: &Path) -> Result<String> {
 
 pub(crate) fn store_exists(store: &Path) -> bool {
     crate::remote::store::secrets_dir(store).exists()
+}
+
+/// Restore a slug-managed store from git when it already exists remotely,
+/// otherwise create a fresh local checkout with the standard GitHub origin.
+///
+/// Returns `true` when existing remote contents were restored or updated.
+fn restore_or_create_named_store(
+    slug: &str,
+    url: Option<&str>,
+    pubkey: &str,
+    state_dir: &Path,
+) -> Result<bool> {
+    let (org, repo) = config::validate_remote_slug(slug)?;
+    let dest = config::store_checkout(org, repo);
+    let clone_url = url
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
+
+    let restored = if dest.exists() {
+        pull_existing_store(&dest)
+    } else {
+        match crate::git::clone_noninteractive(&clone_url, &dest) {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::debug!(
+                    "could not clone existing store {slug} from {clone_url}; creating local store: {e}"
+                );
+                false
+            }
+        }
+    };
+
+    ensure_store_layout(&dest, pubkey)?;
+    if crate::git::has_any_remote(&dest) {
+        // A clone (or an existing checkout) already carries the user's remote.
+    } else if let Some(url) = url {
+        if let Err(e) = crate::git::add_remote(&dest, "origin", url) {
+            tracing::debug!("failed to set origin for {}: {e}", dest.display());
+        }
+    } else {
+        ensure_default_origin(&dest, &state_dir.join("stores"));
+    }
+
+    Ok(restored)
+}
+
+fn pull_existing_store(store: &Path) -> bool {
+    if !store.join(".git").exists() || !crate::git::has_any_remote(store) {
+        return false;
+    }
+
+    match crate::git::pull_or_checkout_origin(store) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::debug!("failed to restore {} from origin: {e}", store.display());
+            false
+        }
+    }
 }
 
 pub(crate) fn ensure_store_layout(store: &Path, pubkey: &str) -> Result<bool> {
