@@ -13,6 +13,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
+use super::standard_canvas;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -324,33 +326,7 @@ impl SearchView {
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
-
-        // Always require a small margin around the center column
-        let chunks = Layout::default()
-            .constraints(Constraint::from_mins([0]))
-            .horizontal_margin(4)
-            .vertical_margin(4)
-            .split(area);
-        let with_margin = chunks[0];
-        // Allow resizing within a constraint. When developing, alaways develop against
-        // the minimum size.
-        let center_column = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Fill(1),
-                Constraint::Max(80),
-                Constraint::Fill(1),
-            ])
-            .split(with_margin)[1];
-        let center_row = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Fill(1),
-                Constraint::Max(30), //
-                Constraint::Fill(1),
-            ])
-            .split(center_column)[1];
+        let area = standard_canvas(frame.area());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -361,7 +337,7 @@ impl SearchView {
                 Constraint::Length(0), // -- spacer --
                 Constraint::Length(1), // footer
             ])
-            .split(center_row);
+            .split(area);
 
         self.draw_header(frame, chunks[0]);
         self.draw_input(frame, chunks[2]);
@@ -719,7 +695,7 @@ impl SearchView {
         // through the command palette (Ctrl+P), so the row stays short and
         // doesn't need to grow as the catalog of commands does.
         let footer = Style::default().fg(theme::footer_text());
-        let line = Line::from(vec![
+        let left = Line::from(vec![
             Span::styled("↑/↓", Style::default().fg(theme::accent())),
             Span::styled(" navigate    ", footer),
             Span::styled("enter", Style::default().fg(theme::accent())),
@@ -727,13 +703,20 @@ impl SearchView {
             Span::styled("^n", Style::default().fg(theme::accent())),
             Span::styled(" new    ", footer),
             Span::styled("^y", Style::default().fg(theme::accent())),
-            Span::styled(" copy    ", footer),
+            Span::styled(" copy", footer),
+        ]);
+        let right = Line::from(vec![
             Span::styled("^p", Style::default().fg(theme::accent())),
             Span::styled(" commands    ", footer),
             Span::styled("esc", Style::default().fg(theme::accent())),
             Span::styled(" quit", footer),
         ]);
-        frame.render_widget(Paragraph::new(line), area);
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(24)])
+            .split(area);
+        frame.render_widget(Paragraph::new(left), chunks[0]);
+        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), chunks[1]);
     }
 }
 
@@ -1322,7 +1305,6 @@ mod tests {
     /// Seed a store with a real age identity + one encrypted secret so the
     /// search copy path has something decryptable to operate on.
     fn seeded_store_with_real_secret() -> (TempDir, Context) {
-        use ::age::x25519::Identity;
         use secrecy::ExposeSecret;
         let dir = TempDir::new().unwrap();
         let data_dir = dir.path().join("data");
@@ -1332,7 +1314,7 @@ mod tests {
         std::fs::create_dir_all(store.join(".himitsu/secrets")).unwrap();
         std::fs::create_dir_all(store.join(".himitsu/recipients")).unwrap();
 
-        let identity = Identity::generate();
+        let identity = ::age::x25519::Identity::generate();
         let pubkey = identity.to_public().to_string();
         let secret_key = identity.to_string().expose_secret().to_string();
         std::fs::write(data_dir.join("key"), &secret_key).unwrap();

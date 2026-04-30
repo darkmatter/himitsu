@@ -25,6 +25,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
+use super::standard_canvas;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
@@ -227,11 +229,10 @@ impl StorePicker {
         self.error.as_deref()
     }
 
-    /// Render the picker as a centred overlay. The caller is responsible for
+    /// Render the picker inside the standard TUI canvas. The caller is responsible for
     /// ensuring the underlying view has already been drawn.
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let full = frame.area();
-        let area = centered_rect(60, 60, full);
+        let area = standard_canvas(frame.area());
         frame.render_widget(Clear, area);
 
         let block = Block::default()
@@ -408,26 +409,6 @@ fn expand_tilde(input: &str) -> PathBuf {
         }
     }
     PathBuf::from(input)
-}
-
-/// Compute a centred rectangle covering the given percentages of `r`.
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let vert = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vert[1])[1]
 }
 
 #[cfg(test)]

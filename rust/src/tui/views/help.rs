@@ -9,8 +9,10 @@
 //! plugs them in when the overlay is opened.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
+
+use super::standard_canvas;
 
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
@@ -45,7 +47,7 @@ impl HelpView {
     }
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
-        let area = centered_rect(60, 50, frame.area());
+        let area = standard_canvas(frame.area());
 
         // Clear the area first so underlying content is blanked out.
         frame.render_widget(Clear, area);
@@ -102,28 +104,6 @@ impl HelpView {
         ]);
         frame.render_widget(Paragraph::new(footer).alignment(Alignment::Right), rows[1]);
     }
-}
-
-/// Build a centered rectangle that is `percent_x` wide and `percent_y` tall
-/// relative to `area`.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 #[cfg(test)]

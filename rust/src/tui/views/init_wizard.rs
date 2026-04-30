@@ -4,6 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 
+use super::standard_canvas;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -224,13 +226,14 @@ impl InitWizardView {
     }
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        let full = frame.area();
         // Paint the active theme's background across the wizard frame so
         // first-run users see their selected theme immediately.
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::background())),
-            area,
+            full,
         );
+        let area = standard_canvas(full);
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

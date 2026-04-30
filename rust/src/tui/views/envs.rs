@@ -12,9 +12,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
+
+use super::standard_canvas;
 
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
@@ -25,7 +27,7 @@ use crate::cli::Context;
 use crate::config::env_cache::Scope;
 use crate::config::env_resolver::{self, EnvNode};
 use crate::config::envs_mut::{self, ScopeHint};
-use crate::config::EnvEntry;
+use crate::config::{validate_env_label, EnvEntry};
 use crate::remote::store;
 use crate::tui::keymap::{Bindings, KeyMap};
 
@@ -43,6 +45,10 @@ pub enum EnvsAction {
     Deleted { label: String, scope: Scope },
     /// A delete attempt failed; carries the message to surface as a toast.
     DeleteFailed(String),
+    /// An env label was created or replaced.
+    Created { label: String, scope: Scope },
+    /// A create attempt failed; carries the message to surface as a toast.
+    CreateFailed(String),
 }
 
 /// One row in the left pane: either a section header (scope grouping) or a
@@ -61,6 +67,215 @@ struct ConfirmDelete {
     scope: Scope,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateFocus {
+    Label,
+    EntryKind,
+    AliasKey,
+    Path,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    Single,
+    Glob,
+    Alias,
+}
+
+#[derive(Debug, Clone)]
+enum EditorMode {
+    Create,
+    Edit {
+        original_label: String,
+        original_scope: Scope,
+    },
+}
+
+impl EntryKind {
+    fn next(self) -> Self {
+        match self {
+            Self::Single => Self::Glob,
+            Self::Glob => Self::Alias,
+            Self::Alias => Self::Single,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Single => Self::Alias,
+            Self::Glob => Self::Single,
+            Self::Alias => Self::Glob,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Single => "Single",
+            Self::Glob => "Glob",
+            Self::Alias => "Alias",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CreateEditor {
+    label: String,
+    kind: EntryKind,
+    alias_key: String,
+    path: String,
+    focus: CreateFocus,
+    scope_hint: ScopeHint,
+    mode: EditorMode,
+}
+
+impl Default for CreateEditor {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            kind: EntryKind::Single,
+            alias_key: String::new(),
+            path: String::new(),
+            focus: CreateFocus::Label,
+            scope_hint: ScopeHint::Auto,
+            mode: EditorMode::Create,
+        }
+    }
+}
+
+impl CreateEditor {
+    fn from_existing(
+        label: &str,
+        scope: Scope,
+        entries: &[EnvEntry],
+    ) -> std::result::Result<Self, String> {
+        if entries.len() != 1 {
+            return Err(format!(
+                "edit not yet supported for multi-entry envs ({} entries)",
+                entries.len()
+            ));
+        }
+
+        let mut editor = Self {
+            label: label.to_string(),
+            scope_hint: match scope {
+                Scope::Project => ScopeHint::Project,
+                Scope::Global => ScopeHint::Global,
+            },
+            mode: EditorMode::Edit {
+                original_label: label.to_string(),
+                original_scope: scope,
+            },
+            ..Default::default()
+        };
+
+        match &entries[0] {
+            EnvEntry::Single(path) => {
+                editor.kind = EntryKind::Single;
+                editor.path = path.clone();
+            }
+            EnvEntry::Glob(prefix) => {
+                editor.kind = EntryKind::Glob;
+                editor.path = format!("{prefix}/*");
+            }
+            EnvEntry::Alias { key, path } => {
+                editor.kind = EntryKind::Alias;
+                editor.alias_key = key.clone();
+                editor.path = path.clone();
+            }
+        }
+
+        Ok(editor)
+    }
+
+    fn is_dirty(&self) -> bool {
+        !self.label.is_empty() || !self.alias_key.is_empty() || !self.path.is_empty()
+    }
+
+    fn next_focus(&mut self) {
+        self.focus = match (self.focus, self.kind) {
+            (CreateFocus::Label, _) => CreateFocus::EntryKind,
+            (CreateFocus::EntryKind, EntryKind::Alias) => CreateFocus::AliasKey,
+            (CreateFocus::EntryKind, _) => CreateFocus::Path,
+            (CreateFocus::AliasKey, _) => CreateFocus::Path,
+            (CreateFocus::Path, _) => CreateFocus::Label,
+        };
+    }
+
+    fn input_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            CreateFocus::Label => Some(&mut self.label),
+            CreateFocus::AliasKey => Some(&mut self.alias_key),
+            CreateFocus::Path => Some(&mut self.path),
+            CreateFocus::EntryKind => None,
+        }
+    }
+
+    fn toggle_scope(&mut self) {
+        self.scope_hint = match self.scope_hint {
+            ScopeHint::Auto | ScopeHint::Project => ScopeHint::Global,
+            ScopeHint::Global => ScopeHint::Auto,
+        };
+    }
+
+    fn scope_label(&self) -> &'static str {
+        match self.scope_hint {
+            ScopeHint::Auto => "auto",
+            ScopeHint::Project => "project",
+            ScopeHint::Global => "global",
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        match self.mode {
+            EditorMode::Create => " new env ",
+            EditorMode::Edit { .. } => " edit env ",
+        }
+    }
+
+    fn validation_error(&self) -> Option<String> {
+        if let Err(e) = validate_env_label(&self.label) {
+            return Some(e.to_string());
+        }
+        match self.kind {
+            EntryKind::Single => {
+                if self.path.trim().is_empty() {
+                    Some("secret path is required".into())
+                } else {
+                    None
+                }
+            }
+            EntryKind::Glob => {
+                if self.path.trim().is_empty() {
+                    Some("glob prefix is required".into())
+                } else {
+                    None
+                }
+            }
+            EntryKind::Alias => {
+                if self.alias_key.trim().is_empty() {
+                    Some("alias key is required".into())
+                } else if self.path.trim().is_empty() {
+                    Some("alias path is required".into())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn entries(&self) -> Vec<EnvEntry> {
+        let path = self.path.trim().trim_end_matches("/*").to_string();
+        match self.kind {
+            EntryKind::Single => vec![EnvEntry::Single(self.path.trim().to_string())],
+            EntryKind::Glob => vec![EnvEntry::Glob(path)],
+            EntryKind::Alias => vec![EnvEntry::Alias {
+                key: self.alias_key.trim().to_string(),
+                path: self.path.trim().to_string(),
+            }],
+        }
+    }
+}
+
 pub struct EnvsView {
     ctx: Context,
     rows: Vec<Row>,
@@ -75,6 +290,8 @@ pub struct EnvsView {
     /// Cached list of available secret paths in the active store. Fed to the
     /// resolver so wildcard envs expand correctly in the preview.
     available_secrets: Vec<String>,
+    create: Option<CreateEditor>,
+    confirm_cancel_create: bool,
 }
 
 impl EnvsView {
@@ -88,6 +305,8 @@ impl EnvsView {
             confirm: None,
             project_config_path: None,
             available_secrets: Vec::new(),
+            create: None,
+            confirm_cancel_create: false,
         };
         view.reload();
         view
@@ -225,6 +444,20 @@ impl EnvsView {
     }
 
     pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> EnvsAction {
+        if self.confirm_cancel_create {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.confirm_cancel_create = false;
+                    self.create = None;
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                    self.confirm_cancel_create = false;
+                }
+                _ => {}
+            }
+            return EnvsAction::None;
+        }
+
         // Confirmation modal intercepts every key while open.
         if let Some(pending) = self.confirm.as_ref() {
             match key.code {
@@ -240,6 +473,10 @@ impl EnvsView {
                 }
                 _ => return EnvsAction::None,
             }
+        }
+
+        if self.create.is_some() {
+            return self.handle_create_key(key, keymap);
         }
 
         // Ctrl-C / quit binding maps to Quit; Esc is Back (not Quit) because
@@ -270,6 +507,95 @@ impl EnvsView {
                 }
                 EnvsAction::None
             }
+            (KeyCode::Char('n'), _) => {
+                self.create = Some(CreateEditor::default());
+                EnvsAction::None
+            }
+            (KeyCode::Char('e'), _) => self.open_edit_selected(),
+            _ => EnvsAction::None,
+        }
+    }
+
+    fn open_edit_selected(&mut self) -> EnvsAction {
+        let Some((label, scope)) = self
+            .selected_label_scope()
+            .map(|(label, scope)| (label.to_string(), scope))
+        else {
+            return EnvsAction::None;
+        };
+        let entries = self
+            .entries
+            .get(&(scope_key(scope), label.clone()))
+            .cloned()
+            .unwrap_or_default();
+        match CreateEditor::from_existing(&label, scope, &entries) {
+            Ok(editor) => {
+                self.create = Some(editor);
+                EnvsAction::None
+            }
+            Err(msg) => EnvsAction::CreateFailed(msg),
+        }
+    }
+
+    fn handle_create_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> EnvsAction {
+        if keymap.quit.matches(&key) && key.code != KeyCode::Esc {
+            return EnvsAction::Quit;
+        }
+
+        if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.perform_create();
+        }
+
+        let editor = self.create.as_mut().expect("create editor exists");
+        match key.code {
+            KeyCode::Esc => {
+                if editor.is_dirty() {
+                    self.confirm_cancel_create = true;
+                } else {
+                    self.create = None;
+                }
+                EnvsAction::None
+            }
+            KeyCode::Tab => {
+                editor.next_focus();
+                EnvsAction::None
+            }
+            KeyCode::Enter => {
+                if editor.focus == CreateFocus::Label {
+                    editor.next_focus();
+                    EnvsAction::None
+                } else {
+                    self.perform_create()
+                }
+            }
+            KeyCode::Left => {
+                if editor.focus == CreateFocus::EntryKind {
+                    editor.kind = editor.kind.previous();
+                }
+                EnvsAction::None
+            }
+            KeyCode::Right => {
+                if editor.focus == CreateFocus::EntryKind {
+                    editor.kind = editor.kind.next();
+                }
+                EnvsAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = editor.input_mut() {
+                    input.pop();
+                }
+                EnvsAction::None
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.toggle_scope();
+                EnvsAction::None
+            }
+            KeyCode::Char(c) => {
+                if let Some(input) = editor.input_mut() {
+                    input.push(c);
+                }
+                EnvsAction::None
+            }
             _ => EnvsAction::None,
         }
     }
@@ -290,8 +616,52 @@ impl EnvsView {
         }
     }
 
+    fn perform_create(&mut self) -> EnvsAction {
+        let Some(editor) = self.create.clone() else {
+            return EnvsAction::None;
+        };
+        if let Some(msg) = editor.validation_error() {
+            return EnvsAction::CreateFailed(format!("create failed: {msg}"));
+        }
+
+        let label = editor.label.trim().to_string();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        match envs_mut::upsert(&label, editor.entries(), editor.scope_hint, &cwd) {
+            Ok(resolved) => {
+                if let EditorMode::Edit {
+                    original_label,
+                    original_scope,
+                } = &editor.mode
+                {
+                    if original_label != &label || *original_scope != resolved.scope {
+                        let original_hint = match original_scope {
+                            Scope::Project => ScopeHint::Project,
+                            Scope::Global => ScopeHint::Global,
+                        };
+                        if let Err(e) = envs_mut::delete(original_label, original_hint, &cwd) {
+                            return EnvsAction::CreateFailed(format!(
+                                "save failed while removing old label: {e}"
+                            ));
+                        }
+                    }
+                }
+                self.create = None;
+                self.confirm_cancel_create = false;
+                self.reload();
+                if let Some(i) = self.row_index_for(&label, resolved.scope) {
+                    self.list_state.select(Some(i));
+                }
+                EnvsAction::Created {
+                    label,
+                    scope: resolved.scope,
+                }
+            }
+            Err(e) => EnvsAction::CreateFailed(format!("create failed: {e}")),
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        let area = standard_canvas(frame.area());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -309,13 +679,25 @@ impl EnvsView {
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(chunks[1]);
         self.draw_labels(frame, panes[0]);
-        self.draw_preview(frame, panes[1]);
+        if self.create.is_some() {
+            let editor_panes = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(panes[1]);
+            self.draw_create_editor(frame, editor_panes[0]);
+            self.draw_live_preview(frame, editor_panes[1]);
+        } else {
+            self.draw_preview(frame, panes[1]);
+        }
 
         self.draw_scope_status(frame, chunks[2]);
         self.draw_footer(frame, chunks[3]);
 
         if self.confirm.is_some() {
             self.draw_confirm(frame);
+        }
+        if self.confirm_cancel_create {
+            self.draw_cancel_create_confirm(frame);
         }
     }
 
@@ -429,6 +811,21 @@ impl EnvsView {
     }
 
     fn draw_scope_status(&self, frame: &mut Frame<'_>, area: Rect) {
+        if let Some(editor) = self.create.as_ref() {
+            let text = format!(
+                "creating: scope {} (ctrl-g toggles auto/global)",
+                editor.scope_label()
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    text,
+                    Style::default().fg(theme::accent()),
+                ))),
+                area,
+            );
+            return;
+        }
+
         let (text, color) = match self.selected_label_scope() {
             Some((_, Scope::Project)) => (
                 format!(
@@ -451,17 +848,160 @@ impl EnvsView {
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let footer = Style::default().fg(theme::footer_text());
-        let line = Line::from(vec![
-            Span::styled("↑/↓ / j/k", Style::default().fg(theme::accent())),
-            Span::styled(" navigate    ", footer),
-            Span::styled("d", Style::default().fg(theme::accent())),
-            Span::styled(" delete    ", footer),
-            Span::styled("?", Style::default().fg(theme::accent())),
-            Span::styled(" help    ", footer),
-            Span::styled("esc", Style::default().fg(theme::accent())),
-            Span::styled(" back", footer),
+        let (left, right, right_width) = if self.create.is_some() {
+            (
+                Line::from(vec![
+                    Span::styled("tab", Style::default().fg(theme::accent())),
+                    Span::styled(" next field    ", footer),
+                    Span::styled("←/→", Style::default().fg(theme::accent())),
+                    Span::styled(" kind", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("ctrl-s", Style::default().fg(theme::accent())),
+                    Span::styled(" save    ", footer),
+                    Span::styled("esc", Style::default().fg(theme::accent())),
+                    Span::styled(" cancel", footer),
+                ]),
+                25,
+            )
+        } else {
+            (
+                Line::from(vec![
+                    Span::styled("↑/↓ / j/k", Style::default().fg(theme::accent())),
+                    Span::styled(" navigate    ", footer),
+                    Span::styled("n", Style::default().fg(theme::accent())),
+                    Span::styled(" new    ", footer),
+                    Span::styled("d", Style::default().fg(theme::accent())),
+                    Span::styled(" delete", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("?", Style::default().fg(theme::accent())),
+                    Span::styled(" help    ", footer),
+                    Span::styled("esc", Style::default().fg(theme::accent())),
+                    Span::styled(" back", footer),
+                ]),
+                18,
+            )
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(right_width)])
+            .split(area);
+        frame.render_widget(Paragraph::new(left), chunks[0]);
+        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), chunks[1]);
+    }
+
+    fn draw_create_editor(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(editor) = self.create.as_ref() else {
+            return;
+        };
+
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(editor.title())
+            .title_style(Style::default().fg(theme::border_label()));
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+
+        let focus_style = Style::default()
+            .fg(theme::accent())
+            .add_modifier(Modifier::BOLD);
+        let label_style = |focus: bool| if focus { focus_style } else { Style::default() };
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Label",
+                label_style(editor.focus == CreateFocus::Label),
+            )),
+            Line::from(format!("  {}", editor.label)),
+            Line::from(Span::styled(
+                "  e.g. dev or prod/* (segments: letters, numbers, _, -)",
+                Style::default().fg(theme::muted()),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "Entry kind",
+                    label_style(editor.focus == CreateFocus::EntryKind),
+                ),
+                Span::raw(": "),
+                Span::styled(editor.kind.label(), Style::default().fg(theme::warning())),
+            ]),
+        ];
+
+        if editor.kind == EntryKind::Alias {
+            lines.extend([
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Alias key",
+                    label_style(editor.focus == CreateFocus::AliasKey),
+                )),
+                Line::from(format!("  {}", editor.alias_key)),
+            ]);
+        }
+
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                match editor.kind {
+                    EntryKind::Single => "Secret path",
+                    EntryKind::Glob => "Glob prefix",
+                    EntryKind::Alias => "Alias path",
+                },
+                label_style(editor.focus == CreateFocus::Path),
+            )),
+            Line::from(format!("  {}", editor.path)),
+            Line::from(""),
         ]);
-        frame.render_widget(Paragraph::new(line), area);
+
+        if let Some(err) = editor.validation_error() {
+            lines.push(Line::from(Span::styled(
+                format!("  {err}"),
+                Style::default().fg(theme::danger()),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  ready to save",
+                Style::default().fg(theme::success()),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_live_preview(&self, frame: &mut Frame<'_>, area: Rect) {
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(" live preview ")
+            .title_style(Style::default().fg(theme::border_label()));
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+
+        let Some(editor) = self.create.as_ref() else {
+            return;
+        };
+        if let Some(err) = editor.validation_error() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("  {err}"),
+                    Style::default().fg(theme::danger()),
+                ))),
+                inner,
+            );
+            return;
+        }
+
+        let label = editor.label.trim().to_string();
+        let mut envs = BTreeMap::new();
+        envs.insert(label.clone(), editor.entries());
+        let lines = match env_resolver::resolve(&envs, &label, &self.available_secrets) {
+            Ok(node) => render_node(&node, 0),
+            Err(e) => vec![Line::from(Span::styled(
+                format!("  error: {e}"),
+                Style::default().fg(theme::danger()),
+            ))],
+        };
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn draw_confirm(&self, frame: &mut Frame<'_>) {
@@ -499,6 +1039,32 @@ impl EnvsView {
                 Span::raw(" yes    "),
                 Span::styled("[N]", Style::default().fg(theme::accent())),
                 Span::raw(" cancel"),
+            ]),
+        ];
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(Paragraph::new(text), inner);
+    }
+
+    fn draw_cancel_create_confirm(&self, frame: &mut Frame<'_>) {
+        let area = centered_rect(50, 20, frame.area());
+        frame.render_widget(Clear, area);
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            " discard new env? ",
+            Style::default()
+                .fg(theme::border_label())
+                .add_modifier(Modifier::BOLD),
+        ));
+        let text = vec![
+            Line::from(""),
+            Line::from("  Discard the new env form?"),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("[y]", Style::default().fg(theme::danger())),
+                Span::raw(" discard    "),
+                Span::styled("[N]", Style::default().fg(theme::accent())),
+                Span::raw(" keep editing"),
             ]),
         ];
         let inner = block.inner(area);
@@ -605,7 +1171,10 @@ impl EnvsView {
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
             ("↑/↓ / j/k", "navigate labels"),
+            ("n", "create a new env"),
+            ("e", "edit selected env"),
             ("d", "delete selected env (confirm y/N)"),
+            ("ctrl-s", "save new env while editing"),
             ("?", "toggle this help"),
             ("esc / q", "back to search"),
             ("ctrl-c", "quit"),
@@ -662,6 +1231,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
     fn ctx_in(store: &std::path::Path) -> Context {
@@ -809,6 +1382,158 @@ mod tests {
             })
             .collect();
         assert!(labels.contains(&"dev"));
+    }
+
+    #[test]
+    fn n_opens_create_editor() {
+        let home = Home::new();
+        let _proj = seed_two_project_one_global(&home);
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+
+        let act = view.on_key(key(KeyCode::Char('n')), &km);
+        assert!(matches!(act, EnvsAction::None));
+        assert!(view.create.is_some());
+    }
+
+    #[test]
+    fn create_single_entry_saves_and_reloads() {
+        let home = Home::new();
+        let _proj = seed_two_project_one_global(&home);
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+        view.on_key(key(KeyCode::Char('n')), &km);
+        view.create.as_mut().unwrap().label = "stage".into();
+        view.create.as_mut().unwrap().path = "stage/API_KEY".into();
+
+        let act = view.on_key(ctrl('s'), &km);
+        match act {
+            EnvsAction::Created { label, scope } => {
+                assert_eq!(label, "stage");
+                assert_eq!(scope, Scope::Project);
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        assert!(view.create.is_none());
+        let entries = view
+            .entries
+            .get(&(scope_key(Scope::Project), "stage".to_string()))
+            .expect("stage entries present");
+        assert!(matches!(&entries[0], EnvEntry::Single(path) if path == "stage/API_KEY"));
+    }
+
+    #[test]
+    fn create_escape_prompts_when_dirty() {
+        let home = Home::new();
+        let _proj = seed_two_project_one_global(&home);
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+        view.on_key(key(KeyCode::Char('n')), &km);
+        view.create.as_mut().unwrap().label = "draft".into();
+
+        let act = view.on_key(key(KeyCode::Esc), &km);
+        assert!(matches!(act, EnvsAction::None));
+        assert!(view.confirm_cancel_create);
+        assert!(view.create.is_some());
+
+        view.on_key(key(KeyCode::Char('y')), &km);
+        assert!(view.create.is_none());
+        assert!(!view.confirm_cancel_create);
+    }
+
+    #[test]
+    fn edit_existing_env_replaces_entries() {
+        let home = Home::new();
+        let _proj = seed_two_project_one_global(&home);
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+        let act = view.on_key(key(KeyCode::Char('e')), &km);
+        assert!(matches!(act, EnvsAction::None));
+
+        let editor = view.create.as_mut().expect("editor open");
+        assert!(matches!(editor.mode, EditorMode::Edit { .. }));
+        assert_eq!(editor.label, "dev");
+        editor.path = "dev/NEW_API".into();
+
+        let act = view.on_key(ctrl('s'), &km);
+        match act {
+            EnvsAction::Created { label, scope } => {
+                assert_eq!(label, "dev");
+                assert_eq!(scope, Scope::Project);
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        let entries = view
+            .entries
+            .get(&(scope_key(Scope::Project), "dev".to_string()))
+            .expect("dev entries present");
+        assert!(matches!(&entries[0], EnvEntry::Single(path) if path == "dev/NEW_API"));
+    }
+
+    #[test]
+    fn edit_label_change_relocates_row() {
+        let home = Home::new();
+        let _proj = seed_two_project_one_global(&home);
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+        view.on_key(key(KeyCode::Char('e')), &km);
+
+        let editor = view.create.as_mut().expect("editor open");
+        editor.label = "stage".into();
+        editor.path = "stage/API_KEY".into();
+
+        let act = view.on_key(ctrl('s'), &km);
+        assert!(matches!(act, EnvsAction::Created { .. }));
+
+        let labels: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Label { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!labels.contains(&"dev"));
+        assert!(labels.contains(&"stage"));
+        assert_eq!(view.selected_label_scope(), Some(("stage", Scope::Project)));
+    }
+
+    #[test]
+    fn edit_multi_entry_env_returns_error() {
+        let home = Home::new();
+        let proj = seed_two_project_one_global(&home);
+        std::fs::write(
+            proj.join(".himitsu.yaml"),
+            "envs:\n  multi:\n    - dev/API_KEY\n    - dev/DB_PASS\n",
+        )
+        .unwrap();
+        let empty_store = home.path.join("empty-store");
+        std::fs::create_dir_all(&empty_store).unwrap();
+
+        let km = KeyMap::default();
+        let mut view = EnvsView::new(&ctx_in(&empty_store));
+        let act = view.on_key(key(KeyCode::Char('e')), &km);
+        match act {
+            EnvsAction::CreateFailed(msg) => assert!(msg.contains("multi-entry")),
+            other => panic!("expected CreateFailed, got {other:?}"),
+        }
     }
 
     #[test]

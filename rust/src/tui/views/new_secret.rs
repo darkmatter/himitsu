@@ -28,6 +28,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
+use super::standard_canvas;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -439,7 +441,7 @@ impl NewSecretView {
     // ── Drawing ────────────────────────────────────────────────────────
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        let area = standard_canvas(frame.area());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

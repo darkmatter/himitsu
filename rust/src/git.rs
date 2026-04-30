@@ -5,10 +5,31 @@ use crate::error::{HimitsuError, Result};
 
 /// Run a git command with the given arguments in the specified directory.
 /// Returns the stdout on success, or an error with stderr on failure.
-pub fn run(args: &[&str], cwd: &Path) -> Result<String> {
-    let output = Command::new("git")
+///
+/// All invocations are forced into non-interactive mode and have commit/tag
+/// signing disabled. Two interactions with the surrounding environment would
+/// otherwise let himitsu hang indefinitely on what should be a fast operation:
+///
+///   * `commit.gpgsign = true` with an SSH signer (notably 1Password's
+///     `op-ssh-sign`) opens a native biometric/password dialog on every
+///     commit — including the silent auto-commits himitsu issues from `set`,
+///     `init`, `rekey`, etc. We aren't asking the user to sign these on
+///     their own behalf, so we strip signing for himitsu-spawned commits.
+///   * Stalled SSH/HTTPS fetches can prompt for credentials over the TTY.
+///     `GIT_TERMINAL_PROMPT=0` + an `echo` askpass make those fail fast
+///     instead of blocking.
+fn git_command(args: &[&str], cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
         .args(args)
         .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "echo");
+    cmd
+}
+
+pub fn run(args: &[&str], cwd: &Path) -> Result<String> {
+    let output = git_command(args, cwd)
         .output()
         .map_err(|e| HimitsuError::Git(format!("failed to execute git: {e}")))?;
 

@@ -24,6 +24,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
+use super::standard_canvas;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -380,7 +382,7 @@ impl SecretViewerView {
     // ── Drawing ────────────────────────────────────────────────────────
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        let area = standard_canvas(frame.area());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -780,7 +782,6 @@ mod tests {
     ///
     /// Uses real age keys + encryption so reveal/rekey paths run end-to-end.
     fn seeded_store_with_secret() -> (TempDir, Context, String) {
-        use ::age::x25519::Identity;
         use secrecy::ExposeSecret;
         let dir = TempDir::new().unwrap();
         let data_dir = dir.path().join("data");
@@ -790,7 +791,7 @@ mod tests {
         std::fs::create_dir_all(store.join(".himitsu/secrets")).unwrap();
         std::fs::create_dir_all(store.join(".himitsu/recipients")).unwrap();
 
-        let identity = Identity::generate();
+        let identity = ::age::x25519::Identity::generate();
         let pubkey = identity.to_public().to_string();
         let secret = identity.to_string().expose_secret().to_string();
         std::fs::write(data_dir.join("key"), &secret).unwrap();

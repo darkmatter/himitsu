@@ -171,6 +171,19 @@ impl App {
                 EnvsAction::DeleteFailed(msg) => {
                     self.push_toast(msg, ToastKind::Error);
                 }
+                EnvsAction::Created { label, scope } => {
+                    let scope_str = match scope {
+                        crate::config::env_cache::Scope::Project => "project",
+                        crate::config::env_cache::Scope::Global => "global",
+                    };
+                    self.push_toast(
+                        format!("created `{label}` ({scope_str})"),
+                        ToastKind::Success,
+                    );
+                }
+                EnvsAction::CreateFailed(msg) => {
+                    self.push_toast(msg, ToastKind::Error);
+                }
             },
             View::NewSecret(form) => match form.on_key(key, &self.keymap) {
                 NewSecretAction::None => {}
