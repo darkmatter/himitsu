@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
-use super::standard_canvas;
+use super::{render_distributed_footer, standard_canvas};
 
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
@@ -198,6 +198,16 @@ impl CreateEditor {
             (CreateFocus::EntryKind, _) => CreateFocus::Path,
             (CreateFocus::AliasKey, _) => CreateFocus::Path,
             (CreateFocus::Path, _) => CreateFocus::Label,
+        };
+    }
+
+    fn previous_focus(&mut self) {
+        self.focus = match (self.focus, self.kind) {
+            (CreateFocus::Label, _) => CreateFocus::Path,
+            (CreateFocus::EntryKind, _) => CreateFocus::Label,
+            (CreateFocus::AliasKey, _) => CreateFocus::EntryKind,
+            (CreateFocus::Path, EntryKind::Alias) => CreateFocus::AliasKey,
+            (CreateFocus::Path, _) => CreateFocus::EntryKind,
         };
     }
 
@@ -560,6 +570,10 @@ impl EnvsView {
                 editor.next_focus();
                 EnvsAction::None
             }
+            KeyCode::BackTab => {
+                editor.previous_focus();
+                EnvsAction::None
+            }
             KeyCode::Enter => {
                 if editor.focus == CreateFocus::Label {
                     editor.next_focus();
@@ -676,7 +690,7 @@ impl EnvsView {
 
         let panes = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .constraints([Constraint::Max(20), Constraint::Min(1)])
             .split(chunks[1]);
         self.draw_labels(frame, panes[0]);
         if self.create.is_some() {
@@ -782,6 +796,17 @@ impl EnvsView {
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
+        if self.label_count() == 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "  No labels - create one with 'n'",
+                    Style::default().fg(theme::muted()),
+                ))),
+                inner,
+            );
+            return;
+        }
+
         let Some((label, scope)) = self.selected_label_scope() else {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
@@ -848,47 +873,50 @@ impl EnvsView {
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let footer = Style::default().fg(theme::footer_text());
-        let (left, right, right_width) = if self.create.is_some() {
-            (
+        let items = if self.create.is_some() {
+            vec![
                 Line::from(vec![
                     Span::styled("tab", Style::default().fg(theme::accent())),
-                    Span::styled(" next field    ", footer),
+                    Span::styled(" next field", footer),
+                ]),
+                Line::from(vec![
                     Span::styled("←/→", Style::default().fg(theme::accent())),
                     Span::styled(" kind", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("ctrl-s", Style::default().fg(theme::accent())),
-                    Span::styled(" save    ", footer),
+                    Span::styled(" save", footer),
+                ]),
+                Line::from(vec![
                     Span::styled("esc", Style::default().fg(theme::accent())),
                     Span::styled(" cancel", footer),
                 ]),
-                25,
-            )
+            ]
         } else {
-            (
+            vec![
                 Line::from(vec![
                     Span::styled("↑/↓ / j/k", Style::default().fg(theme::accent())),
-                    Span::styled(" navigate    ", footer),
+                    Span::styled(" navigate", footer),
+                ]),
+                Line::from(vec![
                     Span::styled("n", Style::default().fg(theme::accent())),
-                    Span::styled(" new    ", footer),
+                    Span::styled(" new", footer),
+                ]),
+                Line::from(vec![
                     Span::styled("d", Style::default().fg(theme::accent())),
                     Span::styled(" delete", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("?", Style::default().fg(theme::accent())),
-                    Span::styled(" help    ", footer),
+                    Span::styled(" help", footer),
+                ]),
+                Line::from(vec![
                     Span::styled("esc", Style::default().fg(theme::accent())),
                     Span::styled(" back", footer),
                 ]),
-                18,
-            )
+            ]
         };
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(1), Constraint::Length(right_width)])
-            .split(area);
-        frame.render_widget(Paragraph::new(left), chunks[0]);
-        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), chunks[1]);
+        render_distributed_footer(frame, area, items);
     }
 
     fn draw_create_editor(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -907,23 +935,33 @@ impl EnvsView {
             .fg(theme::accent())
             .add_modifier(Modifier::BOLD);
         let label_style = |focus: bool| if focus { focus_style } else { Style::default() };
+        let focus_prefix = "✦";
+        let prefix = "✧";
+        let label_span = |text: &'static str, focus: bool| {
+            let marker = if focus { focus_prefix } else { prefix };
+            Span::styled(format!("{marker} {text}"), label_style(focus))
+        };
+        let input_line = |value: &str, placeholder: &'static str| {
+            if value.is_empty() {
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(placeholder, Style::default().fg(theme::muted())),
+                ])
+            } else {
+                Line::from(format!("  {value}"))
+            }
+        };
 
         let mut lines = vec![
-            Line::from(Span::styled(
-                "Label",
-                label_style(editor.focus == CreateFocus::Label),
-            )),
-            Line::from(format!("  {}", editor.label)),
+            Line::from(label_span("Label", editor.focus == CreateFocus::Label)),
+            input_line(&editor.label, "env label"),
             Line::from(Span::styled(
                 "  e.g. dev or prod/* (segments: letters, numbers, _, -)",
                 Style::default().fg(theme::muted()),
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled(
-                    "Entry kind",
-                    label_style(editor.focus == CreateFocus::EntryKind),
-                ),
+                label_span("Entry kind", editor.focus == CreateFocus::EntryKind),
                 Span::raw(": "),
                 Span::styled(editor.kind.label(), Style::default().fg(theme::warning())),
             ]),
@@ -932,25 +970,32 @@ impl EnvsView {
         if editor.kind == EntryKind::Alias {
             lines.extend([
                 Line::from(""),
-                Line::from(Span::styled(
+                Line::from(label_span(
                     "Alias key",
-                    label_style(editor.focus == CreateFocus::AliasKey),
+                    editor.focus == CreateFocus::AliasKey,
                 )),
-                Line::from(format!("  {}", editor.alias_key)),
+                input_line(&editor.alias_key, "alias key"),
             ]);
         }
 
         lines.extend([
             Line::from(""),
-            Line::from(Span::styled(
+            Line::from(label_span(
                 match editor.kind {
                     EntryKind::Single => "Secret path",
                     EntryKind::Glob => "Glob prefix",
                     EntryKind::Alias => "Alias path",
                 },
-                label_style(editor.focus == CreateFocus::Path),
+                editor.focus == CreateFocus::Path,
             )),
-            Line::from(format!("  {}", editor.path)),
+            input_line(
+                &editor.path,
+                match editor.kind {
+                    EntryKind::Single => "secret path",
+                    EntryKind::Glob => "glob prefix",
+                    EntryKind::Alias => "alias path",
+                },
+            ),
             Line::from(""),
         ]);
 
@@ -967,6 +1012,32 @@ impl EnvsView {
         }
 
         frame.render_widget(Paragraph::new(lines), inner);
+
+        if let Some((input, row)) = match editor.focus {
+            CreateFocus::Label => Some((editor.label.as_str(), 1)),
+            CreateFocus::AliasKey if editor.kind == EntryKind::Alias => {
+                Some((editor.alias_key.as_str(), 7))
+            }
+            CreateFocus::Path => Some((
+                editor.path.as_str(),
+                if editor.kind == EntryKind::Alias {
+                    10
+                } else {
+                    7
+                },
+            )),
+            CreateFocus::EntryKind | CreateFocus::AliasKey => None,
+        } {
+            if inner.width > 2 && row < inner.height {
+                let input_width = input.chars().count() as u16;
+                let x = inner
+                    .x
+                    .saturating_add(2)
+                    .saturating_add(input_width)
+                    .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
+                frame.set_cursor_position((x, inner.y.saturating_add(row)));
+            }
+        }
     }
 
     fn draw_live_preview(&self, frame: &mut Frame<'_>, area: Rect) {

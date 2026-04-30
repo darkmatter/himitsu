@@ -2,6 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
 use super::Context;
@@ -61,6 +62,14 @@ pub struct RecipientMeta {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RecipientRow {
+    name: String,
+    description: String,
+    key: String,
+    short_key: String,
 }
 
 pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
@@ -216,38 +225,24 @@ fn ls(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let mut rows: Vec<(String, String, String)> = vec![];
+    let mut rows = vec![];
     collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows)?;
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
 
     if rows.is_empty() {
         return Ok(());
     }
 
-    let headers = ("NAME", "DESCRIPTION", "KEY");
-    let w0 = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max(headers.0.len());
-    let w1 = rows.iter().map(|r| r.1.len()).max().unwrap_or(0).max(headers.1.len());
-    println!(
-        "{:<w0$}  {:<w1$}  {}",
-        headers.0, headers.1, headers.2,
-        w0 = w0, w1 = w1,
+    let self_key = self_public_key(ctx);
+    print!(
+        "{}",
+        render_recipient_table(&rows, self_key.as_deref(), std::io::stdout().is_terminal())
     );
-    for r in &rows {
-        println!(
-            "{:<w0$}  {:<w1$}  {}",
-            r.0, r.1, r.2,
-            w0 = w0, w1 = w1,
-        );
-    }
     Ok(())
 }
 
 /// Recursively collect `.pub` entries, building path-based names relative to `base`.
-fn collect_pub_entries(
-    base: &Path,
-    dir: &Path,
-    rows: &mut Vec<(String, String, String)>,
-) -> Result<()> {
+fn collect_pub_entries(base: &Path, dir: &Path, rows: &mut Vec<RecipientRow>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let ft = entry.file_type()?;
@@ -270,19 +265,69 @@ fn collect_pub_entries(
             .with_extension("")
             .to_string_lossy()
             .to_string();
-        let name = if rel.is_empty() { basename.to_string() } else { rel };
-        let key = std::fs::read_to_string(entry.path())?
-            .trim()
-            .to_string();
-        let meta = read_sidecar(
-            entry.path().parent().unwrap_or(base),
-            basename,
-        );
+        let name = if rel.is_empty() {
+            basename.to_string()
+        } else {
+            rel
+        };
+        let key = std::fs::read_to_string(entry.path())?.trim().to_string();
+        let meta = read_sidecar(entry.path().parent().unwrap_or(base), basename);
         let description = meta.description.unwrap_or_default();
         let short_key = short_fingerprint(&key);
-        rows.push((name, description, short_key));
+        rows.push(RecipientRow {
+            name,
+            description,
+            key,
+            short_key,
+        });
     }
     Ok(())
+}
+
+fn render_recipient_table(
+    rows: &[RecipientRow],
+    self_key: Option<&str>,
+    use_color: bool,
+) -> String {
+    let headers = ("NAME", "DESCRIPTION", "KEY");
+    let w0 = rows
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(0)
+        .max(headers.0.len());
+    let w1 = rows
+        .iter()
+        .map(|r| r.description.len())
+        .max()
+        .unwrap_or(0)
+        .max(headers.1.len());
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<w0$}  {:<w1$}  {}\n",
+        headers.0,
+        headers.1,
+        headers.2,
+        w0 = w0,
+        w1 = w1,
+    ));
+    for row in rows {
+        let name = format!("{:<w0$}", row.name, w0 = w0);
+        let description = format!("{:<w1$}", row.description, w1 = w1);
+        let is_self = self_key.is_some_and(|key| key == row.key);
+        if use_color && is_self {
+            out.push_str(&format!(
+                "{}  {}  {}\n",
+                name.green().bold(),
+                description.green().bold(),
+                row.short_key.green().bold(),
+            ));
+        } else {
+            out.push_str(&format!("{name}  {description}  {}\n", row.short_key));
+        }
+    }
+    out
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -300,6 +345,12 @@ fn read_sidecar(dir: &Path, name: &str) -> RecipientMeta {
         .ok()
         .and_then(|c| serde_yaml::from_str(&c).ok())
         .unwrap_or_default()
+}
+
+fn self_public_key(ctx: &Context) -> Option<String> {
+    std::fs::read_to_string(ctx.key_path())
+        .ok()
+        .and_then(|contents| extract_public_key(&contents))
 }
 
 fn short_fingerprint(key: &str) -> String {
@@ -388,10 +439,8 @@ mod tests {
         (tmp, ctx)
     }
 
-    const AGE_KEY_1: &str =
-        "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
-    const AGE_KEY_2: &str =
-        "age1lvyvwawkr0mcnnnncaghunadrqkmuf9e6507x9y920xxpp866cnql7dp2z";
+    const AGE_KEY_1: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    const AGE_KEY_2: &str = "age1lvyvwawkr0mcnnnncaghunadrqkmuf9e6507x9y920xxpp866cnql7dp2z";
 
     #[test]
     fn add_writes_flat_pub_and_errors_on_duplicate() {
@@ -438,7 +487,14 @@ mod tests {
     #[test]
     fn add_path_based_recipient_creates_subdirs() {
         let (_tmp, ctx) = mk_ctx();
-        add(&ctx, "ops/alice", false, Some(AGE_KEY_1), Some("Alice from ops".into())).unwrap();
+        add(
+            &ctx,
+            "ops/alice",
+            false,
+            Some(AGE_KEY_1),
+            Some("Alice from ops".into()),
+        )
+        .unwrap();
         let rdir = rstore::recipients_dir(&ctx.store);
         assert!(rdir.join("ops").join("alice.pub").exists());
         assert!(rdir.join("ops").join("alice.yaml").exists());
@@ -459,5 +515,33 @@ mod tests {
         assert!(validate_name(".hidden").is_err());
         assert!(validate_name("a/..").is_err());
         assert!(validate_name("a\\.pub").is_err());
+    }
+
+    #[test]
+    fn recipient_table_highlights_self_only_when_colored() {
+        let rows = vec![
+            RecipientRow {
+                name: "alice".into(),
+                description: String::new(),
+                key: AGE_KEY_1.into(),
+                short_key: short_fingerprint(AGE_KEY_1),
+            },
+            RecipientRow {
+                name: "bot".into(),
+                description: String::new(),
+                key: AGE_KEY_2.into(),
+                short_key: short_fingerprint(AGE_KEY_2),
+            },
+        ];
+
+        let plain = render_recipient_table(&rows, Some(AGE_KEY_1), false);
+        assert!(!plain.contains('\u{1b}'));
+        assert!(plain.contains("alice"));
+        assert!(plain.contains("bot"));
+
+        let colored = render_recipient_table(&rows, Some(AGE_KEY_1), true);
+        assert!(colored.contains('\u{1b}'));
+        assert!(colored.contains("alice"));
+        assert!(colored.contains("bot"));
     }
 }

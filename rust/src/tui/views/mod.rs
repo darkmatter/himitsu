@@ -1,6 +1,9 @@
 //! Top-level view modules for the ratatui TUI.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
 pub mod command_palette;
 pub mod envs;
@@ -32,6 +35,22 @@ fn constrained_axis(size: u16, margin: u16, max: u16) -> u16 {
         size.saturating_sub(margin.saturating_mul(2)).min(max)
     } else {
         size.min(max)
+    }
+}
+
+fn render_distributed_footer(frame: &mut Frame<'_>, area: Rect, items: Vec<Line<'_>>) {
+    if items.is_empty() {
+        return;
+    }
+
+    let constraints = vec![Constraint::Ratio(1, items.len() as u32); items.len()];
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (item, chunk) in items.into_iter().zip(chunks.iter()) {
+        frame.render_widget(Paragraph::new(item).alignment(Alignment::Center), *chunk);
     }
 }
 

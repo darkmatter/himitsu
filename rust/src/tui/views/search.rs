@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
-use super::standard_canvas;
+use super::{render_distributed_footer, standard_canvas};
 
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
@@ -695,28 +695,36 @@ impl SearchView {
         // through the command palette (Ctrl+P), so the row stays short and
         // doesn't need to grow as the catalog of commands does.
         let footer = Style::default().fg(theme::footer_text());
-        let left = Line::from(vec![
-            Span::styled("↑/↓", Style::default().fg(theme::accent())),
-            Span::styled(" navigate    ", footer),
-            Span::styled("enter", Style::default().fg(theme::accent())),
-            Span::styled(" open    ", footer),
-            Span::styled("^n", Style::default().fg(theme::accent())),
-            Span::styled(" new    ", footer),
-            Span::styled("^y", Style::default().fg(theme::accent())),
-            Span::styled(" copy", footer),
-        ]);
-        let right = Line::from(vec![
-            Span::styled("^p", Style::default().fg(theme::accent())),
-            Span::styled(" commands    ", footer),
-            Span::styled("esc", Style::default().fg(theme::accent())),
-            Span::styled(" quit", footer),
-        ]);
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(1), Constraint::Length(24)])
-            .split(area);
-        frame.render_widget(Paragraph::new(left), chunks[0]);
-        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), chunks[1]);
+        render_distributed_footer(
+            frame,
+            area,
+            vec![
+                Line::from(vec![
+                    Span::styled("↑/↓", Style::default().fg(theme::accent())),
+                    Span::styled(" navigate", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("enter", Style::default().fg(theme::accent())),
+                    Span::styled(" open", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("^n", Style::default().fg(theme::accent())),
+                    Span::styled(" new", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("^y", Style::default().fg(theme::accent())),
+                    Span::styled(" copy", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("^p", Style::default().fg(theme::accent())),
+                    Span::styled(" commands", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("esc", Style::default().fg(theme::accent())),
+                    Span::styled(" quit", footer),
+                ]),
+            ],
+        );
     }
 }
 
