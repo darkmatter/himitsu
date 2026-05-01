@@ -2,7 +2,7 @@
   <h1>himitsu<sup>秘密</sup></h1>
 </center>
 
-Age-based secrets management with a focus on cross-repo sharing of secrets. Encrypted with [age](https://github.com/FiloSottile/age), stored one-file-per-key in a git-backed `.himitsu/` store, with path-based recipient control and typed codegen.
+Age-based secrets manager that supports cross-repo sharing. Secrets stored one-file-per-key in a git-backed `.himitsu/` store, with path-based recipient control and typed codegen.
 
 ![himitsu demo](demo/demo-vhs.gif)
 
