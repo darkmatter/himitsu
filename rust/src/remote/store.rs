@@ -314,6 +314,78 @@ pub fn delete_secret(store: &Path, secret_path: &str) -> Result<()> {
     Err(HimitsuError::SecretNotFound(secret_path.to_string()))
 }
 
+/// Rename (move) a secret from `from` to `to`, preserving the SOPS-style
+/// envelope (`created_at`, `history`, recipients). Bumps `lastmodified` to
+/// reflect the rename and removes the old file.
+///
+/// Errors if:
+/// - `from` does not exist (legacy `.age` files are not supported as a rename
+///   source — they have no envelope to preserve; callers should write through
+///   the new path instead).
+/// - `to` already exists (refuses to clobber an unrelated secret).
+/// - `to` resolves to the same path as `from` (no-op error so the caller can
+///   surface a clear message instead of silently doing nothing).
+pub fn rename_secret(store: &Path, from: &str, to: &str) -> Result<()> {
+    if from == to {
+        return Err(HimitsuError::InvalidReference(
+            "rename target equals source".into(),
+        ));
+    }
+    let base = secrets_dir(store);
+    let from_yaml = base.join(format!("{from}.yaml"));
+    let to_yaml = base.join(format!("{to}.yaml"));
+    let to_age = base.join(format!("{to}.age"));
+
+    if !from_yaml.exists() {
+        // Legacy .age sources are intentionally unsupported: rewriting through
+        // the new path on a normal save will create a fresh envelope at the
+        // new location, which is the simplest correct upgrade story.
+        return Err(HimitsuError::SecretNotFound(from.to_string()));
+    }
+    if to_yaml.exists() || to_age.exists() {
+        return Err(HimitsuError::InvalidReference(format!(
+            "secret already exists at {to}"
+        )));
+    }
+
+    let envelope = read_envelope(&from_yaml)?;
+    let renamed = SecretEnvelope {
+        value: envelope.value,
+        himitsu: HimitsuMeta {
+            created_at: envelope.himitsu.created_at,
+            // Touch lastmodified so consumers can see the rename event.
+            lastmodified: utc_datetime(),
+            age: envelope.himitsu.age,
+            history: envelope.himitsu.history,
+        },
+    };
+
+    if let Some(parent) = to_yaml.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&to_yaml, serde_yaml::to_string(&renamed)?)?;
+    std::fs::remove_file(&from_yaml)?;
+
+    // Best-effort: prune any now-empty parent directories left over from the
+    // old path so listings don't show ghost folders. Stops at `secrets_dir`.
+    if let Some(mut p) = from_yaml.parent().map(Path::to_path_buf) {
+        while p.starts_with(&base) && p != base {
+            if std::fs::read_dir(&p).map(|mut it| it.next().is_none()).unwrap_or(false) {
+                let _ = std::fs::remove_dir(&p);
+                if let Some(parent) = p.parent() {
+                    p = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// List all secret paths in the store, optionally filtered by a path prefix.
 ///
 /// Returns paths relative to `secrets_dir` without the file extension.

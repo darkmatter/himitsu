@@ -189,7 +189,7 @@ impl SecretViewerView {
     /// decrypt failure (so the user sees *why* the edit did not happen).
     fn begin_edit(&mut self) -> SecretViewerAction {
         match self.read_decoded() {
-            Ok(decoded) => SecretViewerAction::EditValue(render_edit_doc(&decoded)),
+            Ok(decoded) => SecretViewerAction::EditValue(render_edit_doc(&self.path, &decoded)),
             Err(e) => {
                 self.status = Some((format!("edit failed: {e}"), StatusKind::Error));
                 SecretViewerAction::None
@@ -258,9 +258,21 @@ impl SecretViewerView {
 
     /// Parse an edited document, re-encrypt, and write it to disk. Returns
     /// the raw plaintext value so the caller can refresh the revealed state.
+    ///
+    /// Also handles renames: if the document's `path:` field differs from
+    /// the current path, the on-disk file is moved (preserving created_at +
+    /// history) before the new ciphertext is written. The viewer's own
+    /// `self.path` is updated to the new value so subsequent reveal/copy/
+    /// rekey actions target the right file.
     fn persist_edited(&mut self, doc: &str) -> crate::error::Result<String> {
         let parsed = parse_edit_doc(doc)
             .map_err(|e| HimitsuError::InvalidReference(format!("edit: {e}")))?;
+
+        // Normalise + validate the (possibly renamed) path before any I/O so
+        // a typo doesn't leave the store in a half-renamed state.
+        let new_path = normalize_secret_path(&parsed.path).map_err(|e| {
+            HimitsuError::InvalidReference(format!("edit: invalid path: {e}"))
+        })?;
 
         let expires_at = if parsed.expires_at.trim().is_empty() {
             None
@@ -285,6 +297,14 @@ impl SecretViewerView {
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
+
+        // Rename first (if needed) so the subsequent write_secret hits the
+        // moved envelope and preserves created_at/history.
+        if new_path != self.path {
+            store::rename_secret(&self.store_path, &self.path, &new_path)?;
+            self.path = new_path.clone();
+        }
+
         store::write_secret(&self.store_path, &self.path, &ciphertext)?;
         if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
             self.meta = meta;
@@ -599,6 +619,9 @@ impl SecretViewerView {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ParsedEdit {
+    /// The secret's path (a.k.a. its "name"). Editing this triggers a rename
+    /// at persist time. Cannot be empty.
+    path: String,
     description: String,
     url: String,
     totp: String,
@@ -610,12 +633,13 @@ struct ParsedEdit {
 
 const EDIT_DOC_HEADER: &str = "# himitsu edit — metadata above, secret value below the `---` line.
 # Leave a field blank to clear it. Lines starting with `#` are ignored.
+# Editing `path` renames the secret (preserves created_at + history).
 # expires_at accepts: 30d / 6mo / 1y / never / RFC 3339 timestamp.
 # Custom fields (any other `key: value` lines) are stored as annotations.
 
 ";
 
-fn render_edit_doc(decoded: &secret_value::Decoded) -> String {
+fn render_edit_doc(path: &str, decoded: &secret_value::Decoded) -> String {
     let expires = decoded
         .expires_at
         .as_ref()
@@ -629,7 +653,7 @@ fn render_edit_doc(decoded: &secret_value::Decoded) -> String {
         .unwrap_or_default();
     let value = String::from_utf8_lossy(&decoded.data);
     let mut buf = format!(
-        "{EDIT_DOC_HEADER}description: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}",
+        "{EDIT_DOC_HEADER}path: {path}\ndescription: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}",
         desc = decoded.description,
         url = decoded.url,
         totp = decoded.totp,
@@ -671,6 +695,7 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
         // the user's trailing whitespace.
         let val = v.strip_prefix(' ').unwrap_or(v).to_string();
         match key {
+            "path" => parsed.path = val,
             "description" => parsed.description = val,
             "url" => parsed.url = val,
             "totp" => parsed.totp = val,
@@ -686,6 +711,31 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
     }
     parsed.value = value_lines.join("\n");
     Ok(parsed)
+}
+
+/// Validate + normalise a secret path coming back from the editor.
+///
+/// We trim outer whitespace and reject anything that would land outside the
+/// `secrets/` tree (absolute paths, `..`, leading/trailing slashes). Empty
+/// paths are also rejected — every secret must have a name.
+fn normalize_secret_path(raw: &str) -> std::result::Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty".to_string());
+    }
+    if trimmed.starts_with('/') || trimmed.ends_with('/') {
+        return Err("path must not start or end with `/`".to_string());
+    }
+    if trimmed
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return Err("path segments must be non-empty and not `.`/`..`".to_string());
+    }
+    if trimmed.contains('\\') {
+        return Err("path must not contain `\\`".to_string());
+    }
+    Ok(trimmed.to_string())
 }
 
 fn labeled_line(label: &'static str, value: impl Into<String>) -> Line<'static> {
@@ -982,6 +1032,10 @@ mod tests {
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         match view.on_key(press(KeyCode::Char('e')), &km) {
             SecretViewerAction::EditValue(doc) => {
+                assert!(
+                    doc.contains("path: prod/API_KEY"),
+                    "doc missing path: {doc}"
+                );
                 assert!(doc.contains("description:"), "doc missing header: {doc}");
                 assert!(doc.contains("expires_at:"), "doc missing expires_at: {doc}");
                 assert!(doc.contains("\n---\n"), "doc missing separator: {doc}");
@@ -999,7 +1053,7 @@ mod tests {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        let doc = "description:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nrotated";
+        let doc = "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nrotated";
         view.finish_edit(Ok(Some(doc.to_string())));
         match &view.status {
             Some((msg, StatusKind::Info)) => assert_eq!(msg, "edited"),
@@ -1015,6 +1069,7 @@ mod tests {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
+path: prod/API_KEY
 description: prod database password
 url: https://db.example.com
 totp:
@@ -1043,6 +1098,7 @@ hunter2";
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         // First set an expiry.
         let with_exp = "\
+path: prod/API_KEY
 description:
 url:
 totp:
@@ -1055,6 +1111,7 @@ s3cret";
 
         // Now clear it.
         let cleared = "\
+path: prod/API_KEY
 description:
 url:
 totp:
@@ -1079,6 +1136,7 @@ s3cret";
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
         let doc = "\
+path: prod/API_KEY
 description:
 url:
 totp:
@@ -1104,6 +1162,83 @@ s3cret";
     }
 
     #[test]
+    fn finish_edit_with_empty_path_errors() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        let doc = "path:\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
+        view.finish_edit(Ok(Some(doc.to_string())));
+        assert!(matches!(view.status, Some((_, StatusKind::Error))));
+        // The original secret must still be readable at its original path.
+        assert!(store::read_secret(&ctx.store, &path).is_ok());
+    }
+
+    #[test]
+    fn finish_edit_renames_secret_and_preserves_history() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        // Capture the original created_at so we can assert it's preserved.
+        let original_created = view.meta.created_at.clone();
+        // First, write a new value so `history` has an entry to preserve.
+        let v1 =
+            "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nv1";
+        view.finish_edit(Ok(Some(v1.to_string())));
+
+        // Now rename to a new path.
+        let renamed =
+            "path: staging/RENAMED_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nv2";
+        view.finish_edit(Ok(Some(renamed.to_string())));
+        assert!(
+            matches!(&view.status, Some((m, StatusKind::Info)) if m == "edited"),
+            "expected edited, got {:?}",
+            view.status
+        );
+
+        // Old path should no longer exist.
+        assert!(store::read_secret(&ctx.store, "prod/API_KEY").is_err());
+        // New path should be readable and decrypt to v2.
+        assert!(store::read_secret(&ctx.store, "staging/RENAMED_KEY").is_ok());
+        assert_eq!(view.path, "staging/RENAMED_KEY");
+        assert_eq!(view.decrypt().unwrap(), "v2");
+        // created_at should be preserved across the rename.
+        let new_meta = store::read_secret_meta(&ctx.store, "staging/RENAMED_KEY").unwrap();
+        assert_eq!(new_meta.created_at, original_created);
+    }
+
+    #[test]
+    fn finish_edit_rename_collision_errors() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        // Seed a second secret to collide with.
+        let recipients = age::collect_recipients(&ctx.store, None).unwrap();
+        let ct = age::encrypt(b"other", &recipients).unwrap();
+        store::write_secret(&ctx.store, "other/KEY", &ct).unwrap();
+
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        let doc =
+            "path: other/KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
+        view.finish_edit(Ok(Some(doc.to_string())));
+        assert!(matches!(view.status, Some((_, StatusKind::Error))));
+        // Both secrets must still exist with their original contents.
+        assert_eq!(view.path, path);
+        assert!(store::read_secret(&ctx.store, &path).is_ok());
+        assert!(store::read_secret(&ctx.store, "other/KEY").is_ok());
+    }
+
+    #[test]
+    fn finish_edit_rejects_path_traversal() {
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view =
+            SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
+        let doc =
+            "path: ../escape\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
+        view.finish_edit(Ok(Some(doc.to_string())));
+        assert!(matches!(view.status, Some((_, StatusKind::Error))));
+        assert_eq!(view.path, path);
+    }
+
+    #[test]
     fn parse_edit_doc_round_trips_all_fields() {
         let mut annotations = HashMap::new();
         annotations.insert("team".to_string(), "backend".to_string());
@@ -1116,8 +1251,9 @@ s3cret";
             expires_at: None,
             annotations,
         };
-        let doc = render_edit_doc(&decoded);
+        let doc = render_edit_doc("prod/SECRET", &decoded);
         let parsed = parse_edit_doc(&doc).unwrap();
+        assert_eq!(parsed.path, "prod/SECRET");
         assert_eq!(parsed.description, "d");
         assert_eq!(parsed.url, "https://x");
         assert_eq!(parsed.totp, "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP");
