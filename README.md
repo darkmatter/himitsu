@@ -37,6 +37,29 @@ Age-based secrets manager that supports cross-repo sharing. Secrets stored one-f
 
 ---
 
+## Intro
+
+himitsu solves duplication and eases maintenance, and is made for the following workflow:
+
+- Create your personal store as a git repo e.g. `user/secrets` - personal secrets go here.
+- Any orgs/teams you are part of have a store at `org/secrets` - team secrets go here.
+- Access-control is path-based - configure who can access `prod/*` in `.himitsu.yaml`
+- Store secrets, organizing using plain directories
+- Map secrets to environments:
+
+```yaml
+# .himitsu.yaml
+...
+envs:
+  web-service-{dev,staging,prod}:
+    - common/* # includes all secrets in the "common" directory, converting 'foo-bar' to 'FOO_BAR'
+    - $1/database-url # includes dev/database-url for dev, etc
+    - SOME_VALUE: path/to/some-secret # override environment variable key
+```
+
+With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory.
+
+
 ## Features
 
 - **Age-only encryption** -- no KMS, no GPG, no SOPS. One `.age` file per secret.
