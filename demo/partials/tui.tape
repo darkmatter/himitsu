@@ -72,7 +72,7 @@ Screenshot target/vhs-out/screenshots/7-new-secret-created.png
 
 # Store picker remains in the TUI and shows registered stores.
 Ctrl+S
-Wait+Screen /acme/
+Wait+Screen /demo/
 Sleep 900ms
 Screenshot target/vhs-out/screenshots/8-store-picker.png
 Escape
