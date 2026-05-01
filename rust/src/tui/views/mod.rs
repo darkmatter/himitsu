@@ -7,6 +7,8 @@ use ratatui::Frame;
 
 pub mod command_palette;
 pub mod envs;
+pub mod envs_dsl_editor;
+pub mod envs_text;
 pub mod help;
 pub mod init_wizard;
 pub mod new_secret;

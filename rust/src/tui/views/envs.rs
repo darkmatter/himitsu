@@ -25,11 +25,13 @@ use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::config::env_cache::Scope;
+use crate::config::env_dsl;
 use crate::config::env_resolver::{self, EnvNode};
 use crate::config::envs_mut::{self, ScopeHint};
 use crate::config::{validate_env_label, EnvEntry};
 use crate::remote::store;
 use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::views::envs_dsl_editor::{DslEditor, DslEditorOutcome};
 
 /// Outcome of handling a key — routed by the app.
 #[derive(Debug, Clone)]
@@ -302,6 +304,13 @@ pub struct EnvsView {
     available_secrets: Vec<String>,
     create: Option<CreateEditor>,
     confirm_cancel_create: bool,
+    /// Optional 2-pane DSL editor: a YAML/text buffer on the left and
+    /// live-resolved KEY=value pairs on the right. Mutually exclusive
+    /// with `create` — opening one closes the other.
+    dsl: Option<DslEditor>,
+    /// Cached corpus for the autocomplete popup: item names plus their
+    /// group prefixes. Rebuilt whenever `available_secrets` changes.
+    autocomplete_corpus: Vec<String>,
 }
 
 impl EnvsView {
@@ -317,6 +326,8 @@ impl EnvsView {
             available_secrets: Vec::new(),
             create: None,
             confirm_cancel_create: false,
+            dsl: None,
+            autocomplete_corpus: Vec::new(),
         };
         view.reload();
         view
@@ -382,6 +393,7 @@ impl EnvsView {
         // not fatal — concrete entries still render, wildcards just produce
         // an empty branch.
         self.available_secrets = store::list_secrets(&self.ctx.store, None).unwrap_or_default();
+        self.autocomplete_corpus = build_corpus(&self.available_secrets);
 
         // Try to restore the prior selection; otherwise land on the first
         // selectable label.
@@ -489,6 +501,10 @@ impl EnvsView {
             return self.handle_create_key(key, keymap);
         }
 
+        if self.dsl.is_some() {
+            return self.handle_dsl_key(key, keymap);
+        }
+
         // Ctrl-C / quit binding maps to Quit; Esc is Back (not Quit) because
         // envs is a sub-view under search, not the root.
         if key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char('q')) {
@@ -522,6 +538,104 @@ impl EnvsView {
                 EnvsAction::None
             }
             (KeyCode::Char('e'), _) => self.open_edit_selected(),
+            (KeyCode::Char('y'), _) => self.open_dsl_editor(),
+            _ => EnvsAction::None,
+        }
+    }
+
+    /// Open the YAML/DSL 2-pane editor. If a label is selected its YAML
+    /// fragment is preloaded; otherwise the editor starts blank for a new
+    /// env.
+    fn open_dsl_editor(&mut self) -> EnvsAction {
+        let initial_yaml = match self.selected_label_scope() {
+            Some((label, scope)) => {
+                let entries = self
+                    .entries
+                    .get(&(scope_key(scope), label.to_string()))
+                    .cloned()
+                    .unwrap_or_default();
+                let mut single: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
+                single.insert(label.to_string(), entries);
+                serde_yaml::to_string(&single).unwrap_or_default()
+            }
+            None => String::new(),
+        };
+        let original = self.selected_label_scope().map(|(l, _)| l.to_string());
+        self.dsl = Some(DslEditor::new(&initial_yaml, original));
+        EnvsAction::None
+    }
+
+    fn handle_dsl_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> EnvsAction {
+        // Ctrl-C still quits.
+        if keymap.quit.matches(&key) && key.code != KeyCode::Esc {
+            return EnvsAction::Quit;
+        }
+        let corpus = self.autocomplete_corpus.clone();
+        let editor = self.dsl.as_mut().expect("dsl editor exists");
+        match editor.on_key(key, &corpus) {
+            DslEditorOutcome::Pending => EnvsAction::None,
+            DslEditorOutcome::Cancelled => {
+                self.dsl = None;
+                EnvsAction::None
+            }
+            DslEditorOutcome::SaveRequested => self.perform_dsl_save(),
+        }
+    }
+
+    /// Save the parsed envs from the DSL editor, upserting each label and
+    /// deleting any labels the user removed (only the original label is
+    /// considered for deletion — multi-label diff is left for follow-up).
+    fn perform_dsl_save(&mut self) -> EnvsAction {
+        let Some(editor) = self.dsl.as_ref() else {
+            return EnvsAction::None;
+        };
+        let envs = match editor.parse_envs() {
+            Ok(envs) => envs,
+            Err(e) => return EnvsAction::CreateFailed(format!("parse failed: {e}")),
+        };
+        if envs.is_empty() {
+            return EnvsAction::CreateFailed("editor is empty — nothing to save".into());
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let original = editor.original_label.clone();
+
+        // Upsert every label in the buffer; collect the last resolved scope
+        // for the toast.
+        let mut last_resolved_scope: Option<Scope> = None;
+        let mut last_label: Option<String> = None;
+        for (label, entries) in &envs {
+            // Validate brace-expanded form: each concrete expansion must
+            // pass `validate_env_label`.
+            for (concrete, _value) in env_dsl::expand_brace_label(label) {
+                if let Err(e) = validate_env_label(&concrete) {
+                    return EnvsAction::CreateFailed(format!("invalid label '{concrete}': {e}"));
+                }
+            }
+            match envs_mut::upsert(label, entries.clone(), ScopeHint::Auto, &cwd) {
+                Ok(resolved) => {
+                    last_resolved_scope = Some(resolved.scope);
+                    last_label = Some(label.clone());
+                }
+                Err(e) => {
+                    return EnvsAction::CreateFailed(format!("save failed for '{label}': {e}"))
+                }
+            }
+        }
+
+        // If the editor was opened on a single original label and that
+        // label is no longer present, delete it.
+        if let Some(orig) = original {
+            if !envs.contains_key(&orig) {
+                let _ = envs_mut::delete(&orig, ScopeHint::Auto, &cwd);
+            }
+        }
+
+        self.dsl = None;
+        self.reload();
+
+        match (last_label, last_resolved_scope) {
+            (Some(label), Some(scope)) => EnvsAction::Created { label, scope },
             _ => EnvsAction::None,
         }
     }
@@ -693,7 +807,14 @@ impl EnvsView {
             .constraints([Constraint::Max(20), Constraint::Min(1)])
             .split(chunks[1]);
         self.draw_labels(frame, panes[0]);
-        if self.create.is_some() {
+        if self.dsl.is_some() {
+            let dsl_panes = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(panes[1]);
+            self.draw_dsl_editor(frame, dsl_panes[0]);
+            self.draw_dsl_preview(frame, dsl_panes[1]);
+        } else if self.create.is_some() {
             let editor_panes = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -873,7 +994,22 @@ impl EnvsView {
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let footer = Style::default().fg(theme::footer_text());
-        let items = if self.create.is_some() {
+        let items = if self.dsl.is_some() {
+            vec![
+                Line::from(vec![
+                    Span::styled("ctrl-space", Style::default().fg(theme::accent())),
+                    Span::styled(" complete", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("ctrl-s", Style::default().fg(theme::accent())),
+                    Span::styled(" save", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("esc", Style::default().fg(theme::accent())),
+                    Span::styled(" cancel", footer),
+                ]),
+            ]
+        } else if self.create.is_some() {
             vec![
                 Line::from(vec![
                     Span::styled("tab", Style::default().fg(theme::accent())),
@@ -901,6 +1037,10 @@ impl EnvsView {
                 Line::from(vec![
                     Span::styled("n", Style::default().fg(theme::accent())),
                     Span::styled(" new", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("y", Style::default().fg(theme::accent())),
+                    Span::styled(" yaml", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("d", Style::default().fg(theme::accent())),
@@ -1075,6 +1215,166 @@ impl EnvsView {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn draw_dsl_editor(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(editor) = self.dsl.as_ref() else {
+            return;
+        };
+        let title = match &editor.original_label {
+            Some(l) => format!(" yaml · {l} "),
+            None => " yaml · new env ".into(),
+        };
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(Style::default().fg(theme::border_label()));
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+
+        let lines: Vec<Line<'static>> = editor
+            .buffer
+            .lines()
+            .iter()
+            .map(|l| Line::from(l.clone()))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), inner);
+
+        // Position the cursor.
+        let (row, col) = editor.buffer.cursor();
+        if (row as u16) < inner.height && (col as u16) < inner.width {
+            frame.set_cursor_position((inner.x + col as u16, inner.y + row as u16));
+        }
+
+        // Autocomplete popup as an inline overlay below the cursor.
+        if editor.autocomplete.open && !editor.autocomplete.items.is_empty() {
+            let popup_h = (editor.autocomplete.items.len() as u16).min(8) + 2;
+            let popup_w = editor
+                .autocomplete
+                .items
+                .iter()
+                .map(|s| s.chars().count() as u16)
+                .max()
+                .unwrap_or(0)
+                .max(20)
+                + 4;
+            let mut x = inner.x + col as u16;
+            let mut y = inner.y + row as u16 + 1;
+            if x + popup_w > inner.x + inner.width {
+                x = inner.x + inner.width.saturating_sub(popup_w);
+            }
+            if y + popup_h > inner.y + inner.height {
+                y = inner.y.saturating_sub(0).max(inner.y);
+                if y + popup_h > inner.y + inner.height {
+                    y = inner.y;
+                }
+            }
+            let popup = Rect {
+                x,
+                y,
+                width: popup_w.min(inner.width),
+                height: popup_h.min(inner.height),
+            };
+            frame.render_widget(Clear, popup);
+            let pop_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" suggest ")
+                .title_style(Style::default().fg(theme::border_label()));
+            let pop_inner = pop_block.inner(popup);
+            frame.render_widget(pop_block, popup);
+            let items: Vec<ListItem> = editor
+                .autocomplete
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let style = if i == editor.autocomplete.selected {
+                        Style::default()
+                            .bg(theme::accent())
+                            .fg(theme::on_accent())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(Line::from(Span::styled(s.clone(), style)))
+                })
+                .collect();
+            frame.render_widget(List::new(items), pop_inner);
+        }
+    }
+
+    fn draw_dsl_preview(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(editor) = self.dsl.as_ref() else {
+            return;
+        };
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title(" preview · resolved env ")
+            .title_style(Style::default().fg(theme::border_label()));
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        match editor.resolve(&self.available_secrets) {
+            Ok(out) => {
+                if out.pairs.is_empty() && out.warnings.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "  (no entries yet)",
+                        Style::default().fg(theme::muted()),
+                    )));
+                }
+                let mut current_label: Option<&str> = None;
+                for pair in &out.pairs {
+                    if current_label != Some(pair.env_label.as_str()) {
+                        if current_label.is_some() {
+                            lines.push(Line::from(""));
+                        }
+                        lines.push(Line::from(Span::styled(
+                            format!("{}/", pair.env_label),
+                            Style::default()
+                                .fg(theme::warning())
+                                .add_modifier(Modifier::BOLD),
+                        )));
+                        current_label = Some(pair.env_label.as_str());
+                    }
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            pair.key.clone(),
+                            Style::default()
+                                .fg(theme::accent())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" = ", Style::default().fg(theme::muted())),
+                        Span::raw(pair.item_path.clone()),
+                    ]));
+                }
+                if !out.warnings.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "warnings:",
+                        Style::default().fg(theme::warning()),
+                    )));
+                    for w in &out.warnings {
+                        lines.push(Line::from(Span::styled(
+                            format!("  [{}] {}", w.env_label, w.message),
+                            Style::default().fg(theme::warning()),
+                        )));
+                    }
+                }
+            }
+            Err(e) => {
+                lines.push(Line::from(Span::styled(
+                    "  parse error:",
+                    Style::default().fg(theme::danger()),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {e}"),
+                    Style::default().fg(theme::danger()),
+                )));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn draw_confirm(&self, frame: &mut Frame<'_>) {
         let Some(pending) = self.confirm.as_ref() else {
             return;
@@ -1227,6 +1527,24 @@ fn scope_key(scope: Scope) -> u8 {
     }
 }
 
+/// Build the autocomplete corpus from the available item names. Includes
+/// each item path plus every distinct group prefix so users can complete
+/// `dev/` against `dev/api-key`, `dev/db-pass`, etc.
+fn build_corpus(items: &[String]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for item in items {
+        set.insert(item.clone());
+        // Group prefixes: everything up to and including each `/`.
+        for (i, c) in item.char_indices() {
+            if c == '/' {
+                set.insert(format!("{}/", &item[..i]));
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
 fn clone_ctx(ctx: &Context) -> Context {
     Context {
         data_dir: ctx.data_dir.clone(),
@@ -1242,10 +1560,12 @@ impl EnvsView {
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
             ("↑/↓ / j/k", "navigate labels"),
-            ("n", "create a new env"),
-            ("e", "edit selected env"),
+            ("n", "create a new env (form mode)"),
+            ("e", "edit selected env (form mode)"),
+            ("y", "open YAML/DSL 2-pane editor"),
             ("d", "delete selected env (confirm y/N)"),
-            ("ctrl-s", "save new env while editing"),
+            ("ctrl-s", "save while editing"),
+            ("ctrl-space", "autocomplete in DSL editor"),
             ("?", "toggle this help"),
             ("esc / q", "back to search"),
             ("ctrl-c", "quit"),

@@ -8,6 +8,7 @@ use crate::error::{HimitsuError, Result};
 use crate::tui::keymap::KeyMap;
 
 pub mod env_cache;
+pub mod env_dsl;
 pub mod env_resolver;
 pub mod envs_mut;
 
