@@ -52,9 +52,14 @@ himitsu solves duplication and eases maintenance, and is made for the following 
 ...
 envs:
   web-service-{dev,staging,prod}:
-    - common/* # includes all secrets in the "common" directory, converting 'foo-bar' to 'FOO_BAR'
-    - $1/database-url # includes dev/database-url for dev, etc
-    - SOME_VALUE: path/to/some-secret # override environment variable key
+    # includes all secrets in the "common" directory, converting 'foo-bar' to 'FOO_BAR'
+    - common/*
+    # includes dev/database-url for dev, etc
+    - $1/database-url
+    # override environment variable key
+    - SOME_VALUE: path/to/some-secret
+    # use the full ref to access external stores
+    - SHARED_SECRET: github:org/secrets#prod/api-key
 ```
 
 With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory.
