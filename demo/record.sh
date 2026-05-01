@@ -11,12 +11,12 @@ set -euo pipefail
 # captures output, and emits a deterministic .cast file with realistic
 # typing animation.  No TTY or asciinema-rec session required.
 #
-# Sections (15 total):
-#   1. Help            6. List secrets    11. Decrypt rejected  14. --remote flag
-#   2. Initialize      7. Rekey           12. File layout       15. Sync
-#   3. Git integration 8. Recipients      13. Remote add
-#   4. Set secrets     9. Groups
-#   5. Get secrets    10. Search
+# Sections (14 total):
+#   1. Help            6. List secrets    10. Decrypt rejected  13. --remote flag
+#   2. Initialize      7. Rekey            11. File layout       14. Sync
+#   3. Git integration 8. Recipients       12. Remote add
+#   4. Set secrets     9. Search
+#   5. Get secrets
 #
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -243,20 +243,15 @@ h get prod/API_KEY
 # ----------------------------------------------------------
 banner "8. Recipient management"
 h recipient ls
-h recipient add alice --age-key "$PUBKEY" --group common
+h recipient add common/alice --age-key "$PUBKEY"
 h recipient ls
 
 # ----------------------------------------------------------
-banner "9. Group management"
-h group add admins
-h group ls
-
-# ----------------------------------------------------------
-banner "10. Search"
+banner "9. Search"
 h search DB --refresh
 
 # ----------------------------------------------------------
-banner "11. Decrypt is rejected (no plaintext at rest)"
+banner "10. Decrypt is rejected (no plaintext at rest)"
 type_cmd "himitsu decrypt"
 _dec_out=$("$HIMITSU_BIN" -s "$DEMO_STORE" decrypt 2>&1) || true
 if [[ -n "$_dec_out" ]]; then
@@ -267,7 +262,7 @@ emit $'\n'
 ts_add 0.3
 
 # ----------------------------------------------------------
-banner "12. File layout"
+banner "11. File layout"
 type_cmd 'find $DEMO_HOME -type f | sort'
 _file_tree=$(find "$DEMO_HOME" -type f | sed "s|$DEMO_HOME|~/.himitsu|" | sort)
 emit "$_file_tree"$'\n'
@@ -288,7 +283,7 @@ git -C "$UPSTREAM_DIR" add -A 2>/dev/null
 git -C "$UPSTREAM_DIR" commit -m "himitsu: add team secrets" -q 2>/dev/null || true
 
 # ----------------------------------------------------------
-banner "13. Remote add — register a team secrets repository"
+banner "12. Remote add — register a team secrets repository"
 
 note "Register a shared secrets repository as a named remote:"
 ts_add 0.1
@@ -301,14 +296,14 @@ note "Registered remote acme/infra"
 ts_add 0.15
 
 # ----------------------------------------------------------
-banner "14. --remote (-r) — select a remote store inline"
+banner "13. --remote (-r) — select a remote store inline"
 
 note "Inspect any registered remote store without switching projects:"
 h_bare -r acme/infra ls
 h_bare -r acme/infra get prod/SHARED_API_KEY
 
 # ----------------------------------------------------------
-banner "15. Sync — mirror encrypted files into the local store"
+banner "14. Sync — mirror encrypted files into the local store"
 
 note "Sync the registered remote into the local store:"
 h sync acme/infra

@@ -6,12 +6,16 @@ on:
     paths:
       - 'demo/**'
       - 'rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/vhs.yml'
   pull_request:
     branches: [main]
     paths:
       - 'demo/**'
       - 'rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/vhs.yml'
 
 env:
@@ -52,22 +56,25 @@ jobs:
       - name: Build himitsu (release)
         run: cargo build --release
 
-      - name: Render TUI demo tapes
+      - name: Render demo tapes
         run: |
           set -euo pipefail
           shopt -s nullglob
-          mkdir -p /tmp/vhs-out
-          tapes=(demo/tui-us-00*.tape demo/tui-us-01*.tape)
+          out_dir="target/vhs-out"
+          mkdir -p "$out_dir/screenshots"
+          tapes=(demo/demo.tape demo/tui-us-00*.tape demo/tui-us-01*.tape)
           if [ ${#tapes[@]} -eq 0 ]; then
-            echo "error: no tui-us-*.tape files found under demo/" >&2
+            echo "error: no VHS tape files found under demo/" >&2
             exit 1
           fi
           failed=0
           for tape in "${tapes[@]}"; do
             echo "::group::vhs $tape"
-            tmp_tape="/tmp/vhs-out/$(basename "$tape")"
-            # Redirect gif output into a scratch dir so we don't dirty the tree.
-            sed -E "s|^Output .*|Output /tmp/vhs-out/$(basename "${tape%.tape}").gif|" \
+            tmp_tape="$out_dir/$(basename "$tape")"
+            # Redirect generated media into scratch space so CI validates the
+            # tapes without dirtying the checkout with binary diffs.
+            sed -E \
+              -e "s|^Output .*|Output $out_dir/$(basename "${tape%.tape}").gif|" \
               "$tape" > "$tmp_tape"
             if ! vhs "$tmp_tape"; then
               echo "::error file=$tape::vhs failed to render $tape"
@@ -76,3 +83,10 @@ jobs:
             echo "::endgroup::"
           done
           exit "$failed"
+
+      - name: Upload rendered demos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhs-demo-renders
+          path: target/vhs-out

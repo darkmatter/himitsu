@@ -33,11 +33,11 @@ tui_demo_prepare() {
   export DEMO_STORE="$DEMO_HOME/state/stores/demo/main"
   mkdir -p "$(dirname "$DEMO_STORE")"
 
-  "$HIMITSU_BIN" -s "$DEMO_STORE" init >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/API_KEY        "sk_live_abc123"  >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/DATABASE_URL   "postgres://prod" >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/API_KEY     "sk_test_xyz789"  >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/DEBUG_TOKEN "dbg_42"          >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" init --no-tui >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/API_KEY        "sk_live_abc123"  --description "Stripe production API key" --env-key STRIPE_API_KEY --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/DATABASE_URL   "postgres://prod" --description "Production database URL" --env-key DATABASE_URL --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/API_KEY     "sk_test_xyz789"  --description "Staging API key" --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/DEBUG_TOKEN "dbg_42"          --description "Temporary debug token" --no-push >/dev/null
 }
 
 # Register a second store under stores_dir and write a global config
@@ -46,9 +46,9 @@ tui_demo_prepare() {
 tui_demo_register_second_store() {
   local second="$DEMO_HOME/state/stores/acme/infra"
   mkdir -p "$(dirname "$second")"
-  "$HIMITSU_BIN" -s "$second" init >/dev/null
-  "$HIMITSU_BIN" -s "$second" set prod/SHARED_KEY "team-secret-123"         >/dev/null
-  "$HIMITSU_BIN" -s "$second" set prod/SHARED_URL "https://api.acme.internal" >/dev/null
+  "$HIMITSU_BIN" -s "$second" init --no-tui >/dev/null
+  "$HIMITSU_BIN" -s "$second" set prod/SHARED_KEY "team-secret-123" --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$second" set prod/SHARED_URL "https://api.acme.internal" --no-push >/dev/null
 
   cat > "$HIMITSU_CONFIG" <<YAML
 default_store: demo/main
