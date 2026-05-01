@@ -801,6 +801,10 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
 fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
     use crate::git;
 
+    if let Some(override_health) = store_health_override() {
+        return override_health;
+    }
+
     if store_path.as_os_str().is_empty() {
         return StoreHealth::Unknown;
     }
@@ -847,6 +851,19 @@ fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
         (true, false) => StoreHealth::Behind(behind),
         (false, true) => StoreHealth::Dirty,
         (false, false) => StoreHealth::Synced,
+    }
+}
+
+fn store_health_override() -> Option<StoreHealth> {
+    let raw = std::env::var("HIMITSU_TUI_STORE_HEALTH").ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "synced" => Some(StoreHealth::Synced),
+        "no-remote" | "no_remote" => Some(StoreHealth::NoRemote),
+        "not-pushed" | "not_pushed" => Some(StoreHealth::NotPushed),
+        "not-git" | "not_git" => Some(StoreHealth::NotGit),
+        "dirty" => Some(StoreHealth::Dirty),
+        "unknown" => Some(StoreHealth::Unknown),
+        _ => None,
     }
 }
 

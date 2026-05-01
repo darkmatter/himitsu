@@ -53,7 +53,7 @@ tui_demo_register_second_store() {
   cat > "$HIMITSU_CONFIG" <<YAML
 default_store: demo/main
 tui:
-  theme: ayu
+  theme: himitsu
 YAML
 }
 

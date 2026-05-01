@@ -4,6 +4,8 @@ Set TypingSpeed 1ms
 Type "source demo/tui-demo-setup.sh && DEMO_NAME=main tui_demo_prepare"
 Enter
 Wait+Line />$/
+Type "export HIMITSU_TUI_STORE_HEALTH=synced"
+Enter
 Type "tui_demo_register_second_store"
 Enter
 Wait+Line />$/
