@@ -29,8 +29,9 @@ use crate::error::Result;
 use views::init_wizard::{InitWizardView, Outcome};
 
 pub fn run(ctx: &Context) -> Result<()> {
-    // First-run flow: if no age key exists, drop straight into the wizard.
-    if !ctx.data_dir.join("key").exists() {
+    // First-run flow: if no age key or store exists, drop straight into the
+    // wizard instead of rendering an empty dashboard.
+    if should_launch_init_flow(ctx) {
         return run_init_flow();
     }
 
@@ -123,5 +124,60 @@ pub fn run_init_flow() -> Result<()> {
         store: crate::config::resolve_store(None).unwrap_or_default(),
         recipients_path: None,
     };
+    if !should_continue_to_dashboard_after_init(&ctx.store) {
+        return Ok(());
+    }
     run(&ctx)
+}
+
+fn should_launch_init_flow(ctx: &Context) -> bool {
+    !ctx.data_dir.join("key").exists() || ctx.store.as_os_str().is_empty()
+}
+
+fn should_continue_to_dashboard_after_init(store: &std::path::Path) -> bool {
+    !store.as_os_str().is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::cli::Context;
+
+    fn ctx_with(data_dir: PathBuf, store: PathBuf) -> Context {
+        Context {
+            data_dir,
+            state_dir: PathBuf::new(),
+            store,
+            recipients_path: None,
+        }
+    }
+
+    #[test]
+    fn should_launch_init_flow_when_key_exists_but_store_is_missing() {
+        let data_dir = tempfile::tempdir().unwrap();
+        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
+
+        let ctx = ctx_with(data_dir.path().to_path_buf(), PathBuf::new());
+
+        assert!(super::should_launch_init_flow(&ctx));
+    }
+
+    #[test]
+    fn should_not_launch_init_flow_when_key_and_store_exist() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
+
+        let ctx = ctx_with(data_dir.path().to_path_buf(), store.path().to_path_buf());
+
+        assert!(!super::should_launch_init_flow(&ctx));
+    }
+
+    #[test]
+    fn should_not_continue_to_dashboard_after_init_without_store() {
+        assert!(!super::should_continue_to_dashboard_after_init(
+            &PathBuf::new()
+        ));
+    }
 }
