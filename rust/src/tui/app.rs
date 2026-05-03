@@ -20,6 +20,7 @@ pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::envs::{EnvsAction, EnvsView};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
+use crate::tui::views::remote_add::{RemoteAddAction, RemoteAddView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
 
@@ -28,6 +29,7 @@ enum View {
     SecretViewer(SecretViewerView),
     NewSecret(NewSecretView),
     Envs(EnvsView),
+    RemoteAdd(RemoteAddView),
 }
 
 /// Intent emitted by [`App::on_key`] when a view needs the outer event
@@ -107,6 +109,9 @@ impl App {
                 }
                 SearchAction::NewSecret => {
                     self.view = View::NewSecret(NewSecretView::new(&self.ctx));
+                }
+                SearchAction::AddRemote => {
+                    self.view = View::RemoteAdd(RemoteAddView::new(&self.ctx));
                 }
                 SearchAction::OpenEnvs => {
                     self.view = View::Envs(EnvsView::new(&self.ctx));
@@ -201,6 +206,22 @@ impl App {
                     self.push_toast(format!("create failed: {err}"), ToastKind::Error);
                 }
             },
+            View::RemoteAdd(form) => match form.on_key(key, &self.keymap) {
+                RemoteAddAction::None => {}
+                RemoteAddAction::Quit => self.should_quit = true,
+                RemoteAddAction::Cancel => {
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast("add remote cancelled", ToastKind::Info);
+                }
+                RemoteAddAction::Created(slug) => {
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast(format!("added remote {slug}"), ToastKind::Success);
+                }
+                RemoteAddAction::Failed(err) => {
+                    self.view = View::Search(SearchView::new(&self.ctx));
+                    self.push_toast(format!("add remote failed: {err}"), ToastKind::Error);
+                }
+            },
         }
         None
     }
@@ -239,6 +260,7 @@ impl App {
             View::SecretViewer(_) => "secret_viewer",
             View::NewSecret(_) => "new_secret",
             View::Envs(_) => "envs",
+            View::RemoteAdd(_) => "remote_add",
         }
     }
 
@@ -262,6 +284,7 @@ impl App {
             View::SecretViewer(viewer) => viewer.draw(frame),
             View::NewSecret(form) => form.draw(frame),
             View::Envs(envs) => envs.draw(frame),
+            View::RemoteAdd(form) => form.draw(frame),
         }
         // Expire-then-paint the toast. Eviction happens lazily at draw time
         // so we don't need a background tick — any `draw` call (triggered by
@@ -306,6 +329,9 @@ impl App {
                 HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
             }
             View::Envs(_) => HelpView::new(EnvsView::help_entries(), EnvsView::help_title()),
+            View::RemoteAdd(_) => {
+                HelpView::new(RemoteAddView::help_entries(), RemoteAddView::help_title())
+            }
         }
     }
 }

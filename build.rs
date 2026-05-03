@@ -15,7 +15,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Path to our proto source directory.
     let proto_dir = PathBuf::from("proto");
 
-    let protos: &[&str] = &["proto/config.proto", "proto/secrets.proto"];
+    let protos: &[&str] = &[
+        "proto/config.proto",
+        "proto/secrets.proto",
+        "proto/commands.proto",
+    ];
 
     let includes: &[&str] = &[
         proto_dir.to_str().unwrap(),

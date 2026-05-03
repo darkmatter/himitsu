@@ -40,6 +40,9 @@ pub enum SearchAction {
     OpenViewer(SearchResult),
     /// User requested the new-secret form (Ctrl+N).
     NewSecret,
+    /// User picked "add remote" from the command palette — open the
+    /// protobuf-driven add-remote form.
+    AddRemote,
     /// User requested the envs view (Shift+E) — browse/delete preset envs.
     OpenEnvs,
     /// User picked a new active store via the embedded picker overlay.
@@ -362,6 +365,7 @@ impl SearchView {
     fn dispatch_command(&mut self, cmd: Command) -> SearchAction {
         match cmd {
             Command::NewSecret => SearchAction::NewSecret,
+            Command::AddRemote => SearchAction::AddRemote,
             Command::SwitchStore => {
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),

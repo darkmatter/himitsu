@@ -42,39 +42,9 @@ pub enum RemoteCommand {
 pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
     match args.command {
         RemoteCommand::Add { slug, url } => {
-            // If the user passed a full git URL as the slug, extract the
-            // org/repo slug and use the original input as the clone URL.
-            let (resolved_slug, clone_url) =
-                if let Some(parsed) = super::init::parse_remote_slug(&slug) {
-                    (parsed, url.unwrap_or_else(|| slug.clone()))
-                } else {
-                    let s = slug.clone();
-                    let (org, repo) = config::validate_remote_slug(&s)?;
-                    let u =
-                        url.unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
-                    (s, u)
-                };
-
-            let (org, repo) = config::validate_remote_slug(&resolved_slug)?;
-            let dest = config::stores_dir().join(org).join(repo);
-
-            if dest.exists() {
-                if !dest.join(".git").exists() {
-                    return Err(HimitsuError::Remote(format!(
-                        "remote '{resolved_slug}' already exists at {} but is not a git checkout",
-                        dest.display()
-                    )));
-                }
-                if !git::has_any_remote(&dest) {
-                    git::add_remote(&dest, "origin", &clone_url)?;
-                }
-                println!("Updating {resolved_slug} from origin");
-                git::pull_or_checkout_origin(&dest)?;
-                println!("Updated remote '{resolved_slug}'");
-            } else {
-                println!("Cloning {clone_url} → {}", dest.display());
-                git::clone(&clone_url, &dest)?;
-                println!("Added remote '{resolved_slug}'");
+            let outcome = add(&slug, url.as_deref())?;
+            for line in outcome.messages {
+                println!("{line}");
             }
         }
 
@@ -139,6 +109,64 @@ pub fn run(args: RemoteArgs, _ctx: &super::Context) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Outcome of [`add`]: the resolved slug plus any user-visible status lines
+/// the CLI wants to print. Returned instead of printing directly so the TUI
+/// can surface messages through its toast / status-line system.
+pub struct AddOutcome {
+    pub slug: String,
+    pub messages: Vec<String>,
+}
+
+/// Resolve a slug-or-URL pair, clone (or update) the checkout, and return
+/// the canonical slug plus any progress messages.
+///
+/// Extracted from the `RemoteCommand::Add` arm so the TUI's protobuf-driven
+/// remote-add form can run the exact same code path as the CLI.
+pub fn add(slug: &str, url: Option<&str>) -> Result<AddOutcome> {
+    // If the user passed a full git URL as the slug, extract the
+    // org/repo slug and use the original input as the clone URL.
+    let (resolved_slug, clone_url) = if let Some(parsed) = super::init::parse_remote_slug(slug) {
+        (
+            parsed,
+            url.map(str::to_string).unwrap_or_else(|| slug.to_string()),
+        )
+    } else {
+        let (org, repo) = config::validate_remote_slug(slug)?;
+        let u = url
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("git@github.com:{org}/{repo}.git"));
+        (slug.to_string(), u)
+    };
+
+    let (org, repo) = config::validate_remote_slug(&resolved_slug)?;
+    let dest = config::stores_dir().join(org).join(repo);
+    let mut messages = Vec::new();
+
+    if dest.exists() {
+        if !dest.join(".git").exists() {
+            return Err(HimitsuError::Remote(format!(
+                "remote '{resolved_slug}' already exists at {} but is not a git checkout",
+                dest.display()
+            )));
+        }
+        if !git::has_any_remote(&dest) {
+            git::add_remote(&dest, "origin", &clone_url)?;
+        }
+        messages.push(format!("Updating {resolved_slug} from origin"));
+        git::pull_or_checkout_origin(&dest)?;
+        messages.push(format!("Updated remote '{resolved_slug}'"));
+    } else {
+        messages.push(format!("Cloning {clone_url} → {}", dest.display()));
+        git::clone(&clone_url, &dest)?;
+        messages.push(format!("Added remote '{resolved_slug}'"));
+    }
+
+    Ok(AddOutcome {
+        slug: resolved_slug,
+        messages,
+    })
 }
 
 #[cfg(test)]

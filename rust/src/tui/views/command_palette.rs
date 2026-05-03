@@ -24,6 +24,7 @@ use crate::tui::theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     NewSecret,
+    AddRemote,
     SwitchStore,
     ToggleStoreColumn,
     Envs,
@@ -35,6 +36,7 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Command::NewSecret => "new secret",
+            Command::AddRemote => "add remote",
             Command::SwitchStore => "switch store",
             Command::ToggleStoreColumn => "toggle store column",
             Command::Envs => "browse envs",
@@ -46,6 +48,7 @@ impl Command {
     pub fn shortcut(&self) -> &'static str {
         match self {
             Command::NewSecret => "ctrl-n",
+            Command::AddRemote => "",
             Command::SwitchStore => "ctrl-s",
             Command::ToggleStoreColumn => "",
             Command::Envs => "shift-e",
@@ -57,6 +60,7 @@ impl Command {
     pub fn description(&self) -> &'static str {
         match self {
             Command::NewSecret => "Create a new encrypted secret",
+            Command::AddRemote => "Clone and register a remote git store",
             Command::SwitchStore => "Pick a different remote / checkout",
             Command::ToggleStoreColumn => "Show/hide the STORE column in the results table",
             Command::Envs => "Browse env presets defined in himitsu.yaml",
@@ -87,6 +91,7 @@ pub struct CommandPalette {
 
 const COMMANDS: &[Command] = &[
     Command::NewSecret,
+    Command::AddRemote,
     Command::SwitchStore,
     Command::ToggleStoreColumn,
     Command::Envs,
@@ -351,7 +356,20 @@ mod tests {
         p.on_key(press(KeyCode::Down));
         assert_eq!(
             p.on_key(press(KeyCode::Enter)),
-            CommandPaletteOutcome::Selected(Command::SwitchStore),
+            CommandPaletteOutcome::Selected(Command::AddRemote),
+        );
+    }
+
+    #[test]
+    fn add_remote_filters_by_keyword() {
+        let mut p = CommandPalette::new();
+        for ch in "remote".chars() {
+            p.on_key(press(KeyCode::Char(ch)));
+        }
+        assert!(p.filtered.contains(&Command::AddRemote));
+        assert_eq!(
+            p.on_key(press(KeyCode::Enter)),
+            CommandPaletteOutcome::Selected(Command::AddRemote),
         );
     }
 

@@ -12,6 +12,7 @@ pub mod envs_text;
 pub mod help;
 pub mod init_wizard;
 pub mod new_secret;
+pub mod remote_add;
 pub mod search;
 pub mod secret_viewer;
 pub mod store_picker;

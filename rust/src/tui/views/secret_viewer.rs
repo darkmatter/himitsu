@@ -270,9 +270,8 @@ impl SecretViewerView {
 
         // Normalise + validate the (possibly renamed) path before any I/O so
         // a typo doesn't leave the store in a half-renamed state.
-        let new_path = normalize_secret_path(&parsed.path).map_err(|e| {
-            HimitsuError::InvalidReference(format!("edit: invalid path: {e}"))
-        })?;
+        let new_path = normalize_secret_path(&parsed.path)
+            .map_err(|e| HimitsuError::InvalidReference(format!("edit: invalid path: {e}")))?;
 
         let expires_at = if parsed.expires_at.trim().is_empty() {
             None
@@ -1053,7 +1052,8 @@ mod tests {
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        let doc = "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nrotated";
+        let doc =
+            "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nrotated";
         view.finish_edit(Ok(Some(doc.to_string())));
         match &view.status {
             Some((msg, StatusKind::Info)) => assert_eq!(msg, "edited"),
@@ -1181,8 +1181,7 @@ s3cret";
         // Capture the original created_at so we can assert it's preserved.
         let original_created = view.meta.created_at.clone();
         // First, write a new value so `history` has an entry to preserve.
-        let v1 =
-            "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nv1";
+        let v1 = "path: prod/API_KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\nv1";
         view.finish_edit(Ok(Some(v1.to_string())));
 
         // Now rename to a new path.
@@ -1216,8 +1215,7 @@ s3cret";
 
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        let doc =
-            "path: other/KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
+        let doc = "path: other/KEY\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
         view.finish_edit(Ok(Some(doc.to_string())));
         assert!(matches!(view.status, Some((_, StatusKind::Error))));
         // Both secrets must still exist with their original contents.
@@ -1231,8 +1229,7 @@ s3cret";
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view =
             SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path.clone());
-        let doc =
-            "path: ../escape\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
+        let doc = "path: ../escape\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\n---\ns3cret";
         view.finish_edit(Ok(Some(doc.to_string())));
         assert!(matches!(view.status, Some((_, StatusKind::Error))));
         assert_eq!(view.path, path);

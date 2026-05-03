@@ -387,6 +387,25 @@ impl ProjectConfig {
         validate_envs(&self.envs)?;
         Ok(())
     }
+
+    /// Load an existing project config, or return defaults if missing.
+    pub fn load_or_default(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(path)?;
+        Ok(serde_yaml::from_str(&contents).unwrap_or_default())
+    }
+
+    /// Save this config to the given YAML path, creating parent dirs.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let yaml = serde_yaml::to_string(self)?;
+        std::fs::write(path, yaml)?;
+        Ok(())
+    }
 }
 
 /// Settings for the `generate` command output.
@@ -488,7 +507,7 @@ pub fn config_dir() -> PathBuf {
     config_path()
         .parent()
         .map(PathBuf::from)
-        .unwrap_or_else(PathBuf::new)
+        .unwrap_or_default()
 }
 
 /// Data directory — stores the age keypair and associated key material.

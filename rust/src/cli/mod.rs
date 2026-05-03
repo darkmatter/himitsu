@@ -137,8 +137,7 @@ impl Context {
         if !crate::git::has_any_remote(&git_root) {
             return;
         }
-        if let Err(e) = crate::git::run(&["fetch", "--recurse-submodules", "origin"], &git_root)
-        {
+        if let Err(e) = crate::git::run(&["fetch", "--recurse-submodules", "origin"], &git_root) {
             eprintln!("warning: auto-pull fetch failed: {e}");
             return;
         }
@@ -147,9 +146,7 @@ impl Context {
         // history out-of-band. Surface that loudly instead of silently
         // creating a merge commit. --recurse-submodules updates submodule
         // working trees to match the fetched pointers.
-        if let Err(e) =
-            crate::git::run(&["pull", "--ff-only", "--recurse-submodules"], &git_root)
-        {
+        if let Err(e) = crate::git::run(&["pull", "--ff-only", "--recurse-submodules"], &git_root) {
             eprintln!("warning: auto-pull skipped (not fast-forward or no upstream): {e}");
         }
     }
@@ -385,6 +382,7 @@ impl Cli {
                     home: None,
                     key_provider: None,
                     no_tui: true,
+                    project: None,
                 },
                 &ctx,
             )?;
@@ -586,8 +584,9 @@ fn mutation_message(cmd: &Command) -> Option<String> {
         }),
         Command::Encrypt(_) => Some("rekey (encrypt)".to_string()),
         Command::Import(_) => Some("import".to_string()),
-        Command::Recipient(a) => recipient_subcommand_label(&a.command)
-            .map(|label| format!("recipient {label}")),
+        Command::Recipient(a) => {
+            recipient_subcommand_label(&a.command).map(|label| format!("recipient {label}"))
+        }
         Command::Schema(a) => match &a.command {
             schema::SchemaCommand::Refresh => Some("schema refresh".to_string()),
             _ => None,
@@ -697,10 +696,7 @@ mod tests {
     #[test]
     fn mutation_message_set_includes_path() {
         let cmd = parse(&["himitsu", "set", "prod/API_KEY", "value"]);
-        assert_eq!(
-            mutation_message(&cmd).as_deref(),
-            Some("set prod/API_KEY")
-        );
+        assert_eq!(mutation_message(&cmd).as_deref(), Some("set prod/API_KEY"));
     }
 
     #[test]
@@ -792,8 +788,11 @@ mod tests {
         let local = root.join("local");
 
         // Bare remote.
-        crate::git::run(&["init", "--bare", "-b", "main", remote.to_str().unwrap()], root)
-            .unwrap();
+        crate::git::run(
+            &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+            root,
+        )
+        .unwrap();
 
         // Working repo + initial commit.
         let work = root.join("work");
@@ -804,8 +803,11 @@ mod tests {
         std::fs::write(work.join("seed.txt"), "seed").unwrap();
         crate::git::run(&["add", "."], &work).unwrap();
         crate::git::run(&["commit", "-m", "seed"], &work).unwrap();
-        crate::git::run(&["remote", "add", "origin", remote.to_str().unwrap()], &work)
-            .unwrap();
+        crate::git::run(
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+            &work,
+        )
+        .unwrap();
         crate::git::run(&["push", "-u", "origin", "main"], &work).unwrap();
 
         // The "local" store is a fresh clone — has tracking branch.
@@ -974,25 +976,20 @@ mod tests {
     #[test]
     fn commit_stages_and_commits_inside_dirty_submodule() {
         let root = tempfile::tempdir().unwrap();
-        let (local, sub_path, _sub_remote) =
-            make_linked_repos_with_submodule(root.path());
+        let (local, sub_path, _sub_remote) = make_linked_repos_with_submodule(root.path());
 
         // Simulate a mutation: a new encrypted secret inside the submodule.
         std::fs::create_dir_all(sub_path.join("env")).unwrap();
         std::fs::write(sub_path.join("env/FOO.age"), "ciphertext").unwrap();
 
-        let parent_head_before =
-            crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
-        let sub_head_before =
-            crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
+        let parent_head_before = crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
+        let sub_head_before = crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
 
         let committed = ctx_for(&local).commit("himitsu: set env/FOO");
         assert!(committed, "parent should commit the pointer bump");
 
-        let sub_head_after =
-            crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
-        let parent_head_after =
-            crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
+        let sub_head_after = crate::git::run(&["rev-parse", "HEAD"], &sub_path).unwrap();
+        let parent_head_after = crate::git::run(&["rev-parse", "HEAD"], &local).unwrap();
 
         assert_ne!(
             sub_head_before.trim(),
@@ -1009,8 +1006,7 @@ mod tests {
     #[test]
     fn push_propagates_submodule_commits_to_sub_remote() {
         let root = tempfile::tempdir().unwrap();
-        let (local, sub_path, sub_remote) =
-            make_linked_repos_with_submodule(root.path());
+        let (local, sub_path, sub_remote) = make_linked_repos_with_submodule(root.path());
 
         std::fs::create_dir_all(sub_path.join("env")).unwrap();
         std::fs::write(sub_path.join("env/FOO.age"), "ciphertext").unwrap();

@@ -37,6 +37,14 @@ pub struct InitArgs {
     /// Skip the TUI wizard and run in headless CLI mode.
     #[arg(long)]
     pub no_tui: bool,
+
+    /// Project-scoped store slug. When set and the cwd (or a parent) is a
+    /// git repo, write `default_store: <slug>` to `<git_root>/himitsu.yaml`
+    /// and restore-or-create the store the same way `--name` does for the
+    /// global default. Hidden from CLI help — the wizard is the primary
+    /// entry point for project-scoped configuration.
+    #[arg(long, hide = true)]
+    pub project: Option<String>,
 }
 
 pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
@@ -147,13 +155,34 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
         .and_then(|cwd| config::find_git_root(&cwd));
     let suggested_remote = git_root.as_ref().and_then(detect_origin_remote);
 
+    // ── 5b. Handle --project: write project-scoped default_store ──────────
+    let (project_registered, project_restored, project_config_path) =
+        if let Some(ref slug) = args.project {
+            let root = git_root.clone().ok_or_else(|| {
+                crate::error::HimitsuError::InvalidConfig(
+                    "--project requires a git repository (none found from cwd)".into(),
+                )
+            })?;
+            let restored =
+                restore_or_create_named_store(slug, args.url.as_deref(), &pubkey, state_dir)?;
+            let pc_path = root.join("himitsu.yaml");
+            let mut pc = config::ProjectConfig::load_or_default(&pc_path)?;
+            pc.default_store = Some(slug.clone());
+            pc.save(&pc_path)?;
+            (true, restored, Some(pc_path))
+        } else {
+            (false, false, None)
+        };
+
     // ── 7. Read back the current key_provider ─────────────────────────────
     let cfg = config::Config::load(&config_path)?;
     let key_provider = cfg.key_provider.to_string();
 
     // ── 8. Output ─────────────────────────────────────────────────────────
-    let anything_created =
-        !key_existed || (!store_existed && !store.as_os_str().is_empty()) || name_registered;
+    let anything_created = !key_existed
+        || (!store_existed && !store.as_os_str().is_empty())
+        || name_registered
+        || project_registered;
 
     if args.json {
         let json = serde_json::json!({
@@ -203,6 +232,18 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
                 println!("✓ Restored store {slug} (default)");
             } else {
                 println!("✓ Registered store {slug} (default)");
+            }
+        }
+        if project_registered {
+            let slug = args.project.as_deref().unwrap_or("");
+            let path = project_config_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            if project_restored {
+                println!("✓ Restored project store {slug} → {path}");
+            } else {
+                println!("✓ Registered project store {slug} → {path}");
             }
         }
         if args.key_provider.is_some() {
@@ -274,6 +315,16 @@ fn detect_personal_github_username() -> Option<String> {
     }
 
     None
+}
+
+/// Build a default project-store slug suggestion: `<repo-org>/secrets`,
+/// where `<repo-org>` is the GitHub org of the current repo's `origin`
+/// remote. Returns an empty string when not in a git repo or when the origin
+/// can't be parsed as a GitHub slug.
+pub(crate) fn suggested_project_slug() -> String {
+    detect_origin_github_org()
+        .map(|org| format!("{org}/secrets"))
+        .unwrap_or_default()
 }
 
 fn detect_origin_github_org() -> Option<String> {

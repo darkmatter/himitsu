@@ -1,0 +1,31 @@
+// Himitsu CLI command argument schemas.
+//
+// Each message corresponds to one CLI subcommand's positional + flag inputs.
+// These types are the contract the TUI's generic form widget renders against:
+// label/help text live in the field comments and are mirrored into the
+// `ProtoForm` trait impl in `rust/src/tui/forms/`.
+//
+// Adding a new command-driven form:
+//   1. Define the args message here.
+//   2. Implement `ProtoForm` for the generated type.
+//   3. Add a `FormView` consumer view alongside the existing TUI views.
+//
+// Why a separate file: keeps CLI surface area distinct from the on-disk
+// secret/config schemas (config.proto, secrets.proto), which have stricter
+// versioning / wire-compat constraints than these in-process inputs.
+
+syntax = "proto3";
+
+package himitsu.commands;
+
+// Arguments for `himitsu remote add` — clones a remote git store into the
+// local stores_dir and registers it for use.
+message RemoteAddArgs {
+  // Remote slug in the form `<org>/<repo>`, or a full git URL
+  // (e.g. `git@github.com:foo/bar.git`) which is parsed for the slug.
+  string slug = 1;
+
+  // Optional explicit git URL to clone from. When omitted, the URL defaults
+  // to `git@github.com:<org>/<repo>.git` derived from `slug`.
+  string url = 2;
+}

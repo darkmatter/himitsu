@@ -370,7 +370,10 @@ pub fn rename_secret(store: &Path, from: &str, to: &str) -> Result<()> {
     // old path so listings don't show ghost folders. Stops at `secrets_dir`.
     if let Some(mut p) = from_yaml.parent().map(Path::to_path_buf) {
         while p.starts_with(&base) && p != base {
-            if std::fs::read_dir(&p).map(|mut it| it.next().is_none()).unwrap_or(false) {
+            if std::fs::read_dir(&p)
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false)
+            {
                 let _ = std::fs::remove_dir(&p);
                 if let Some(parent) = p.parent() {
                     p = parent.to_path_buf();

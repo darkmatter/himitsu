@@ -248,7 +248,10 @@ mod tests {
     #[test]
     fn substitute_placeholder_replaces_braces() {
         assert_eq!(substitute_placeholder("ref-{}", "dev"), "ref-dev");
-        assert_eq!(substitute_placeholder("noplaceholder", "x"), "noplaceholder");
+        assert_eq!(
+            substitute_placeholder("noplaceholder", "x"),
+            "noplaceholder"
+        );
         assert_eq!(substitute_placeholder("a/{}/b", "mid"), "a/mid/b");
     }
 

@@ -143,9 +143,7 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
     })?;
 
     if !project_cfg.envs.contains_key(label) {
-        return Err(HimitsuError::InvalidConfig(format!(
-            "unknown env: {label}"
-        )));
+        return Err(HimitsuError::InvalidConfig(format!("unknown env: {label}")));
     }
 
     // Enumerate store secrets so the resolver can expand wildcards/globs.
@@ -203,9 +201,7 @@ fn materialize_tree(node: &env_resolver::EnvNode, ctx: &Context) -> Result<serde
         env_resolver::EnvNode::Leaf { secret_path } => {
             let bytes = crate::cli::get::get_plaintext(ctx, secret_path)?;
             let s = String::from_utf8(bytes).map_err(|e| {
-                HimitsuError::DecryptionFailed(format!(
-                    "non-UTF-8 secret at '{secret_path}': {e}"
-                ))
+                HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{secret_path}': {e}"))
             })?;
             Ok(serde_yaml::Value::String(s))
         }
@@ -1083,10 +1079,7 @@ mod tests {
     #[test]
     fn default_sops_output_name_strips_trailing_wildcard() {
         assert_eq!(default_sops_output_name("foo/*"), "foo.sops.yaml");
-        assert_eq!(
-            default_sops_output_name("foo/bar/*"),
-            "foo-bar.sops.yaml"
-        );
+        assert_eq!(default_sops_output_name("foo/bar/*"), "foo-bar.sops.yaml");
     }
 
     // -- Tree materialization --
@@ -1094,14 +1087,9 @@ mod tests {
     /// Stubbed-leaf walker with the same shape as `materialize_tree` but
     /// replacing the live decrypt call with a fixed string. Lets us assert
     /// structure without standing up a full store + age identity.
-    fn materialize_tree_stub(
-        node: &env_resolver::EnvNode,
-        leaf_value: &str,
-    ) -> serde_yaml::Value {
+    fn materialize_tree_stub(node: &env_resolver::EnvNode, leaf_value: &str) -> serde_yaml::Value {
         match node {
-            env_resolver::EnvNode::Leaf { .. } => {
-                serde_yaml::Value::String(leaf_value.to_string())
-            }
+            env_resolver::EnvNode::Leaf { .. } => serde_yaml::Value::String(leaf_value.to_string()),
             env_resolver::EnvNode::Branch(map) => {
                 let mut m = serde_yaml::Mapping::with_capacity(map.len());
                 for (k, child) in map {
@@ -1213,10 +1201,7 @@ mod tests {
         // by re-running the same assembly with a stub tree.
         use crate::config::EnvEntry;
         let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
-        envs.insert(
-            "dev".into(),
-            vec![EnvEntry::Single("dev/API_KEY".into())],
-        );
+        envs.insert("dev".into(), vec![EnvEntry::Single("dev/API_KEY".into())]);
         let tree = env_resolver::resolve(&envs, "dev", &[]).unwrap();
         let value = materialize_tree_stub(&tree, "XXX");
         let body = serde_yaml::to_string(&value).unwrap();

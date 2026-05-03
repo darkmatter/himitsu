@@ -10,6 +10,8 @@
 //! in characters (not bytes). All edits go through methods so we can keep
 //! the cursor invariants in one place.
 
+use std::fmt;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone)]
@@ -41,10 +43,6 @@ impl TextBuffer {
 
     pub fn cursor(&self) -> (usize, usize) {
         (self.row, self.col)
-    }
-
-    pub fn to_string(&self) -> String {
-        self.lines.join("\n")
     }
 
     /// Current line up to cursor — used by autocomplete to extract the
@@ -186,6 +184,12 @@ impl TextBuffer {
             }
             _ => false,
         }
+    }
+}
+
+impl fmt::Display for TextBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.lines.join("\n"))
     }
 }
 

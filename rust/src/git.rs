@@ -214,11 +214,7 @@ pub fn list_submodules(cwd: &Path) -> Vec<std::path::PathBuf> {
 /// Returns false when no upstream is configured — treat as nothing to push.
 pub fn has_unpushed_commits(cwd: &Path) -> bool {
     match run(&["rev-list", "--count", "@{u}..HEAD"], cwd) {
-        Ok(out) => out
-            .trim()
-            .parse::<u32>()
-            .map(|n| n > 0)
-            .unwrap_or(false),
+        Ok(out) => out.trim().parse::<u32>().map(|n| n > 0).unwrap_or(false),
         Err(_) => false,
     }
 }
@@ -238,7 +234,10 @@ pub fn ensure_on_branch(cwd: &Path) -> Result<()> {
         return Ok(());
     }
     let head = run(&["rev-parse", "HEAD"], cwd)?.trim().to_string();
-    let default = run(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd)?;
+    let default = run(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd,
+    )?;
     let branch = default
         .trim()
         .strip_prefix("origin/")

@@ -103,11 +103,11 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     })?;
 
     // Validate the op reference shape.
-    let trimmed = op_ref
-        .strip_prefix("op://")
-        .ok_or_else(|| HimitsuError::InvalidReference(
-            format!("1Password reference must start with `op://` (got {op_ref:?})"),
-        ))?;
+    let trimmed = op_ref.strip_prefix("op://").ok_or_else(|| {
+        HimitsuError::InvalidReference(format!(
+            "1Password reference must start with `op://` (got {op_ref:?})"
+        ))
+    })?;
     let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
 
     let actions = match segments.len() {
@@ -159,7 +159,10 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
 
     if args.dry_run {
         for action in &actions {
-            println!("[dry-run] would import {} \u{2192} {}", action.source, action.target);
+            println!(
+                "[dry-run] would import {} \u{2192} {}",
+                action.source, action.target
+            );
         }
         println!("\n{} secret(s) would be imported", actions.len());
         return Ok(());
@@ -266,9 +269,8 @@ fn sops_decrypt(program: &str, file: &str) -> Result<String> {
         return Err(HimitsuError::External(detail));
     }
 
-    String::from_utf8(output.stdout).map_err(|e| {
-        HimitsuError::External(format!("`sops -d` returned non-UTF-8 output: {e}"))
-    })
+    String::from_utf8(output.stdout)
+        .map_err(|e| HimitsuError::External(format!("`sops -d` returned non-UTF-8 output: {e}")))
 }
 
 /// Recursively flatten a YAML/JSON value into `(key, string_value)` pairs.
@@ -372,11 +374,7 @@ fn build_item_actions(
 }
 
 /// Build import actions for all items in a vault.
-fn build_vault_actions(
-    program: &str,
-    vault: &str,
-    prefix: &str,
-) -> Result<Vec<ImportAction>> {
+fn build_vault_actions(program: &str, vault: &str, prefix: &str) -> Result<Vec<ImportAction>> {
     let items = op_item_list(program, vault)?;
     let mut all_actions = Vec::new();
 
@@ -474,16 +472,21 @@ fn op_read(program: &str, op_ref: &str) -> Result<String> {
         return Err(HimitsuError::External(detail));
     }
 
-    String::from_utf8(output.stdout).map_err(|e| {
-        HimitsuError::External(format!("`op read` returned non-UTF-8 output: {e}"))
-    })
+    String::from_utf8(output.stdout)
+        .map_err(|e| HimitsuError::External(format!("`op read` returned non-UTF-8 output: {e}")))
 }
 
 /// Shell out to `op item get <item> --vault=<vault> --format=json` and
 /// deserialize the result into an `OpItem`.
 fn op_item_get(program: &str, vault: &str, item: &str) -> Result<OpItem> {
     let output = Command::new(program)
-        .args(["item", "get", item, &format!("--vault={vault}"), "--format=json"])
+        .args([
+            "item",
+            "get",
+            item,
+            &format!("--vault={vault}"),
+            "--format=json",
+        ])
         .output()
         .map_err(|e| op_spawn_error(e, "op item get"))?;
 
@@ -498,9 +501,8 @@ fn op_item_get(program: &str, vault: &str, item: &str) -> Result<OpItem> {
     let json = String::from_utf8(output.stdout).map_err(|e| {
         HimitsuError::External(format!("`op item get` returned non-UTF-8 output: {e}"))
     })?;
-    serde_json::from_str(&json).map_err(|e| {
-        HimitsuError::External(format!("`op item get` returned invalid JSON: {e}"))
-    })
+    serde_json::from_str(&json)
+        .map_err(|e| HimitsuError::External(format!("`op item get` returned invalid JSON: {e}")))
 }
 
 /// Shell out to `op item list --vault=<vault> --format=json` and deserialize
@@ -522,9 +524,8 @@ fn op_item_list(program: &str, vault: &str) -> Result<Vec<OpItemSummary>> {
     let json = String::from_utf8(output.stdout).map_err(|e| {
         HimitsuError::External(format!("`op item list` returned non-UTF-8 output: {e}"))
     })?;
-    serde_json::from_str(&json).map_err(|e| {
-        HimitsuError::External(format!("`op item list` returned invalid JSON: {e}"))
-    })
+    serde_json::from_str(&json)
+        .map_err(|e| HimitsuError::External(format!("`op item list` returned invalid JSON: {e}")))
 }
 
 /// Shared helper for subprocess spawn errors.
@@ -558,8 +559,9 @@ mod tests {
     fn parse(args: &[&str]) -> ImportArgs {
         let mut full = vec!["test", "import"];
         full.extend_from_slice(args);
-        let TestCli { cmd: TestCmd::Import(a) } =
-            TestCli::try_parse_from(full).expect("parse ok");
+        let TestCli {
+            cmd: TestCmd::Import(a),
+        } = TestCli::try_parse_from(full).expect("parse ok");
         a
     }
 
@@ -591,7 +593,13 @@ mod tests {
     #[test]
     fn op_and_sops_conflict() {
         let res = TestCli::try_parse_from([
-            "test", "import", "--op", "op://v/i/f", "--sops", "x.yaml", "prod/X",
+            "test",
+            "import",
+            "--op",
+            "op://v/i/f",
+            "--sops",
+            "x.yaml",
+            "prod/X",
         ]);
         assert!(res.is_err(), "clap should reject --op with --sops");
     }
@@ -629,7 +637,10 @@ mod tests {
             recipients_path: None,
         };
         let err = run(args, &ctx).unwrap_err();
-        assert!(matches!(err, HimitsuError::InvalidReference(_)), "got {err:?}");
+        assert!(
+            matches!(err, HimitsuError::InvalidReference(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -685,8 +696,7 @@ mod tests {
     #[test]
     fn op_read_errors_when_binary_missing() {
         let fake = "/nonexistent/himitsu-test-op-binary";
-        let err = op_read(fake, "op://v/i/f")
-            .expect_err("expected error when binary is missing");
+        let err = op_read(fake, "op://v/i/f").expect_err("expected error when binary is missing");
         match err {
             HimitsuError::External(msg) => {
                 assert!(
@@ -834,8 +844,8 @@ mod tests {
     #[test]
     fn op_item_list_errors_when_binary_missing() {
         let fake = "/nonexistent/himitsu-test-op-binary";
-        let err = op_item_list(fake, "Personal")
-            .expect_err("expected error when binary is missing");
+        let err =
+            op_item_list(fake, "Personal").expect_err("expected error when binary is missing");
         assert!(matches!(err, HimitsuError::External(_)), "got {err:?}");
     }
 

@@ -20,6 +20,15 @@ pub mod secrets {
     include!(concat!(env!("OUT_DIR"), "/himitsu.secrets.rs"));
 }
 
+/// CLI command argument schemas generated from `proto/commands.proto`.
+///
+/// These messages back the generic TUI form widget — see
+/// [`crate::tui::forms`] for the `ProtoForm` trait that maps each message
+/// onto a labelled, validated form view.
+pub mod commands {
+    include!(concat!(env!("OUT_DIR"), "/himitsu.commands.rs"));
+}
+
 // -----------------------------------------------------------------------
 // Re-exports for convenience
 // -----------------------------------------------------------------------

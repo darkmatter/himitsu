@@ -8,6 +8,7 @@
 
 mod app;
 mod event;
+pub mod forms;
 #[cfg(test)]
 mod harness;
 mod icons;

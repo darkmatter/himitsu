@@ -24,7 +24,10 @@ pub enum Outcome {
 #[derive(Clone, Copy, PartialEq)]
 enum Step {
     DataDir,
-    Remote,
+    /// Configure global default store (skipped if a default already exists).
+    RemoteGlobal,
+    /// Configure project-scoped store (skipped if not in a git repo).
+    RemoteProject,
     Provider,
     Running,
     Success,
@@ -33,7 +36,18 @@ enum Step {
 pub struct InitWizardView {
     step: Step,
     data_dir_input: String,
-    remote_input: String,
+    /// Global-store slug input. Pre-filled with the personal-GitHub
+    /// suggestion (`<user>/secrets`).
+    global_remote_input: String,
+    /// Project-store slug input. Pre-filled with `<repo-org>/secrets`
+    /// derived from the current repo's git origin.
+    project_remote_input: String,
+    /// Whether a global default_store is already configured. When true,
+    /// the global step is skipped entirely.
+    has_existing_global: bool,
+    /// Git root discovered at wizard construction. When `None`, the
+    /// project step is skipped.
+    git_root: Option<std::path::PathBuf>,
     provider_options: Vec<KeyProvider>,
     provider_index: usize,
     error: Option<String>,
@@ -48,10 +62,22 @@ impl InitWizardView {
         if crate::keyring::macos::MacOSKeychain::is_available() {
             provider_options.push(KeyProvider::MacosKeychain);
         }
+
+        let has_existing_global = config::Config::load(&config::config_path())
+            .ok()
+            .and_then(|cfg| cfg.default_store)
+            .is_some();
+        let git_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| config::find_git_root(&cwd));
+
         Self {
             step: Step::DataDir,
             data_dir_input: config::data_dir().to_string_lossy().into_owned(),
-            remote_input: init::suggested_remote_slug(),
+            global_remote_input: init::suggested_remote_slug(),
+            project_remote_input: init::suggested_project_slug(),
+            has_existing_global,
+            git_root,
             provider_options,
             provider_index: 0,
             error: None,
@@ -59,6 +85,72 @@ impl InitWizardView {
             outcome: Outcome::Pending,
             pending_init: None,
         }
+    }
+
+    /// First remote step to enter after `DataDir`. Skips the global step
+    /// when one is already configured, and skips both when there's no git
+    /// repo and no global to configure.
+    fn first_remote_step(&self) -> Step {
+        if !self.has_existing_global {
+            Step::RemoteGlobal
+        } else if self.git_root.is_some() {
+            Step::RemoteProject
+        } else {
+            Step::Provider
+        }
+    }
+
+    /// Step that follows `RemoteGlobal`. Goes to `RemoteProject` when in a
+    /// git repo, otherwise straight to `Provider`.
+    fn after_global_step(&self) -> Step {
+        if self.git_root.is_some() {
+            Step::RemoteProject
+        } else {
+            Step::Provider
+        }
+    }
+
+    /// Total number of input steps shown in the header counter (DataDir +
+    /// any remote steps + Provider when more than one option exists).
+    fn total_steps(&self) -> usize {
+        let mut n = 1; // DataDir
+        if !self.has_existing_global {
+            n += 1;
+        }
+        if self.git_root.is_some() {
+            n += 1;
+        }
+        if self.provider_options.len() > 1 {
+            n += 1;
+        }
+        n
+    }
+
+    /// 1-based index of `step` in the active sequence, used in the header.
+    fn step_index(&self, step: Step) -> usize {
+        let mut idx = 1; // DataDir is always step 1
+        if step == Step::DataDir {
+            return idx;
+        }
+        if !self.has_existing_global {
+            idx += 1;
+            if step == Step::RemoteGlobal {
+                return idx;
+            }
+        }
+        if self.git_root.is_some() {
+            idx += 1;
+            if step == Step::RemoteProject {
+                return idx;
+            }
+        }
+        if self.provider_options.len() > 1 {
+            idx += 1;
+            if step == Step::Provider {
+                return idx;
+            }
+        }
+        idx
     }
 
     pub fn outcome(&self) -> &Outcome {
@@ -91,8 +183,12 @@ impl InitWizardView {
     fn last_input_step(&self) -> Step {
         if self.provider_options.len() > 1 {
             Step::Provider
+        } else if self.git_root.is_some() {
+            Step::RemoteProject
+        } else if !self.has_existing_global {
+            Step::RemoteGlobal
         } else {
-            Step::Remote
+            Step::DataDir
         }
     }
 
@@ -116,7 +212,10 @@ impl InitWizardView {
                     if self.data_dir_input.trim().is_empty() {
                         self.error = Some("Please enter a directory path.".into());
                     } else {
-                        self.step = Step::Remote;
+                        self.step = self.first_remote_step();
+                        if self.step == Step::Provider && self.provider_options.len() <= 1 {
+                            self.begin_init();
+                        }
                     }
                 }
                 KeyCode::Esc => self.outcome = Outcome::Aborted,
@@ -126,9 +225,30 @@ impl InitWizardView {
                 KeyCode::Char(c) => self.data_dir_input.push(c),
                 _ => {}
             },
-            Step::Remote => match key.code {
+            Step::RemoteGlobal => match key.code {
                 KeyCode::Enter => {
-                    let trimmed = self.remote_input.trim();
+                    let trimmed = self.global_remote_input.trim();
+                    if !trimmed.is_empty() {
+                        if let Err(e) = config::validate_remote_slug(trimmed) {
+                            self.error = Some(e.to_string());
+                            return;
+                        }
+                    }
+                    self.step = self.after_global_step();
+                    if self.step == Step::Provider && self.provider_options.len() <= 1 {
+                        self.begin_init();
+                    }
+                }
+                KeyCode::Esc => self.step = Step::DataDir,
+                KeyCode::Backspace => {
+                    self.global_remote_input.pop();
+                }
+                KeyCode::Char(c) => self.global_remote_input.push(c),
+                _ => {}
+            },
+            Step::RemoteProject => match key.code {
+                KeyCode::Enter => {
+                    let trimmed = self.project_remote_input.trim();
                     if !trimmed.is_empty() {
                         if let Err(e) = config::validate_remote_slug(trimmed) {
                             self.error = Some(e.to_string());
@@ -141,11 +261,17 @@ impl InitWizardView {
                         self.begin_init();
                     }
                 }
-                KeyCode::Esc => self.step = Step::DataDir,
-                KeyCode::Backspace => {
-                    self.remote_input.pop();
+                KeyCode::Esc => {
+                    self.step = if !self.has_existing_global {
+                        Step::RemoteGlobal
+                    } else {
+                        Step::DataDir
+                    };
                 }
-                KeyCode::Char(c) => self.remote_input.push(c),
+                KeyCode::Backspace => {
+                    self.project_remote_input.pop();
+                }
+                KeyCode::Char(c) => self.project_remote_input.push(c),
                 _ => {}
             },
             Step::Provider => match key.code {
@@ -160,7 +286,15 @@ impl InitWizardView {
                     }
                 }
                 KeyCode::Enter => self.begin_init(),
-                KeyCode::Esc => self.step = Step::Remote,
+                KeyCode::Esc => {
+                    self.step = if self.git_root.is_some() {
+                        Step::RemoteProject
+                    } else if !self.has_existing_global {
+                        Step::RemoteGlobal
+                    } else {
+                        Step::DataDir
+                    };
+                }
                 _ => {}
             },
             Step::Running => {}
@@ -200,13 +334,25 @@ impl InitWizardView {
             .cloned()
             .unwrap_or_default();
 
-        let name = {
-            let r = self.remote_input.trim().to_string();
+        let name = if self.has_existing_global {
+            None
+        } else {
+            let r = self.global_remote_input.trim().to_string();
             if r.is_empty() {
                 None
             } else {
                 Some(r)
             }
+        };
+        let project = if self.git_root.is_some() {
+            let r = self.project_remote_input.trim().to_string();
+            if r.is_empty() {
+                None
+            } else {
+                Some(r)
+            }
+        } else {
+            None
         };
         let key_provider = if provider == KeyProvider::Disk {
             None
@@ -221,6 +367,7 @@ impl InitWizardView {
             home: None,
             key_provider,
             no_tui: true,
+            project,
         });
         self.step = Step::Running;
     }
@@ -244,11 +391,27 @@ impl InitWizardView {
             .split(area);
 
         let header_text = match self.step {
-            Step::DataDir => " himitsu setup — step 1/3: data directory ",
-            Step::Remote => " himitsu setup — step 2/3: default store ",
-            Step::Provider => " himitsu setup — step 3/3: key provider ",
-            Step::Running => " himitsu setup — initializing… ",
-            Step::Success => " himitsu setup — ready ",
+            Step::DataDir => format!(
+                " himitsu setup — step 1/{}: data directory ",
+                self.total_steps()
+            ),
+            Step::RemoteGlobal => format!(
+                " himitsu setup — step {}/{}: configure global store ",
+                self.step_index(Step::RemoteGlobal),
+                self.total_steps()
+            ),
+            Step::RemoteProject => format!(
+                " himitsu setup — step {}/{}: configure project ",
+                self.step_index(Step::RemoteProject),
+                self.total_steps()
+            ),
+            Step::Provider => format!(
+                " himitsu setup — step {}/{}: key provider ",
+                self.step_index(Step::Provider),
+                self.total_steps()
+            ),
+            Step::Running => " himitsu setup — initializing… ".to_string(),
+            Step::Success => " himitsu setup — ready ".to_string(),
         };
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -263,7 +426,9 @@ impl InitWizardView {
 
         let footer = match self.step {
             Step::DataDir => "enter next   esc abort   ctrl-c abort",
-            Step::Remote => "enter next   esc back   ctrl-c abort",
+            Step::RemoteGlobal | Step::RemoteProject => {
+                "enter next (blank to skip)   esc back   ctrl-c abort"
+            }
             Step::Provider => "↑/↓ select   enter confirm   esc back   ctrl-c abort",
             Step::Running => "please wait…",
             Step::Success => "enter continue   esc abort",
@@ -285,17 +450,42 @@ impl InitWizardView {
                 lines.push(Line::from(""));
                 lines.push(self.text_input_line(&self.data_dir_input));
             }
-            Step::Remote => {
+            Step::RemoteGlobal => {
                 lines.push(Line::from(""));
-                lines.push(Line::from(
-                    "  Primary store on your personal GitHub (blank to skip)",
-                ));
+                lines.push(Line::from("  Configure your global default store."));
+                lines.push(Line::from(Span::styled(
+                    "  This is the store himitsu uses outside any project.",
+                    Style::default().fg(theme::muted()),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Most people use a private repo on their personal GitHub.",
+                    Style::default().fg(theme::muted()),
+                )));
                 lines.push(Line::from(Span::styled(
                     "  format: your-github-username/repo (for example, alice/secrets)",
                     Style::default().fg(theme::muted()),
                 )));
                 lines.push(Line::from(""));
-                lines.push(self.text_input_line(&self.remote_input));
+                lines.push(self.text_input_line(&self.global_remote_input));
+            }
+            Step::RemoteProject => {
+                let path = self
+                    .git_root
+                    .as_ref()
+                    .map(|r| r.join("himitsu.yaml").display().to_string())
+                    .unwrap_or_default();
+                lines.push(Line::from(""));
+                lines.push(Line::from("  Configure a shared store for this project."));
+                lines.push(Line::from(Span::styled(
+                    format!("  Writes default_store to {path}"),
+                    Style::default().fg(theme::muted()),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Defaults to <repo-org>/secrets — overrides the global default in this repo.",
+                    Style::default().fg(theme::muted()),
+                )));
+                lines.push(Line::from(""));
+                lines.push(self.text_input_line(&self.project_remote_input));
             }
             Step::Provider => {
                 lines.push(Line::from(""));

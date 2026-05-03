@@ -64,11 +64,19 @@ pub struct SecretRef {
 impl SecretRef {
     /// Parse a secret reference from a string.
     ///
+    /// Two qualified forms are accepted:
+    /// - **Canonical:** `<provider>:<org>/<repo>#<path>` — the `#` makes the
+    ///   slug/path boundary unambiguous.
+    /// - **Legacy:** `<provider>:<org>/<repo>/<path>` — first two slash
+    ///   segments after the provider are the slug, the rest is the path.
+    ///
+    /// New code should emit the `#` form. Both parse to the same value.
+    ///
     /// # Errors
     ///
     /// Returns [`HimitsuError::InvalidReference`] if the input has a provider
     /// prefix (colon) but does not include a valid `org/repo` slug after it,
-    /// or if the path segment after `org/repo` is empty.
+    /// or if the path segment is empty.
     pub fn parse(input: &str) -> Result<Self> {
         if let Some(colon_pos) = input.find(':') {
             let provider = &input[..colon_pos];
@@ -80,32 +88,52 @@ impl SecretRef {
                 )));
             }
 
-            // rest must be at minimum "org/repo" (two non-empty segments)
-            let parts: Vec<&str> = rest.splitn(3, '/').collect();
-            if parts.len() < 2 {
+            // Canonical form: `org/repo#path`. The `#` unambiguously splits
+            // the slug from the path.
+            let (slug, path_part) = if let Some(hash_pos) = rest.find('#') {
+                (&rest[..hash_pos], Some(&rest[hash_pos + 1..]))
+            } else {
+                // Legacy form: first two slash segments are the slug, the
+                // remainder (if any) is the path.
+                let parts: Vec<&str> = rest.splitn(3, '/').collect();
+                if parts.len() < 2 {
+                    return Err(HimitsuError::InvalidReference(format!(
+                        "qualified reference must include org/repo after provider \
+                         (got {rest:?}): {input:?}"
+                    )));
+                }
+                let slug_end = parts[0].len() + 1 + parts[1].len();
+                let slug = &rest[..slug_end];
+                let path = if parts.len() == 3 {
+                    Some(parts[2])
+                } else {
+                    None
+                };
+                (slug, path)
+            };
+
+            let slug_parts: Vec<&str> = slug.splitn(2, '/').collect();
+            if slug_parts.len() != 2 {
                 return Err(HimitsuError::InvalidReference(format!(
                     "qualified reference must include org/repo after provider \
-                     (got {rest:?}): {input:?}"
+                     (got {slug:?}): {input:?}"
                 )));
             }
-
-            let (org, repo) = (parts[0], parts[1]);
+            let (org, repo) = (slug_parts[0], slug_parts[1]);
             if org.is_empty() || repo.is_empty() {
                 return Err(HimitsuError::InvalidReference(format!(
                     "org or repo segment is empty in reference: {input:?}"
                 )));
             }
 
-            let path = if parts.len() == 3 {
-                let p = parts[2];
-                if p.is_empty() {
+            let path = match path_part {
+                Some("") => {
                     return Err(HimitsuError::InvalidReference(format!(
                         "empty secret path after org/repo in reference: {input:?}"
                     )));
                 }
-                Some(normalize_path(p)?)
-            } else {
-                None
+                Some(p) => Some(normalize_path(p)?),
+                None => None,
             };
 
             Ok(SecretRef {
@@ -157,18 +185,58 @@ impl SecretRef {
 
     /// Resolve the local store checkout path for a qualified reference.
     ///
-    /// Calls [`crate::config::remote_store_path`] to look up the local
-    /// checkout of the named `org/repo` store. Returns an error when:
-    /// - this is an unqualified (bare) reference, or
-    /// - the slug is not found in the local store directory.
+    /// If the slug is already cloned locally, returns its path. Otherwise:
+    /// - With `HIMITSU_YES=1` set, clones non-interactively.
+    /// - With an interactive stderr (TTY), prompts `y/N` and clones on `y`.
+    /// - Otherwise (non-interactive, no `HIMITSU_YES`), returns an error
+    ///   with a hint to run `himitsu remote add` or set `HIMITSU_YES`.
+    ///
+    /// Returns an error for unqualified (bare) references.
     pub fn resolve_store(&self) -> Result<PathBuf> {
         let slug = self.store_slug.as_deref().ok_or_else(|| {
             HimitsuError::InvalidReference(
                 "cannot resolve store for an unqualified (bare) reference".into(),
             )
         })?;
-        crate::config::remote_store_path(slug)
+        match crate::config::remote_store_path(slug) {
+            Ok(p) => Ok(p),
+            Err(HimitsuError::RemoteNotFound(_)) => {
+                if confirm_clone(slug) {
+                    crate::config::ensure_store(slug)
+                } else {
+                    Err(HimitsuError::RemoteNotFound(format!(
+                        "{slug} (cross-repo reference points to a store not cloned locally; \
+                         run `himitsu remote add {slug}` or set HIMITSU_YES=1 to auto-clone)"
+                    )))
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
+}
+
+/// Decide whether to clone a missing referenced store, given the user's
+/// environment. Returns `true` when `HIMITSU_YES=1`, or when stderr is a
+/// TTY and the user answered `y`/`yes` at the prompt.
+fn confirm_clone(slug: &str) -> bool {
+    use std::io::{IsTerminal, Write};
+    if matches!(
+        std::env::var("HIMITSU_YES").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+    ) {
+        return true;
+    }
+    let stderr = std::io::stderr();
+    if !stderr.is_terminal() {
+        return false;
+    }
+    eprint!("Store '{slug}' is not cloned locally. Clone now? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 #[cfg(test)]
@@ -193,6 +261,35 @@ mod tests {
         assert_eq!(r.store_slug, Some("acme/secrets".into()));
         assert_eq!(r.path, Some("prod/DB_PASS".into()));
         assert!(r.is_qualified());
+    }
+
+    #[test]
+    fn parse_qualified_hash_form() {
+        let r = SecretRef::parse("github:acme/secrets#prod/DB_PASS").unwrap();
+        assert_eq!(r.provider, Some("github".into()));
+        assert_eq!(r.store_slug, Some("acme/secrets".into()));
+        assert_eq!(r.path, Some("prod/DB_PASS".into()));
+        assert!(r.is_qualified());
+    }
+
+    #[test]
+    fn parse_qualified_hash_form_deeply_nested() {
+        let r = SecretRef::parse("ssh:org/repo#a/b/c/KEY").unwrap();
+        assert_eq!(r.store_slug, Some("org/repo".into()));
+        assert_eq!(r.path, Some("a/b/c/KEY".into()));
+    }
+
+    #[test]
+    fn parse_hash_and_slash_forms_equivalent() {
+        let hash = SecretRef::parse("github:acme/secrets#prod/DB_PASS").unwrap();
+        let slash = SecretRef::parse("github:acme/secrets/prod/DB_PASS").unwrap();
+        assert_eq!(hash, slash);
+    }
+
+    #[test]
+    fn parse_qualified_hash_empty_path_errors() {
+        let result = SecretRef::parse("github:acme/secrets#");
+        assert!(matches!(result, Err(HimitsuError::InvalidReference(_))));
     }
 
     #[test]

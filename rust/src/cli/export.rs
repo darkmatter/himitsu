@@ -42,7 +42,10 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     let all_paths = store::list_secrets(&ctx.store, None)?;
 
     // Filter by glob pattern.
-    let matched: Vec<&String> = all_paths.iter().filter(|p| glob_match(&args.pattern, p)).collect();
+    let matched: Vec<&String> = all_paths
+        .iter()
+        .filter(|p| glob_match(&args.pattern, p))
+        .collect();
 
     if matched.is_empty() {
         return Err(HimitsuError::SecretNotFound(format!(
@@ -51,7 +54,11 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
         )));
     }
 
-    eprintln!("Matched {} secret{}", matched.len(), if matched.len() == 1 { "" } else { "s" });
+    eprintln!(
+        "Matched {} secret{}",
+        matched.len(),
+        if matched.len() == 1 { "" } else { "s" }
+    );
 
     // Decrypt each matched secret.
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
