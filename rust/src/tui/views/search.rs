@@ -102,6 +102,8 @@ enum StoreHealth {
     /// Git repo has a remote but the tracking branch doesn't exist yet
     /// (e.g. never pushed).
     NotPushed,
+    /// User's own age key is not in the store's recipient list.
+    NotRecipient,
     /// Could not determine status for some other reason.
     Unknown,
 }
@@ -145,7 +147,7 @@ impl SearchView {
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
         };
-        let store_health = check_store_health(&ctx_owned.store);
+        let store_health = check_store_health(&ctx_owned);
         let env_index = build_env_index();
         let mut view = Self {
             query: String::new(),
@@ -396,6 +398,10 @@ impl SearchView {
             ),
             StoreHealth::NotPushed => (
                 "not pushed — run: himitsu git push -u origin main".to_string(),
+                theme::warning(),
+            ),
+            StoreHealth::NotRecipient => (
+                "not a recipient — run: himitsu join".to_string(),
                 theme::warning(),
             ),
             StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
@@ -799,11 +805,14 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
 /// Check the git health of a store checkout (offline — no fetch).
 ///
 /// Returns a [`StoreHealth`] summarising whether the checkout is behind its
-/// remote tracking branch and/or has uncommitted local changes. The check
-/// is intentionally cheap: it only inspects already-fetched refs so it
-/// never blocks on the network.
-fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
+/// remote tracking branch and/or has uncommitted local changes. Also checks
+/// whether the user's own age key is in the store's recipient list —
+/// [`StoreHealth::NotRecipient`] takes priority over git health because the
+/// store is unusable without it.
+fn check_store_health(ctx: &Context) -> StoreHealth {
     use crate::git;
+
+    let store_path = &ctx.store;
 
     if let Some(override_health) = store_health_override() {
         return override_health;
@@ -812,6 +821,13 @@ fn check_store_health(store_path: &std::path::Path) -> StoreHealth {
     if store_path.as_os_str().is_empty() {
         return StoreHealth::Unknown;
     }
+
+    // Recipient membership check — takes priority because the store is
+    // unusable (can't decrypt) if you're not a recipient.
+    if !crate::cli::join::is_self_recipient(ctx) {
+        return StoreHealth::NotRecipient;
+    }
+
     if !store_path.join(".git").exists() {
         return StoreHealth::NotGit;
     }
@@ -865,6 +881,7 @@ fn store_health_override() -> Option<StoreHealth> {
         "no-remote" | "no_remote" => Some(StoreHealth::NoRemote),
         "not-pushed" | "not_pushed" => Some(StoreHealth::NotPushed),
         "not-git" | "not_git" => Some(StoreHealth::NotGit),
+        "not-recipient" | "not_recipient" => Some(StoreHealth::NotRecipient),
         "dirty" => Some(StoreHealth::Dirty),
         "unknown" => Some(StoreHealth::Unknown),
         _ => None,

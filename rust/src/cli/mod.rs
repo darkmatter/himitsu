@@ -13,6 +13,7 @@ pub mod git;
 pub mod import;
 pub mod inbox;
 pub mod init;
+pub mod join;
 pub mod ls;
 pub mod read;
 pub mod recipient;
@@ -276,6 +277,9 @@ pub enum Command {
     #[command(hide = true)]
     Decrypt(decrypt::DecryptArgs),
 
+    /// Join a store by adding your own age key to its recipient list.
+    Join(join::JoinArgs),
+
     /// Sync stores: pull from git remote and optionally rekey drifted secrets.
     Sync(sync::SyncArgs),
 
@@ -407,6 +411,7 @@ impl Cli {
                 | Command::Write(_)
                 | Command::Rekey(_)
                 | Command::Recipient(_)
+                | Command::Join(_)
                 | Command::Schema(_)
                 | Command::Generate(_)
                 | Command::Export(_)
@@ -478,6 +483,7 @@ impl Cli {
             Command::Set(a) => a.no_push,
             Command::Write(a) => a.no_push,
             Command::Import(a) => a.no_push,
+            Command::Join(a) => a.no_push,
             _ => false,
         };
 
@@ -491,6 +497,7 @@ impl Cli {
             Command::Rekey(args) => rekey::run(args, &ctx),
             Command::Encrypt(args) => encrypt::run(args, &ctx),
             Command::Decrypt(args) => decrypt::run(args, &ctx),
+            Command::Join(args) => join::run(args, &ctx),
             Command::Sync(args) => sync::run(args, &ctx),
             Command::Search(args) => search::run(args, &ctx),
             Command::Recipient(args) => recipient::run(args, &ctx),
@@ -584,6 +591,7 @@ fn mutation_message(cmd: &Command) -> Option<String> {
         }),
         Command::Encrypt(_) => Some("rekey (encrypt)".to_string()),
         Command::Import(_) => Some("import".to_string()),
+        Command::Join(_) => Some("join".to_string()),
         Command::Recipient(a) => {
             recipient_subcommand_label(&a.command).map(|label| format!("recipient {label}"))
         }
@@ -619,6 +627,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Encrypt(_)
             | Command::Decrypt(_)
             | Command::Recipient(_)
+            | Command::Join(_)
             | Command::Schema(_)
             | Command::Generate(_)
             | Command::Export(_)
