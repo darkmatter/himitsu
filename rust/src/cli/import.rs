@@ -32,6 +32,18 @@ pub struct ImportArgs {
     #[arg(long)]
     pub sops: Option<String>,
 
+    /// Target prefix for imported secrets. `--to prod/stripe` stores keys
+    /// under `prod/stripe/<key>`. Trailing slashes are stripped.
+    /// Takes precedence over the positional PATH argument for bulk imports.
+    #[arg(long = "to")]
+    pub to: Option<String>,
+
+    /// Glob filter — only import keys matching this pattern.
+    /// Supports `foo/*` (direct children), `foo/**` (recursive),
+    /// `*` (all), and exact matches.
+    #[arg(long)]
+    pub filter: Option<String>,
+
     /// Overwrite an existing secret at the target path.
     #[arg(long)]
     pub overwrite: bool,
@@ -43,6 +55,11 @@ pub struct ImportArgs {
     /// Preview what would be imported without writing anything.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Keep original key names (SOME_KEY) instead of normalizing to
+    /// kebab-case (some-key).
+    #[arg(long)]
+    pub keep_names: bool,
 }
 
 /// A 1Password field from `op item get --format=json`.
@@ -85,6 +102,8 @@ struct OpItemSummary {
 struct ImportAction {
     /// The op:// reference this value comes from.
     source: String,
+    /// The original key name from the source (used for filter matching).
+    source_key: String,
     /// The himitsu path where the secret will be stored.
     target: String,
     /// The plaintext value.
@@ -113,43 +132,63 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     let actions = match segments.len() {
         3 => {
             // vault/item/field — single field import
-            let target = args.path.as_deref().ok_or_else(|| {
-                HimitsuError::InvalidReference(
-                    "PATH is required for single-field import (op://vault/item/field)".into(),
-                )
-            })?;
-            if !args.dry_run {
-                // Guard against clobbering an existing secret.
-                if !args.overwrite && secret_exists_at(&ctx.store, target) {
-                    return Err(HimitsuError::InvalidReference(format!(
-                        "secret already exists at {target}: pass --overwrite to replace it",
-                    )));
-                }
+            let field_name = segments[2];
+            let target = if let Some(ref to) = args.to {
+                let prefix = to.trim_end_matches('/');
+                let leaf = if args.keep_names {
+                    sanitize_label(field_name)
+                } else {
+                    normalize_key_name(&sanitize_label(field_name))
+                };
+                format!("{prefix}/{leaf}")
+            } else if let Some(ref path) = args.path {
+                path.clone()
+            } else {
+                return Err(HimitsuError::InvalidReference(
+                    "PATH or --to is required for single-field import (op://vault/item/field)"
+                        .into(),
+                ));
+            };
+            if !args.dry_run && !args.overwrite && secret_exists_at(&ctx.store, &target) {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "secret already exists at {target}: pass --overwrite to replace it",
+                )));
             }
             let plaintext = op_read("op", op_ref)?;
             vec![ImportAction {
                 source: op_ref.to_string(),
-                target: target.to_string(),
+                source_key: field_name.to_string(),
+                target,
                 value: plaintext,
             }]
         }
         2 => {
             // vault/item — whole-item import
             let (vault, item) = (segments[0], segments[1]);
-            let prefix = args.path.as_deref().unwrap_or(item);
-            build_item_actions("op", vault, item, prefix, op_ref)?
+            let prefix = effective_prefix(&args, item);
+            build_item_actions("op", vault, item, &prefix, op_ref, !args.keep_names)?
         }
         1 => {
             // vault — whole-vault import
             let vault = segments[0];
-            let prefix = args.path.as_deref().unwrap_or(vault);
-            build_vault_actions("op", vault, prefix)?
+            let prefix = effective_prefix(&args, vault);
+            build_vault_actions("op", vault, &prefix, !args.keep_names)?
         }
         _ => {
             return Err(HimitsuError::InvalidReference(format!(
                 "expected op://vault, op://vault/item, or op://vault/item/field — got {op_ref:?}"
             )));
         }
+    };
+
+    // Apply glob filter if provided.
+    let actions = if let Some(ref filter) = args.filter {
+        actions
+            .into_iter()
+            .filter(|a| matches_filter(&a.source_key, filter))
+            .collect()
+    } else {
+        actions
     };
 
     if actions.is_empty() {
@@ -209,34 +248,55 @@ fn run_sops(sops_file: &str, args: &ImportArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let path_str = args.path.as_deref().unwrap_or("");
-    let prefix = path_str.trim_end_matches('/');
+    let prefix = effective_prefix(args, "");
+    let normalize = !args.keep_names;
+
+    // Apply filter and normalization.
+    let entries: Vec<(String, String)> = pairs
+        .into_iter()
+        .filter(|(key, _)| match args.filter.as_deref() {
+            Some(f) => matches_filter(key, f),
+            None => true,
+        })
+        .map(|(key, val)| {
+            let normalized = if normalize {
+                normalize_key_path(&key)
+            } else {
+                key
+            };
+            let full_path = if prefix.is_empty() {
+                normalized
+            } else {
+                format!("{prefix}/{normalized}")
+            };
+            (full_path, val)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        println!("No matching secrets found in {sops_file}");
+        return Ok(());
+    }
 
     let mut imported = 0usize;
-    for (key, val) in &pairs {
-        let full_path = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}/{key}")
-        };
-
+    for (full_path, val) in &entries {
         if args.dry_run {
             println!("[dry-run] {full_path}");
             continue;
         }
 
-        if !args.overwrite && secret_exists_at(&ctx.store, &full_path) {
+        if !args.overwrite && secret_exists_at(&ctx.store, full_path) {
             eprintln!("skipping {full_path}: already exists (use --overwrite to replace)");
             continue;
         }
 
-        set_plaintext(ctx, &full_path, val.as_bytes())?;
+        set_plaintext(ctx, full_path, val.as_bytes())?;
         imported += 1;
         println!("Imported {full_path}");
     }
 
     if args.dry_run {
-        println!("[dry-run] {} secret(s) would be imported", pairs.len());
+        println!("[dry-run] {} secret(s) would be imported", entries.len());
         return Ok(());
     }
 
@@ -340,6 +400,7 @@ fn build_item_actions(
     item: &str,
     prefix: &str,
     op_ref: &str,
+    normalize: bool,
 ) -> Result<Vec<ImportAction>> {
     let op_item = op_item_get(program, vault, item)?;
     let mut actions = Vec::new();
@@ -354,13 +415,19 @@ fn build_item_actions(
             _ => continue,
         };
 
-        let label = sanitize_label(&field.label);
+        let sanitized = sanitize_label(&field.label);
+        let label = if normalize {
+            normalize_key_name(&sanitized)
+        } else {
+            sanitized.clone()
+        };
         let unique_label = deduplicate_label(&label, &mut seen_labels);
         let target = format!("{prefix}/{unique_label}");
         let source = format!("op://{vault}/{item}/{}", field.label);
 
         actions.push(ImportAction {
             source,
+            source_key: sanitized,
             target,
             value,
         });
@@ -374,18 +441,35 @@ fn build_item_actions(
 }
 
 /// Build import actions for all items in a vault.
-fn build_vault_actions(program: &str, vault: &str, prefix: &str) -> Result<Vec<ImportAction>> {
+fn build_vault_actions(
+    program: &str,
+    vault: &str,
+    prefix: &str,
+    normalize: bool,
+) -> Result<Vec<ImportAction>> {
     let items = op_item_list(program, vault)?;
     let mut all_actions = Vec::new();
 
     for item_summary in &items {
-        let item_label = sanitize_label(&item_summary.title);
-        if item_label.is_empty() {
+        let sanitized = sanitize_label(&item_summary.title);
+        if sanitized.is_empty() {
             continue;
         }
+        let item_label = if normalize {
+            normalize_key_name(&sanitized)
+        } else {
+            sanitized
+        };
         let item_prefix = format!("{prefix}/{item_label}");
         let item_ref = format!("op://{vault}/{}", item_summary.title);
-        match build_item_actions(program, vault, &item_summary.id, &item_prefix, &item_ref) {
+        match build_item_actions(
+            program,
+            vault,
+            &item_summary.id,
+            &item_prefix,
+            &item_ref,
+            normalize,
+        ) {
             Ok(mut item_actions) => all_actions.append(&mut item_actions),
             Err(e) => {
                 eprintln!("Warning: skipping item {:?}: {e}", item_summary.title);
@@ -528,6 +612,49 @@ fn op_item_list(program: &str, vault: &str) -> Result<Vec<OpItemSummary>> {
         .map_err(|e| HimitsuError::External(format!("`op item list` returned invalid JSON: {e}")))
 }
 
+/// Normalize a key name: lowercase and replace underscores with hyphens.
+/// `SOME_KEY` → `some-key`, `DATABASE_URL` → `database-url`.
+fn normalize_key_name(s: &str) -> String {
+    s.to_lowercase().replace('_', "-")
+}
+
+/// Normalize each segment of a `/`-delimited key path independently.
+/// `database/HOST_NAME` → `database/host-name`.
+fn normalize_key_path(path: &str) -> String {
+    path.split('/')
+        .map(normalize_key_name)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Resolve the effective target prefix from `--to`, positional `path`, or a
+/// fallback default. Trailing slashes are stripped.
+fn effective_prefix(args: &ImportArgs, default: &str) -> String {
+    let raw = args
+        .to
+        .as_deref()
+        .or(args.path.as_deref())
+        .unwrap_or(default);
+    raw.trim_end_matches('/').to_string()
+}
+
+/// Check whether a source key matches a simple glob filter.
+fn matches_filter(key: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "**" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return key.starts_with(&format!("{prefix}/")) || key == prefix;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        if let Some(rest) = key.strip_prefix(&format!("{prefix}/")) {
+            return !rest.contains('/');
+        }
+        return false;
+    }
+    key == pattern
+}
+
 /// Shared helper for subprocess spawn errors.
 fn op_spawn_error(e: std::io::Error, cmd: &str) -> HimitsuError {
     match e.kind() {
@@ -626,9 +753,12 @@ mod tests {
             path: Some("prod/X".into()),
             op: Some("https://example.com/foo".into()),
             sops: None,
+            to: None,
+            filter: None,
             overwrite: false,
             no_push: false,
             dry_run: false,
+            keep_names: false,
         };
         let ctx = Context {
             data_dir: std::path::PathBuf::from("/tmp"),
@@ -645,14 +775,17 @@ mod tests {
 
     #[test]
     fn path_required_for_single_field() {
-        // op://vault/item/field with no positional path should error
+        // op://vault/item/field with no positional path and no --to should error
         let args = ImportArgs {
             path: None,
             op: Some("op://Personal/Stripe/credential".into()),
             sops: None,
+            to: None,
+            filter: None,
             overwrite: false,
             no_push: false,
             dry_run: false,
+            keep_names: false,
         };
         let ctx = Context {
             data_dir: std::path::PathBuf::from("/tmp"),
@@ -662,7 +795,7 @@ mod tests {
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
-            matches!(err, HimitsuError::InvalidReference(ref m) if m.contains("PATH is required")),
+            matches!(err, HimitsuError::InvalidReference(ref m) if m.contains("PATH or --to is required")),
             "got {err:?}"
         );
     }
@@ -877,5 +1010,156 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, "abc123");
         assert_eq!(items[0].title, "Stripe");
+    }
+
+    // ── Key normalization tests ───────────────────────────────────────────
+
+    #[test]
+    fn normalize_key_name_screaming_snake_to_kebab() {
+        assert_eq!(normalize_key_name("SOME_KEY"), "some-key");
+        assert_eq!(normalize_key_name("DATABASE_URL"), "database-url");
+        assert_eq!(normalize_key_name("API_KEY"), "api-key");
+    }
+
+    #[test]
+    fn normalize_key_name_preserves_hyphens() {
+        assert_eq!(normalize_key_name("already-kebab"), "already-kebab");
+        assert_eq!(normalize_key_name("some-key"), "some-key");
+    }
+
+    #[test]
+    fn normalize_key_name_mixed_case() {
+        assert_eq!(normalize_key_name("SomeKey"), "somekey");
+        assert_eq!(normalize_key_name("some_Key"), "some-key");
+    }
+
+    #[test]
+    fn normalize_key_path_normalizes_each_segment() {
+        assert_eq!(
+            normalize_key_path("database/HOST_NAME"),
+            "database/host-name"
+        );
+        assert_eq!(
+            normalize_key_path("PROD/API_KEY"),
+            "prod/api-key"
+        );
+        assert_eq!(normalize_key_path("simple"), "simple");
+    }
+
+    // ── Glob filter tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn matches_filter_exact() {
+        assert!(matches_filter("foo", "foo"));
+        assert!(!matches_filter("foo", "bar"));
+        assert!(!matches_filter("foo/bar", "foo"));
+    }
+
+    #[test]
+    fn matches_filter_star_glob() {
+        assert!(matches_filter("foo/bar", "foo/*"));
+        assert!(matches_filter("foo/baz", "foo/*"));
+        assert!(!matches_filter("foo/bar/baz", "foo/*"));
+        assert!(!matches_filter("other/bar", "foo/*"));
+    }
+
+    #[test]
+    fn matches_filter_double_star_glob() {
+        assert!(matches_filter("foo/bar", "foo/**"));
+        assert!(matches_filter("foo/bar/baz", "foo/**"));
+        assert!(!matches_filter("other/bar", "foo/**"));
+    }
+
+    #[test]
+    fn matches_filter_wildcard_all() {
+        assert!(matches_filter("anything", "*"));
+        assert!(matches_filter("foo/bar", "*"));
+        assert!(matches_filter("a/b/c", "**"));
+    }
+
+    // ── --to prefix tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn effective_prefix_prefers_to_over_path() {
+        let args = ImportArgs {
+            path: Some("old-prefix".into()),
+            op: None,
+            sops: None,
+            to: Some("new-prefix".into()),
+            filter: None,
+            overwrite: false,
+            no_push: false,
+            dry_run: false,
+            keep_names: false,
+        };
+        assert_eq!(effective_prefix(&args, "default"), "new-prefix");
+    }
+
+    #[test]
+    fn effective_prefix_falls_back_to_path() {
+        let args = ImportArgs {
+            path: Some("from-path".into()),
+            op: None,
+            sops: None,
+            to: None,
+            filter: None,
+            overwrite: false,
+            no_push: false,
+            dry_run: false,
+            keep_names: false,
+        };
+        assert_eq!(effective_prefix(&args, "default"), "from-path");
+    }
+
+    #[test]
+    fn effective_prefix_strips_trailing_slash() {
+        let args = ImportArgs {
+            path: None,
+            op: None,
+            sops: None,
+            to: Some("foo/bar/".into()),
+            filter: None,
+            overwrite: false,
+            no_push: false,
+            dry_run: false,
+            keep_names: false,
+        };
+        assert_eq!(effective_prefix(&args, "default"), "foo/bar");
+    }
+
+    #[test]
+    fn effective_prefix_uses_default_when_none() {
+        let args = ImportArgs {
+            path: None,
+            op: None,
+            sops: None,
+            to: None,
+            filter: None,
+            overwrite: false,
+            no_push: false,
+            dry_run: false,
+            keep_names: false,
+        };
+        assert_eq!(effective_prefix(&args, "fallback"), "fallback");
+    }
+
+    // ── CLI parsing of new flags ──────────────────────────────────────────
+
+    #[test]
+    fn parses_to_flag() {
+        let a = parse(&["--sops", "f.yaml", "--to", "prod/stripe"]);
+        assert_eq!(a.to.as_deref(), Some("prod/stripe"));
+    }
+
+    #[test]
+    fn parses_filter_flag() {
+        let a = parse(&["--sops", "f.yaml", "--filter", "database/*"]);
+        assert_eq!(a.filter.as_deref(), Some("database/*"));
+    }
+
+    #[test]
+    fn parses_keep_names_flag() {
+        let a = parse(&["--sops", "f.yaml", "--keep-names"]);
+        assert!(a.keep_names);
     }
 }
