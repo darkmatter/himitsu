@@ -58,6 +58,15 @@ pub enum SearchAction {
     /// Ctrl+Y attempted but failed (no selection / decrypt error / no
     /// clipboard backend). Carries a human-readable error string.
     CopyFailed(String),
+    /// User triggered sync from the command palette. Carries a result
+    /// message for the toast.
+    Synced(String),
+    /// User triggered rekey from the command palette.
+    Rekeyed(String),
+    /// User triggered join from the command palette.
+    Joined(String),
+    /// A palette command failed. Carries the error for the toast.
+    CommandFailed(String),
 }
 
 /// A row in the rendered results list. Store and Folder rows are visual-only
@@ -367,6 +376,9 @@ impl SearchView {
     fn dispatch_command(&mut self, cmd: Command) -> SearchAction {
         match cmd {
             Command::NewSecret => SearchAction::NewSecret,
+            Command::Sync => self.run_sync(),
+            Command::Rekey => self.run_rekey(),
+            Command::Join => self.run_join(),
             Command::AddRemote => SearchAction::AddRemote,
             Command::SwitchStore => {
                 self.picker = Some(StorePicker::new(
@@ -382,6 +394,63 @@ impl SearchView {
             Command::Envs => SearchAction::OpenEnvs,
             Command::Help => SearchAction::ShowHelp,
             Command::Quit => SearchAction::Quit,
+        }
+    }
+
+    fn run_sync(&mut self) -> SearchAction {
+        use crate::cli::rekey;
+
+        if let Err(e) = crate::git::pull(&self.ctx.store) {
+            return SearchAction::CommandFailed(format!("sync pull failed: {e}"));
+        }
+        match rekey::rekey_store(&self.ctx, None) {
+            Ok(n) => {
+                self.refresh_results();
+                self.store_health = check_store_health(&self.ctx);
+                SearchAction::Synced(format!("pulled, {n} secret(s) rekeyed"))
+            }
+            Err(e) => SearchAction::CommandFailed(format!("sync rekey failed: {e}")),
+        }
+    }
+
+    fn run_rekey(&self) -> SearchAction {
+        use crate::cli::rekey;
+        match rekey::rekey_store(&self.ctx, None) {
+            Ok(n) => {
+                let recipients = crate::crypto::age::collect_recipients(
+                    &self.ctx.store,
+                    self.ctx.recipients_path.as_deref(),
+                )
+                .map(|r| r.len())
+                .unwrap_or(0);
+                SearchAction::Rekeyed(format!(
+                    "{n} secret(s) rekeyed for {recipients} recipient(s)"
+                ))
+            }
+            Err(e) => SearchAction::CommandFailed(format!("rekey failed: {e}")),
+        }
+    }
+
+    fn run_join(&mut self) -> SearchAction {
+        use crate::cli::join::{self, JoinArgs};
+
+        if join::is_self_recipient(&self.ctx) {
+            return SearchAction::Joined("already a recipient".into());
+        }
+
+        match join::run(
+            JoinArgs {
+                name: None,
+                no_push: false,
+            },
+            &self.ctx,
+        ) {
+            Ok(()) => {
+                self.ctx.commit_and_push("himitsu: join");
+                self.store_health = check_store_health(&self.ctx);
+                SearchAction::Joined("joined as recipient".into())
+            }
+            Err(e) => SearchAction::CommandFailed(format!("join failed: {e}")),
         }
     }
 

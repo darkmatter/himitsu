@@ -134,6 +134,18 @@ impl App {
                 SearchAction::CopyFailed(msg) => {
                     self.push_toast(msg, ToastKind::Error);
                 }
+                SearchAction::Synced(msg) => {
+                    self.push_toast(msg, ToastKind::Success);
+                }
+                SearchAction::Rekeyed(msg) => {
+                    self.push_toast(msg, ToastKind::Success);
+                }
+                SearchAction::Joined(msg) => {
+                    self.push_toast(msg, ToastKind::Success);
+                }
+                SearchAction::CommandFailed(msg) => {
+                    self.push_toast(msg, ToastKind::Error);
+                }
             },
             View::SecretViewer(viewer) => match viewer.on_key(key, &self.keymap) {
                 SecretViewerAction::None => {}
