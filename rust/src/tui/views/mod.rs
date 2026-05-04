@@ -46,14 +46,28 @@ fn render_distributed_footer(frame: &mut Frame<'_>, area: Rect, items: Vec<Line<
         return;
     }
 
-    let constraints = vec![Constraint::Ratio(1, items.len() as u32); items.len()];
+    let count = items.len();
+    let constraints = vec![Constraint::Ratio(1, count as u32); count];
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(constraints)
         .split(area);
 
-    for (item, chunk) in items.into_iter().zip(chunks.iter()) {
-        frame.render_widget(Paragraph::new(item).alignment(Alignment::Center), *chunk);
+    let last = count - 1;
+    for (idx, (item, chunk)) in items.into_iter().zip(chunks.iter()).enumerate() {
+        // Anchor the first and last items to the area edges so the row reads
+        // as evenly distributed across the full footer width; centering every
+        // chunk leaves a ragged gap whenever items have uneven widths.
+        let alignment = if count == 1 {
+            Alignment::Center
+        } else if idx == 0 {
+            Alignment::Left
+        } else if idx == last {
+            Alignment::Right
+        } else {
+            Alignment::Center
+        };
+        frame.render_widget(Paragraph::new(item).alignment(alignment), *chunk);
     }
 }
 
