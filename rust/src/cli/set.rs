@@ -66,6 +66,7 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         expires_at: expires_at_ts,
         description: args.description.clone().unwrap_or_default(),
         env_key: args.env_key.clone().unwrap_or_default(),
+        tags: Vec::new(),
     };
 
     let secret_path = encrypt_and_write(ctx, &args.path, &sv)?;
@@ -85,6 +86,7 @@ pub fn set_plaintext(ctx: &Context, path: &str, plaintext: &[u8]) -> Result<Stri
         expires_at: None,
         description: String::new(),
         env_key: String::new(),
+        tags: Vec::new(),
     };
     encrypt_and_write(ctx, path, &sv)
 }

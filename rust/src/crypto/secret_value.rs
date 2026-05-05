@@ -32,6 +32,9 @@ pub struct Decoded {
     pub expires_at: Option<pbjson_types::Timestamp>,
     /// Arbitrary user-defined key-value pairs.
     pub annotations: HashMap<String, String>,
+    /// Free-form tags for filtering and env composition. Empty when unset.
+    /// See [`crate::crypto::tags::validate_tag`] for the grammar.
+    pub tags: Vec<String>,
 }
 
 impl Decoded {
@@ -42,6 +45,7 @@ impl Decoded {
             || !self.description.is_empty()
             || !self.env_key.is_empty()
             || !self.annotations.is_empty()
+            || !self.tags.is_empty()
             || self
                 .expires_at
                 .as_ref()
@@ -71,6 +75,7 @@ pub fn decode(plaintext: &[u8]) -> Decoded {
             env_key: sv.env_key,
             expires_at: sv.expires_at,
             annotations: sv.annotations,
+            tags: sv.tags,
         },
         _ => Decoded {
             data: plaintext.to_vec(),
@@ -87,6 +92,7 @@ fn has_any_field(sv: &SecretValue) -> bool {
         || !sv.url.is_empty()
         || !sv.description.is_empty()
         || !sv.env_key.is_empty()
+        || !sv.tags.is_empty()
         || sv
             .expires_at
             .as_ref()
@@ -109,6 +115,7 @@ mod tests {
             expires_at: None,
             description: "db".to_string(),
             env_key: "DATABASE_URL".to_string(),
+            tags: vec!["pci".to_string(), "stripe".to_string()],
         };
         let bytes = encode(&sv);
         let d = decode(&bytes);
@@ -117,8 +124,33 @@ mod tests {
         assert_eq!(d.description, "db");
         assert_eq!(d.env_key, "DATABASE_URL");
         assert!(d.totp.starts_with("otpauth://"));
+        assert_eq!(d.tags, vec!["pci".to_string(), "stripe".to_string()]);
         assert!(d.has_metadata());
     }
+
+    #[test]
+    fn tags_alone_count_as_metadata() {
+        let sv = SecretValue {
+            data: b"xyz".to_vec(),
+            tags: vec!["mobile".to_string()],
+            ..Default::default()
+        };
+        let d = decode(&encode(&sv));
+        assert_eq!(d.tags, vec!["mobile".to_string()]);
+        assert!(d.has_metadata());
+    }
+
+    #[test]
+    fn legacy_payload_decodes_to_empty_tags() {
+        // A legacy raw-bytes payload that doesn't parse as a populated
+        // SecretValue should round-trip with no tags.
+        let raw = b"plain old password".to_vec();
+        let d = decode(&raw);
+        assert_eq!(d.data, raw);
+        assert!(d.tags.is_empty());
+        assert!(!d.has_metadata());
+    }
+
 
     #[test]
     fn annotations_round_trip() {

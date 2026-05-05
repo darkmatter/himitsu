@@ -284,6 +284,14 @@ impl SecretViewerView {
 
         let recipients =
             age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
+        // Preserve any tags carried on the existing decrypted snapshot;
+        // the secret_viewer edit form does not expose tags directly, so a
+        // round-trip save must not silently strip them.
+        let preserved_tags = self
+            .decoded
+            .as_ref()
+            .map(|d| d.tags.clone())
+            .unwrap_or_default();
         let sv = SecretValue {
             data: parsed.value.as_bytes().to_vec(),
             content_type: String::new(),
@@ -293,6 +301,7 @@ impl SecretViewerView {
             expires_at,
             description: parsed.description,
             env_key: parsed.env_key,
+            tags: preserved_tags,
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
@@ -318,6 +327,7 @@ impl SecretViewerView {
             env_key: sv.env_key,
             expires_at: sv.expires_at,
             annotations: sv.annotations,
+            tags: sv.tags,
         });
         Ok(parsed.value)
     }
@@ -1247,6 +1257,7 @@ s3cret";
             env_key: "API".to_string(),
             expires_at: None,
             annotations,
+            tags: Vec::new(),
         };
         let doc = render_edit_doc("prod/SECRET", &decoded);
         let parsed = parse_edit_doc(&doc).unwrap();

@@ -48,6 +48,11 @@ pub struct SearchResult {
     /// description) falls back to `None` so search still completes when
     /// some secrets are unreadable by the current user.
     pub description: Option<String>,
+    /// Tags pulled from `SecretValue.tags`. Populated by the same best-effort
+    /// decrypt loop in [`search_core`] that surfaces `description`. `None`
+    /// when the secret could not be decrypted; `Some(vec![])` when it
+    /// decrypted but carried no tags.
+    pub tags: Option<Vec<String>>,
 }
 
 /// Run a search across all known stores and return sorted results.
@@ -71,9 +76,13 @@ pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
                 Some(m) => (m.created_at, m.lastmodified),
                 None => (None, None),
             };
-            let description = identity
+            let (description, tags) = match identity
                 .as_ref()
-                .and_then(|id| read_description(&store_path, &path, id));
+                .and_then(|id| read_metadata(&store_path, &path, id))
+            {
+                Some((desc, tags)) => (desc, Some(tags)),
+                None => (None, None),
+            };
             candidates.push(SearchResult {
                 store: slug.clone(),
                 store_path: store_path.clone(),
@@ -81,6 +90,7 @@ pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
                 created_at,
                 updated_at,
                 description,
+                tags,
             });
         }
     }
@@ -139,26 +149,32 @@ fn fuzzy_filter(candidates: &[SearchResult], query: &str) -> Vec<SearchResult> {
     scored.into_iter().map(|(_, r)| r).collect()
 }
 
-/// Best-effort read of the `description` field from a secret's encrypted
+/// Best-effort read of the description and tags from a secret's encrypted
 /// payload. Returns `None` on any failure (read error, decrypt error, legacy
-/// raw-bytes payload with no structured metadata, empty description).
+/// raw-bytes payload with no structured metadata).
 ///
-/// Used by [`search_core`] to populate [`SearchResult::description`] without
-/// aborting the whole search when some secrets can't be decrypted (e.g. the
-/// current identity isn't on the recipient list for them).
-fn read_description(
+/// Decrypts once and returns both fields together: `(Option<description>, tags)`.
+/// `description` is `None` when the field is empty; `tags` is always present
+/// (possibly an empty `Vec`) when decryption succeeded. The outer `None`
+/// distinguishes "couldn't decrypt" from "decrypted but no tags".
+///
+/// Used by [`search_core`] to populate [`SearchResult::description`] and
+/// [`SearchResult::tags`] without aborting the whole search when some secrets
+/// can't be decrypted (e.g. the current identity isn't on the recipient list).
+fn read_metadata(
     store_path: &std::path::Path,
     secret_path: &str,
     identity: &::age::x25519::Identity,
-) -> Option<String> {
+) -> Option<(Option<String>, Vec<String>)> {
     let ciphertext = store::read_secret(store_path, secret_path).ok()?;
     let plain = age::decrypt(&ciphertext, identity).ok()?;
     let decoded = secret_value::decode(&plain);
-    if decoded.description.is_empty() {
+    let description = if decoded.description.is_empty() {
         None
     } else {
         Some(decoded.description)
-    }
+    };
+    Some((description, decoded.tags))
 }
 
 pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
@@ -445,6 +461,7 @@ mod tests {
             created_at: None,
             updated_at: updated_at.map(String::from),
             description: None,
+            tags: None,
         }
     }
 
@@ -585,6 +602,7 @@ mod tests {
                 created_at: None,
                 updated_at: Some(two_hours_ago),
                 description: Some("prod postgres primary".into()),
+                tags: None,
             },
             SearchResult {
                 store: "acme/staging".into(),
@@ -593,6 +611,7 @@ mod tests {
                 created_at: None,
                 updated_at: Some(three_days_ago),
                 description: None,
+                tags: None,
             },
         ];
 
@@ -641,6 +660,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             description: None,
+            tags: None,
         }];
 
         let out = render_table(&results, false, now);
@@ -658,6 +678,7 @@ mod tests {
             created_at: Some("2026-04-12".into()), // 3 days ago
             updated_at: None,
             description: None,
+            tags: None,
         }];
 
         let out = render_table(&results, false, now);

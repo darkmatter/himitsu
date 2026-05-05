@@ -263,6 +263,7 @@ mod tests {
             expires_at: None,
             description: String::new(),
             env_key: String::new(),
+            tags: Vec::new(),
         };
         let wire = secret_value::encode(&sv);
         let ct = hage::encrypt(&wire, recipients).unwrap();

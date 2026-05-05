@@ -350,6 +350,7 @@ impl NewSecretView {
             expires_at: expires_at_ts,
             description: self.description.clone(),
             env_key: self.env_key.clone(),
+            tags: Vec::new(),
         })
     }
 
