@@ -2,7 +2,7 @@ use clap::Args;
 
 use super::duration::{self, ExpiresAt};
 use super::Context;
-use crate::crypto::{age, secret_value};
+use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::{HimitsuError, Result};
 use crate::proto::SecretValue;
 
@@ -39,6 +39,11 @@ pub struct SetArgs {
     /// (`30d`, `6mo`, `1y`), or the literal `never` to clear.
     #[arg(long)]
     pub expires_at: Option<String>,
+    /// Attach a tag to this secret. Repeat the flag to attach multiple
+    /// (`--tag pci --tag rotate-2026-q1`). Tags follow the grammar
+    /// `[A-Za-z0-9_.-]+`, 1-64 chars, case-sensitive.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
 }
 
 pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
@@ -48,6 +53,7 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
     if let Some(ref env_key) = args.env_key {
         validate_env_key(env_key)?;
     }
+    let tags = validate_tags(&args.tags)?;
 
     let expires_at_ts = match args.expires_at.as_deref() {
         None => None,
@@ -66,7 +72,7 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         expires_at: expires_at_ts,
         description: args.description.clone().unwrap_or_default(),
         env_key: args.env_key.clone().unwrap_or_default(),
-        tags: Vec::new(),
+        tags,
     };
 
     let secret_path = encrypt_and_write(ctx, &args.path, &sv)?;
@@ -187,9 +193,24 @@ pub(crate) fn validate_env_key(input: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate every `--tag` value against the shared tag grammar before any
+/// I/O happens. Returns the owned, validated list so the caller can move it
+/// into `SecretValue.tags`.
+fn validate_tags(raw: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(raw.len());
+    for t in raw {
+        tag_grammar::validate_tag(t).map_err(|reason| {
+            HimitsuError::InvalidReference(format!("invalid tag {t:?}: {reason}"))
+        })?;
+        out.push(t.clone());
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn totp_accepts_otpauth_uri() {
@@ -243,5 +264,62 @@ mod tests {
     #[test]
     fn env_key_rejects_empty() {
         assert!(validate_env_key("").is_err());
+    }
+
+    // --- `--tag` flag --------------------------------------------------
+
+    /// Wrap `SetArgs` in a tiny CLI so we can drive clap's parser the same
+    /// way the real binary does.
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: TestCmd,
+    }
+
+    #[derive(Debug, clap::Subcommand)]
+    enum TestCmd {
+        Set(SetArgs),
+    }
+
+    fn parse(args: &[&str]) -> SetArgs {
+        let mut full = vec!["test", "set"];
+        full.extend_from_slice(args);
+        let TestCli {
+            cmd: TestCmd::Set(a),
+        } = TestCli::try_parse_from(full).expect("parse ok");
+        a
+    }
+
+    #[test]
+    fn tag_flag_accumulates_multiple_invocations() {
+        let a = parse(&["prod/API_KEY", "secret-value", "--tag", "pci", "--tag", "rotate-2026-q1"]);
+        assert_eq!(a.tags, vec!["pci".to_string(), "rotate-2026-q1".to_string()]);
+    }
+
+    #[test]
+    fn tag_flag_defaults_to_empty_vec() {
+        let a = parse(&["prod/API_KEY", "secret-value"]);
+        assert!(a.tags.is_empty());
+        // And `validate_tags` happily round-trips an empty list — preserving
+        // the pre-tags behaviour for callers that never pass `--tag`.
+        assert_eq!(validate_tags(&a.tags).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn validate_tags_rejects_invalid_before_io() {
+        // `validate_tags` is the same code path `run()` hits before any
+        // encryption or filesystem work, so a failure here proves bad input
+        // is rejected before I/O.
+        let raw = vec!["ok".to_string(), "bad tag".to_string()];
+        let err = validate_tags(&raw).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bad tag"), "error mentions offending tag: {msg}");
+        assert!(msg.contains("invalid tag"), "uses canonical prefix: {msg}");
+    }
+
+    #[test]
+    fn validate_tags_passes_through_valid_list() {
+        let raw = vec!["pci".to_string(), "team_backend".to_string(), "v1.2.3".to_string()];
+        assert_eq!(validate_tags(&raw).unwrap(), raw);
     }
 }
