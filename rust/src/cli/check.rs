@@ -142,9 +142,13 @@ fn collect_stores_from_project_config(cfg: &config::ProjectConfig) -> BTreeSet<S
 
     for entries in cfg.envs.values() {
         for entry in entries {
+            // Tag selectors don't carry a path — they expand at resolve time
+            // against whatever store the caller already chose. They cannot
+            // contribute a slug to the auto-discovery list.
             let path = match entry {
                 config::EnvEntry::Single(p) | config::EnvEntry::Glob(p) => p.as_str(),
                 config::EnvEntry::Alias { path, .. } => path.as_str(),
+                config::EnvEntry::Tag(_) | config::EnvEntry::AliasTag { .. } => continue,
             };
             // A qualified path looks like "org/repo/env/KEY" — at least 3 segments.
             // Extract the first two segments as the slug.

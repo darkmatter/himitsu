@@ -184,6 +184,12 @@ impl CreateEditor {
                 editor.alias_key = key.clone();
                 editor.path = path.clone();
             }
+            // Tag selectors don't have an in-form representation yet — the
+            // TUI editor predates them. Fall back to the DSL editor by
+            // refusing this single-entry shortcut.
+            EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {
+                return Err("edit not yet supported for `tag:` selectors — use the DSL editor".into());
+            }
         }
 
         Ok(editor)

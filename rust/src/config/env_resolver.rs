@@ -25,6 +25,16 @@ use std::collections::BTreeMap;
 use super::{is_wildcard_label, label_prefix_segments, validate_env_label, EnvEntry};
 use crate::error::{HimitsuError, Result};
 
+/// Lookup callback: given a secret path, return its tag list.
+///
+/// Used by [`resolve_with_tags`] to expand `tag:` selectors. Returning
+/// `Err` is propagated as a hard build failure — env composition treats
+/// unreadable secrets as fatal so the resulting bundle is never silently
+/// missing values. Implementations typically wrap an age-decrypt + protobuf
+/// decode loop (see `crate::cli::search::read_metadata` for the read-only
+/// counterpart that swallows errors).
+pub type TagLookup<'a> = dyn Fn(&str) -> Result<Vec<String>> + 'a;
+
 /// A node in the resolved env tree.
 ///
 /// `Leaf` carries the final secret path (unmodified after `$1` substitution);
@@ -65,6 +75,28 @@ pub fn resolve(
     target: &str,
     available_secrets: &[String],
 ) -> Result<EnvNode> {
+    // No-op tag lookup: errors loudly if a tag entry is reached. Callers
+    // that need tag resolution must use [`resolve_with_tags`].
+    let no_tags = |_: &str| -> Result<Vec<String>> {
+        Err(HimitsuError::InvalidConfig(
+            "tag resolution requires a TagLookup; call resolve_with_tags".into(),
+        ))
+    };
+    resolve_with_tags(envs, target, available_secrets, &no_tags)
+}
+
+/// Same as [`resolve`] but with a `TagLookup` callback that decrypts each
+/// candidate secret to inspect its [`crate::proto::SecretValue::tags`].
+///
+/// Used by env-composition entry points (e.g. `himitsu codegen`) where a
+/// failure to decrypt is fatal — partial env outputs would silently miss
+/// values. The lookup is invoked at most once per (entry, secret) pair.
+pub fn resolve_with_tags(
+    envs: &BTreeMap<String, Vec<EnvEntry>>,
+    target: &str,
+    available_secrets: &[String],
+    tag_lookup: &TagLookup<'_>,
+) -> Result<EnvNode> {
     validate_env_label(target)?;
 
     let entries = envs
@@ -74,9 +106,9 @@ pub fn resolve(
     let prefix_segments = label_prefix_segments(target);
 
     if is_wildcard_label(target) {
-        resolve_wildcard(entries, &prefix_segments, available_secrets)
+        resolve_wildcard(entries, &prefix_segments, available_secrets, tag_lookup)
     } else {
-        resolve_concrete(entries, &prefix_segments, available_secrets)
+        resolve_concrete(entries, &prefix_segments, available_secrets, tag_lookup)
     }
 }
 
@@ -85,6 +117,7 @@ pub fn resolve(
 fn build_concrete_entries(
     entries: &[EnvEntry],
     available_secrets: &[String],
+    tag_lookup: &TagLookup<'_>,
 ) -> Result<BTreeMap<String, EnvNode>> {
     let mut out: BTreeMap<String, EnvNode> = BTreeMap::new();
     for entry in entries {
@@ -128,9 +161,73 @@ fn build_concrete_entries(
                     }
                 }
             }
+            EnvEntry::Tag(tag) => {
+                // Output key per match = last path segment, mirroring `Glob`.
+                for secret_path in resolve_by_tag(tag, available_secrets, tag_lookup)? {
+                    let key = last_segment(&secret_path).ok_or_else(|| {
+                        HimitsuError::InvalidConfig(format!(
+                            "secret path '{secret_path}' has no final segment"
+                        ))
+                    })?;
+                    out.insert(
+                        key.to_string(),
+                        EnvNode::Leaf {
+                            secret_path: secret_path.clone(),
+                        },
+                    );
+                }
+            }
+            EnvEntry::AliasTag { key, tag } => {
+                let matches = resolve_by_tag(tag, available_secrets, tag_lookup)?;
+                let secret_path = match matches.as_slice() {
+                    [only] => only,
+                    [] => {
+                        return Err(HimitsuError::InvalidConfig(format!(
+                            "alias '{key}' expects exactly one secret tagged '{tag}', found 0"
+                        )));
+                    }
+                    many => {
+                        return Err(HimitsuError::InvalidConfig(format!(
+                            "alias '{key}' expects exactly one secret tagged '{tag}', \
+                             found {} ({})",
+                            many.len(),
+                            many.join(", ")
+                        )));
+                    }
+                };
+                out.insert(
+                    key.clone(),
+                    EnvNode::Leaf {
+                        secret_path: secret_path.clone(),
+                    },
+                );
+            }
         }
     }
     Ok(out)
+}
+
+/// Walk `available_secrets`, asking `tag_lookup` for each one's tags, and
+/// collect every secret whose tags contain `tag`. Order follows
+/// `available_secrets`, which the caller may pre-sort for determinism;
+/// downstream `BTreeMap` insertion sorts the final tree anyway.
+///
+/// This is a hard read: any decrypt error from `tag_lookup` aborts the
+/// whole resolve. Use the read-only `read_metadata` helper in
+/// `crate::cli::search` when soft-failing per-secret is acceptable.
+fn resolve_by_tag(
+    tag: &str,
+    available_secrets: &[String],
+    tag_lookup: &TagLookup<'_>,
+) -> Result<Vec<String>> {
+    let mut hits = Vec::new();
+    for path in available_secrets {
+        let tags = tag_lookup(path)?;
+        if tags.iter().any(|t| t == tag) {
+            hits.push(path.clone());
+        }
+    }
+    Ok(hits)
 }
 
 /// Resolve a concrete env. Returns a tree rooted at the label's segments:
@@ -139,8 +236,9 @@ fn resolve_concrete(
     entries: &[EnvEntry],
     prefix_segments: &[&str],
     available_secrets: &[String],
+    tag_lookup: &TagLookup<'_>,
 ) -> Result<EnvNode> {
-    let leaf_map = build_concrete_entries(entries, available_secrets)?;
+    let leaf_map = build_concrete_entries(entries, available_secrets, tag_lookup)?;
     Ok(wrap_in_segments(prefix_segments, EnvNode::Branch(leaf_map)))
 }
 
@@ -152,16 +250,20 @@ fn resolve_wildcard(
     entries: &[EnvEntry],
     prefix_segments: &[&str],
     available_secrets: &[String],
+    tag_lookup: &TagLookup<'_>,
 ) -> Result<EnvNode> {
     // 1. Discover all candidate `$1` values by matching each entry's path
     //    against the secret store. Entries without `$1` contribute nothing
     //    to discovery — they're constant and apply uniformly to every
-    //    discovered capture.
+    //    discovered capture. Tag entries are treated as constants for
+    //    discovery purposes (their tag string is opaque, no `$1` expansion).
     let mut captures: BTreeMap<String, ()> = BTreeMap::new();
     for entry in entries {
         let path = match entry {
             EnvEntry::Single(p) | EnvEntry::Glob(p) => p,
             EnvEntry::Alias { path, .. } => path,
+            // `$1` interpolation is out-of-scope for tag entries.
+            EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => continue,
         };
         if !path.contains("$1") {
             continue;
@@ -174,11 +276,11 @@ fn resolve_wildcard(
     // 2. For each discovered `$1` value, substitute and build a concrete
     //    sub-branch. After substitution, entries resolve with the same
     //    logic as a concrete env (Single → explicit leaf, Glob → prefix
-    //    enumeration, Alias → keyed leaf).
+    //    enumeration, Alias → keyed leaf, Tag → tag-lookup expansion).
     let mut children: BTreeMap<String, EnvNode> = BTreeMap::new();
     for capture in captures.keys() {
         let substituted = substitute_entries(entries, capture);
-        let leaf_map = build_concrete_entries(&substituted, available_secrets)?;
+        let leaf_map = build_concrete_entries(&substituted, available_secrets, tag_lookup)?;
         children.insert(capture.clone(), EnvNode::Branch(leaf_map));
     }
 
@@ -259,6 +361,13 @@ fn substitute_entries(entries: &[EnvEntry], value: &str) -> Vec<EnvEntry> {
             EnvEntry::Alias { key, path } => EnvEntry::Alias {
                 key: key.clone(),
                 path: substitute_dollar_one(path, value),
+            },
+            // Tag selectors are passed through unchanged: `$1` interpolation
+            // is intentionally not supported on tag entries.
+            EnvEntry::Tag(t) => EnvEntry::Tag(t.clone()),
+            EnvEntry::AliasTag { key, tag } => EnvEntry::AliasTag {
+                key: key.clone(),
+                tag: tag.clone(),
             },
         })
         .collect()
@@ -554,5 +663,182 @@ mod tests {
     fn substitute_dollar_one_preserves_unicode() {
         assert_eq!(substitute_dollar_one("héllo/$1", "wörld"), "héllo/wörld");
         assert_eq!(substitute_dollar_one("no-capture", "x"), "no-capture");
+    }
+
+    // ── Tag selectors ──────────────────────────────────────────────────
+    //
+    // The resolver fetches tags via the injected `TagLookup`; we mock it
+    // with an in-memory map so tests are pure (no age identity, no store
+    // I/O). Real callers wrap a decrypt loop — see
+    // `crate::cli::search::read_metadata` for the read-only counterpart.
+
+    /// Build a tag-lookup closure backed by a path → tags map. Unknown
+    /// paths fall back to "no tags" rather than erroring, mirroring the
+    /// expected real-world behaviour for secrets that decrypt cleanly but
+    /// happen to carry no `SecretValue.tags` field.
+    fn mk_tag_lookup(
+        map: BTreeMap<String, Vec<String>>,
+    ) -> impl Fn(&str) -> Result<Vec<String>> {
+        move |path: &str| Ok(map.get(path).cloned().unwrap_or_default())
+    }
+
+    #[test]
+    fn tag_selector_includes_all_secrets_with_tag() {
+        // `tag:pci` should pull in every secret carrying the tag, keyed
+        // by last-path-segment. Non-pci secrets must be excluded.
+        let e = envs(vec![("dev", vec![EnvEntry::Tag("pci".into())])]);
+        let secrets = strs(&[
+            "dev/STRIPE_KEY",
+            "dev/POSTGRES_URL",
+            "extras/RATE_LIMITER",
+        ]);
+        let mut tags = BTreeMap::new();
+        tags.insert("dev/STRIPE_KEY".to_string(), vec!["pci".to_string()]);
+        tags.insert(
+            "dev/POSTGRES_URL".to_string(),
+            vec!["pci".to_string(), "rotate".to_string()],
+        );
+        tags.insert("extras/RATE_LIMITER".to_string(), vec!["mobile".to_string()]);
+        let lookup = mk_tag_lookup(tags);
+
+        let tree = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap();
+        let dev = branch(branch(&tree).get("dev").unwrap());
+        assert_eq!(dev.len(), 2);
+        assert_eq!(leaf_path(dev.get("STRIPE_KEY").unwrap()), "dev/STRIPE_KEY");
+        assert_eq!(
+            leaf_path(dev.get("POSTGRES_URL").unwrap()),
+            "dev/POSTGRES_URL"
+        );
+        assert!(dev.get("RATE_LIMITER").is_none());
+    }
+
+    #[test]
+    fn tag_selector_zero_matches_yields_empty_branch() {
+        let e = envs(vec![("dev", vec![EnvEntry::Tag("missing".into())])]);
+        let secrets = strs(&["dev/A", "dev/B"]);
+        let lookup = mk_tag_lookup(BTreeMap::new());
+
+        let tree = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap();
+        let dev = branch(branch(&tree).get("dev").unwrap());
+        assert!(dev.is_empty());
+    }
+
+    #[test]
+    fn alias_tag_succeeds_with_exactly_one_match() {
+        // `{ STRIPE: tag:stripe }` against a single tagged secret binds
+        // the secret's value to the explicit alias key.
+        let e = envs(vec![(
+            "dev",
+            vec![EnvEntry::AliasTag {
+                key: "STRIPE".into(),
+                tag: "stripe".into(),
+            }],
+        )]);
+        let secrets = strs(&["dev/STRIPE_API", "dev/OTHER"]);
+        let mut tags = BTreeMap::new();
+        tags.insert("dev/STRIPE_API".to_string(), vec!["stripe".to_string()]);
+        tags.insert("dev/OTHER".to_string(), vec!["mobile".to_string()]);
+        let lookup = mk_tag_lookup(tags);
+
+        let tree = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap();
+        let dev = branch(branch(&tree).get("dev").unwrap());
+        assert_eq!(dev.len(), 1);
+        assert_eq!(leaf_path(dev.get("STRIPE").unwrap()), "dev/STRIPE_API");
+    }
+
+    #[test]
+    fn alias_tag_errors_when_multiple_match() {
+        // The map form `{ STRIPE: tag:stripe }` reserves a single output
+        // slot for the alias. Two matching secrets is a config error.
+        let e = envs(vec![(
+            "dev",
+            vec![EnvEntry::AliasTag {
+                key: "STRIPE".into(),
+                tag: "stripe".into(),
+            }],
+        )]);
+        let secrets = strs(&["dev/A", "dev/B"]);
+        let mut tags = BTreeMap::new();
+        tags.insert("dev/A".to_string(), vec!["stripe".to_string()]);
+        tags.insert("dev/B".to_string(), vec!["stripe".to_string()]);
+        let lookup = mk_tag_lookup(tags);
+
+        let err = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("STRIPE"), "msg: {msg}");
+        assert!(msg.contains("found 2"), "msg: {msg}");
+    }
+
+    #[test]
+    fn alias_tag_errors_when_zero_match() {
+        let e = envs(vec![(
+            "dev",
+            vec![EnvEntry::AliasTag {
+                key: "STRIPE".into(),
+                tag: "stripe".into(),
+            }],
+        )]);
+        let secrets = strs(&["dev/A"]);
+        let mut tags = BTreeMap::new();
+        tags.insert("dev/A".to_string(), vec!["other".to_string()]);
+        let lookup = mk_tag_lookup(tags);
+
+        let err = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("found 0"), "msg: {msg}");
+    }
+
+    #[test]
+    fn resolve_without_tag_lookup_errors_on_tag_entry() {
+        // The bare `resolve()` entry point doesn't carry a TagLookup;
+        // hitting a tag entry must fail loudly rather than silently
+        // returning an incomplete tree.
+        let e = envs(vec![("dev", vec![EnvEntry::Tag("pci".into())])]);
+        let secrets = strs(&["dev/A"]);
+        let err = resolve(&e, "dev", &secrets).unwrap_err();
+        assert!(
+            err.to_string().contains("resolve_with_tags"),
+            "expected hint to use resolve_with_tags, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tag_lookup_decrypt_failure_propagates() {
+        // The contract is "errors bubble up". A `TagLookup` that returns
+        // `Err` must abort the whole resolve.
+        let e = envs(vec![("dev", vec![EnvEntry::Tag("pci".into())])]);
+        let secrets = strs(&["dev/UNREADABLE"]);
+        let failing = |_: &str| -> Result<Vec<String>> {
+            Err(HimitsuError::DecryptionFailed("test: cannot decrypt".into()))
+        };
+
+        let err = resolve_with_tags(&e, "dev", &secrets, &failing).unwrap_err();
+        assert!(
+            err.to_string().contains("test: cannot decrypt"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn mixed_entries_combine_path_and_tag_results() {
+        // AND-semantics across entries: a Single and a Tag entry both
+        // contribute keys to the same env's flat output. (`Single` provides
+        // `API_KEY`; `Tag("pci")` provides `STRIPE_KEY`.)
+        let e = envs(vec![(
+            "dev",
+            vec![
+                EnvEntry::Single("dev/API_KEY".into()),
+                EnvEntry::Tag("pci".into()),
+            ],
+        )]);
+        let secrets = strs(&["dev/API_KEY", "dev/STRIPE_KEY"]);
+        let mut tags = BTreeMap::new();
+        tags.insert("dev/STRIPE_KEY".to_string(), vec!["pci".to_string()]);
+        let lookup = mk_tag_lookup(tags);
+
+        let tree = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap();
+        let dev = branch(branch(&tree).get("dev").unwrap());
+        assert_eq!(leaf_path(dev.get("API_KEY").unwrap()), "dev/API_KEY");
+        assert_eq!(leaf_path(dev.get("STRIPE_KEY").unwrap()), "dev/STRIPE_KEY");
     }
 }

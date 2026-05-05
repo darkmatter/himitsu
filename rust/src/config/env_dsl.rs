@@ -176,6 +176,28 @@ pub fn resolve_concrete_env(
                     });
                 }
             }
+            // Tag selectors require decrypting candidate secrets — the
+            // DSL preview is a read-only path with no age identity, so we
+            // surface a warning instead of silently dropping the entry.
+            // The codegen pipeline (`resolve_with_tags`) does the real work.
+            EnvEntry::Tag(t) => {
+                out.warnings.push(ResolutionWarning {
+                    env_label: label.to_string(),
+                    message: format!(
+                        "tag selector 'tag:{t}' is not previewable here — \
+                         see `himitsu codegen <env>` for the resolved tree"
+                    ),
+                });
+            }
+            EnvEntry::AliasTag { key, tag } => {
+                out.warnings.push(ResolutionWarning {
+                    env_label: label.to_string(),
+                    message: format!(
+                        "alias '{key}: tag:{tag}' is not previewable here — \
+                         see `himitsu codegen <env>` for the resolved tree"
+                    ),
+                });
+            }
         }
     }
     out
