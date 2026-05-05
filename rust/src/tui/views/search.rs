@@ -692,6 +692,7 @@ impl SearchView {
             updated: String,
             desc: String,
             envs: String,
+            tags: Option<Vec<String>>,
         }
         let row_data: Vec<Option<SecretCells>> = self
             .rows
@@ -720,6 +721,7 @@ impl SearchView {
                         updated,
                         desc,
                         envs,
+                        tags: result.tags.clone(),
                     })
                 }
                 _ => None,
@@ -751,7 +753,7 @@ impl SearchView {
             .max("ENVS".len());
         let desc_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| c.desc.len()))
+            .filter_map(|d| d.as_ref().map(|c| desc_cell_width(&c.desc, c.tags.as_deref())))
             .max()
             .unwrap_or(0)
             .max("DESCRIPTION".len());
@@ -848,6 +850,11 @@ impl SearchView {
                         split_shared_prefix(&cells.parent_dim, shared_prefix.as_deref());
                     let consumed = indent.len() + cells.parent_dim.len() + cells.basename.len();
                     let pad = path_w.saturating_sub(consumed);
+                    let chips = format_tag_chips(cells.tags.as_deref());
+                    let chips_w = tag_chips_width(cells.tags.as_deref());
+                    let consumed_desc = desc_cell_width(&cells.desc, cells.tags.as_deref());
+                    let desc_pad = desc_w.saturating_sub(consumed_desc);
+                    let needs_sep = !cells.desc.is_empty() && chips_w > 0;
                     let mut spans = vec![
                         Span::raw(indent),
                         Span::styled(
@@ -870,8 +877,13 @@ impl SearchView {
                             format!("{:<envs_w$}  ", cells.envs, envs_w = envs_w),
                             Style::default().fg(theme::accent()),
                         ),
-                        Span::raw(format!("{:<desc_w$}  ", cells.desc, desc_w = desc_w)),
+                        Span::raw(cells.desc.clone()),
                     ];
+                    if needs_sep {
+                        spans.push(Span::raw(" "));
+                    }
+                    spans.extend(chips);
+                    spans.push(Span::raw(format!("{:<pad$}  ", "", pad = desc_pad)));
                     if show_store {
                         spans.push(Span::styled(
                             format!("{:<store_w$}", result.store, store_w = store_w),
@@ -929,6 +941,51 @@ impl SearchView {
             ],
         );
     }
+}
+
+/// Render a secret's tag list as a sequence of small `[tag]` spans suitable
+/// for inlining into a table row. Returns an empty `Vec` when there are no
+/// tags to show — either because the secret could not be decrypted (`None`)
+/// or because it decrypted but carried no tags (`Some(&[])`); both cases
+/// render the same way, mirroring how `description = None` is currently
+/// handled (no chip, no `?` placeholder).
+///
+/// Each chip renders as `[<label>] ` with a trailing space so consecutive
+/// chips space themselves naturally without the caller having to interleave
+/// separators. The trailing space on the final chip is purely cosmetic and
+/// is accounted for by [`tag_chips_width`] so column padding stays correct.
+fn format_tag_chips(tags: Option<&[String]>) -> Vec<Span<'static>> {
+    let Some(tags) = tags else {
+        return Vec::new();
+    };
+    if tags.is_empty() {
+        return Vec::new();
+    }
+    let style = Style::default().fg(theme::muted());
+    tags.iter()
+        .map(|tag| Span::styled(format!("[{tag}] "), style))
+        .collect()
+}
+
+/// Cell-width of the rendering produced by [`format_tag_chips`], used to
+/// account for chips when computing the description column width. Each chip
+/// renders as `[<label>] ` (label length + 3 cells: brackets + trailing
+/// space). Returns 0 when there are no chips.
+fn tag_chips_width(tags: Option<&[String]>) -> usize {
+    let Some(tags) = tags else {
+        return 0;
+    };
+    tags.iter().map(|t| t.len() + 3).sum()
+}
+
+/// Combined width of a description cell: the description text, an optional
+/// single-cell separator when both description and chips are present, and
+/// the inline tag chips. Used for both the column-width calculation and
+/// the per-row right-padding so they can't drift apart.
+fn desc_cell_width(desc: &str, tags: Option<&[String]>) -> usize {
+    let chips_w = tag_chips_width(tags);
+    let sep = if !desc.is_empty() && chips_w > 0 { 1 } else { 0 };
+    desc.len() + sep + chips_w
 }
 
 /// Split a slash-delimited secret path into `(parent_with_slash, basename)`.
@@ -1731,5 +1788,45 @@ mod tests {
         let action = view.on_key(ctrl('s'), &km);
         assert!(matches!(action, SearchAction::None));
         assert!(view.picker.is_some());
+    }
+
+    /// Concatenate the rendered text of a span list. Used by the chip tests
+    /// so they can assert on the visible output without caring about styling.
+    fn spans_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn format_tag_chips_renders_each_label() {
+        let tags = vec!["pci".to_string(), "stripe".to_string()];
+        let spans = format_tag_chips(Some(&tags));
+        let rendered = spans_text(&spans);
+        assert!(
+            rendered.contains("[pci]"),
+            "first chip missing: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("[stripe]"),
+            "second chip missing: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn format_tag_chips_returns_empty_when_tags_none() {
+        let spans = format_tag_chips(None);
+        assert!(
+            spans.is_empty(),
+            "expected no chips for None, got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn format_tag_chips_returns_empty_when_tag_list_empty() {
+        let tags: Vec<String> = Vec::new();
+        let spans = format_tag_chips(Some(&tags));
+        assert!(
+            spans.is_empty(),
+            "expected no chips for empty list, got {spans:?}"
+        );
     }
 }
