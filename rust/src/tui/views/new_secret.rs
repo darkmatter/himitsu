@@ -7,10 +7,12 @@
 //!    search view.
 //! 2. **Value** — multi-line buffer. `Enter` inserts a newline.
 //! 3. **Description** — human-readable note.
-//! 4. **URL** — associated website or API.
-//! 5. **TOTP** — `otpauth://` URI or base32 secret (validated).
-//! 6. **Env key** — default env-var name (validated).
-//! 7. **Expires at** — `never`, relative duration (`30d`/`6mo`/`1y`), or an
+//! 4. **Tags** — comma-separated labels (`pci,stripe`). Each tag must match
+//!    the grammar `[A-Za-z0-9_.-]+`, 1-64 chars.
+//! 5. **URL** — associated website or API.
+//! 6. **TOTP** — `otpauth://` URI or base32 secret (validated).
+//! 7. **Env key** — default env-var name (validated).
+//! 8. **Expires at** — `never`, relative duration (`30d`/`6mo`/`1y`), or an
 //!    RFC 3339 timestamp.
 //!
 //! Tab / Shift-Tab move between fields with wrap-around. `Ctrl+S` or `Ctrl+W`
@@ -38,7 +40,7 @@ use ratatui::Frame;
 use crate::cli::duration::{self, ExpiresAt};
 use crate::cli::set::{validate_env_key, validate_totp};
 use crate::cli::Context;
-use crate::crypto::{age, secret_value};
+use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::proto::SecretValue;
 use crate::remote::store;
 use crate::tui::keymap::{Bindings, KeyMap};
@@ -65,6 +67,7 @@ pub enum Step {
     Path,
     Value,
     Description,
+    Tags,
     Url,
     Totp,
     EnvKey,
@@ -74,10 +77,11 @@ pub enum Step {
 impl Step {
     /// All steps in display/tab order. Used for Tab / Shift-Tab cycling
     /// and for tests asserting the cycle visits every field.
-    const ORDER: [Step; 7] = [
+    const ORDER: [Step; 8] = [
         Step::Path,
         Step::Value,
         Step::Description,
+        Step::Tags,
         Step::Url,
         Step::Totp,
         Step::EnvKey,
@@ -107,6 +111,7 @@ pub struct NewSecretView {
     path: String,
     value: String,
     description: String,
+    tags: String,
     url: String,
     totp: String,
     env_key: String,
@@ -122,6 +127,7 @@ impl NewSecretView {
             path: String::new(),
             value: String::new(),
             description: String::new(),
+            tags: String::new(),
             url: String::new(),
             totp: String::new(),
             env_key: String::new(),
@@ -159,6 +165,7 @@ impl NewSecretView {
             Step::Path => Some(&mut self.path),
             Step::Value => None,
             Step::Description => Some(&mut self.description),
+            Step::Tags => Some(&mut self.tags),
             Step::Url => Some(&mut self.url),
             Step::Totp => Some(&mut self.totp),
             Step::EnvKey => Some(&mut self.env_key),
@@ -253,12 +260,28 @@ impl NewSecretView {
                 NewSecretAction::None
             }
             (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
+                if !Self::accepts_char(self.step, c) {
+                    return NewSecretAction::None;
+                }
                 if let Some(buf) = self.field_buffer_mut(self.step) {
                     buf.push(c);
                 }
                 NewSecretAction::None
             }
             _ => NewSecretAction::None,
+        }
+    }
+
+    /// Per-step input filter. The `Tags` step restricts typing to the
+    /// `[A-Za-z0-9_.-,]` alphabet so the buffer can never carry a byte
+    /// the grammar would later reject. Every other step accepts any
+    /// printable char and defers validation to leave/submit time.
+    fn accepts_char(step: Step, c: char) -> bool {
+        match step {
+            Step::Tags => {
+                c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ','
+            }
+            _ => true,
         }
     }
 
@@ -306,6 +329,7 @@ impl NewSecretView {
             }
             Step::Value => Ok(()),
             Step::Description | Step::Url => Ok(()),
+            Step::Tags => parse_tags_input(&self.tags).map(|_| ()),
             Step::Totp => {
                 if self.totp.trim().is_empty() {
                     return Ok(());
@@ -341,6 +365,8 @@ impl NewSecretView {
             }
         };
 
+        let tags = parse_tags_input(&self.tags)?;
+
         Ok(SecretValue {
             data: self.value.as_bytes().to_vec(),
             content_type: String::new(),
@@ -350,7 +376,7 @@ impl NewSecretView {
             expires_at: expires_at_ts,
             description: self.description.clone(),
             env_key: self.env_key.clone(),
-            tags: Vec::new(),
+            tags,
         })
     }
 
@@ -370,7 +396,7 @@ impl NewSecretView {
             return Err(NewSecretAction::None);
         }
 
-        for step in [Step::Totp, Step::EnvKey, Step::ExpiresAt] {
+        for step in [Step::Tags, Step::Totp, Step::EnvKey, Step::ExpiresAt] {
             let saved = self.step;
             self.step = step;
             let check = self.validate_current_field();
@@ -450,6 +476,7 @@ impl NewSecretView {
                 Constraint::Length(3), // path
                 Constraint::Min(3),    // value
                 Constraint::Length(3), // description
+                Constraint::Length(3), // tags
                 Constraint::Length(3), // url
                 Constraint::Length(3), // totp
                 Constraint::Length(3), // env_key
@@ -468,17 +495,18 @@ impl NewSecretView {
             " description ",
             &self.description,
         );
-        self.draw_single_line(frame, chunks[4], Step::Url, " url ", &self.url);
-        self.draw_single_line(frame, chunks[5], Step::Totp, " totp ", &self.totp);
-        self.draw_single_line(frame, chunks[6], Step::EnvKey, " env_key ", &self.env_key);
+        self.draw_tags_field(frame, chunks[4]);
+        self.draw_single_line(frame, chunks[5], Step::Url, " url ", &self.url);
+        self.draw_single_line(frame, chunks[6], Step::Totp, " totp ", &self.totp);
+        self.draw_single_line(frame, chunks[7], Step::EnvKey, " env_key ", &self.env_key);
         self.draw_single_line(
             frame,
-            chunks[7],
+            chunks[8],
             Step::ExpiresAt,
             " expires_at ",
             &self.expires_at,
         );
-        self.draw_footer(frame, chunks[8]);
+        self.draw_footer(frame, chunks[9]);
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -510,6 +538,32 @@ impl NewSecretView {
             text.push('_');
         }
         frame.render_widget(Paragraph::new(text).block(block), area);
+    }
+
+    /// Render the `Tags` step. When the buffer is empty and unfocused we
+    /// surface a muted hint inside the input so the user sees the
+    /// comma-separated DSL without having to read external help text.
+    fn draw_tags_field(&self, frame: &mut Frame<'_>, area: Rect) {
+        let focused = self.step == Step::Tags;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" tags ")
+            .title_style(Style::default().fg(theme::border_label()))
+            .border_style(Self::border_style(focused));
+        let para = if self.tags.is_empty() && !focused {
+            Paragraph::new(Span::styled(
+                "comma-separated, e.g. pci,stripe",
+                Style::default().fg(theme::muted()),
+            ))
+            .block(block)
+        } else {
+            let mut text = self.tags.clone();
+            if focused {
+                text.push('_');
+            }
+            Paragraph::new(text).block(block)
+        };
+        frame.render_widget(para, area);
     }
 
     fn draw_value_field(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -575,6 +629,25 @@ impl NewSecretView {
     pub fn help_title() -> &'static str {
         "new secret · keys"
     }
+}
+
+/// Parse the raw "comma-separated tags" buffer into a validated list.
+///
+/// Splits on `,`, trims whitespace around each piece, drops empties, and
+/// runs every remaining piece through [`tag_grammar::validate_tag`]. The
+/// returned `Vec` is owned so it can move straight into
+/// `SecretValue.tags`. Empty input yields an empty vec.
+fn parse_tags_input(raw: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for piece in raw.split(',') {
+        let trimmed = piece.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        tag_grammar::validate_tag(trimmed)?;
+        out.push(trimmed.to_string());
+    }
+    Ok(out)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -736,6 +809,7 @@ mod tests {
             Step::Path,
             Step::Value,
             Step::Description,
+            Step::Tags,
             Step::Url,
             Step::Totp,
             Step::EnvKey,
@@ -770,7 +844,9 @@ mod tests {
         typ(&mut view, "hunter2");
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "the prod api key");
-        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km); // -> tags
+        typ(&mut view, "pci,stripe");
+        view.on_key(press(KeyCode::Tab), &km); // -> url
         typ(&mut view, "https://api.example.com");
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
@@ -782,6 +858,7 @@ mod tests {
         let sv = view.build_secret_value().expect("valid build");
         assert_eq!(sv.data, b"hunter2");
         assert_eq!(sv.description, "the prod api key");
+        assert_eq!(sv.tags, vec!["pci".to_string(), "stripe".to_string()]);
         assert_eq!(sv.url, "https://api.example.com");
         assert_eq!(sv.totp, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
         assert_eq!(sv.env_key, "API_KEY");
@@ -798,6 +875,7 @@ mod tests {
 
         let sv = view.build_secret_value().expect("valid build");
         assert_eq!(sv.description, "");
+        assert!(sv.tags.is_empty());
         assert_eq!(sv.url, "");
         assert_eq!(sv.totp, "");
         assert_eq!(sv.env_key, "");
@@ -813,6 +891,7 @@ mod tests {
         typ(&mut view, "value");
         // Walk to the TOTP field.
         view.on_key(press(KeyCode::Tab), &km); // value -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
         view.on_key(press(KeyCode::Tab), &km); // -> totp
         assert_eq!(view.step(), Step::Totp);
@@ -831,6 +910,7 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
         view.on_key(press(KeyCode::Tab), &km); // -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
         view.on_key(press(KeyCode::Tab), &km); // -> totp
         view.on_key(press(KeyCode::Tab), &km); // -> env_key
@@ -850,6 +930,7 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
         view.on_key(press(KeyCode::Tab), &km); // -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
         view.on_key(press(KeyCode::Tab), &km); // -> totp
         view.on_key(press(KeyCode::Tab), &km); // -> env_key
@@ -870,6 +951,7 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
         view.on_key(press(KeyCode::Tab), &km); // description
+        view.on_key(press(KeyCode::Tab), &km); // tags
         view.on_key(press(KeyCode::Tab), &km); // url
         view.on_key(press(KeyCode::Tab), &km); // totp
         view.on_key(press(KeyCode::Tab), &km); // env_key
@@ -877,5 +959,77 @@ mod tests {
         typ(&mut view, "never");
         let sv = view.build_secret_value().expect("valid build");
         assert!(sv.expires_at.is_none());
+    }
+
+    // ── Tags step ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_tags_input_splits_simple_csv() {
+        assert_eq!(
+            parse_tags_input("a,b,c").unwrap(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_tags_input_trims_whitespace_around_each_piece() {
+        assert_eq!(
+            parse_tags_input(" a , b ").unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_tags_input_drops_empty_pieces() {
+        assert_eq!(
+            parse_tags_input("a,,b").unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_tags_input_rejects_invalid_tag_in_list() {
+        // Belt-and-braces against pasted/injected input that bypasses the
+        // typing-time filter.
+        let err = parse_tags_input("a,bad tag,b").unwrap_err();
+        assert!(err.contains("bad tag"), "error mentions offending tag: {err}");
+    }
+
+    #[test]
+    fn parse_tags_input_empty_string_yields_empty_vec() {
+        assert_eq!(parse_tags_input("").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tags_step_filters_disallowed_characters_at_typing_time() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        // Walk to the Tags step.
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km); // -> value
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km); // -> description
+        view.on_key(press(KeyCode::Tab), &km); // -> tags
+        assert_eq!(view.step(), Step::Tags);
+        // Space, "!", ":", "/" must not land in the buffer.
+        typ(&mut view, "pci, stripe!:/");
+        let sv = view.build_secret_value().expect("valid build");
+        assert_eq!(sv.tags, vec!["pci".to_string(), "stripe".to_string()]);
+    }
+
+    #[test]
+    fn invalid_tags_block_submit_and_refocus_tags_step() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        // A 65-char tag exceeds MAX_TAG_LEN. Bypassing the typing-time
+        // filter by writing straight to the buffer simulates a paste.
+        view.tags = "a".repeat(65);
+        let out = view.on_key(ctrl('s'), &km);
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.step(), Step::Tags);
+        assert!(view.status().is_some());
     }
 }
