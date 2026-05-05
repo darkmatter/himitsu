@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use clap::Args;
 
 use super::Context;
-use crate::error::Result;
+use crate::crypto::{age, secret_value, tags as tag_grammar};
+use crate::error::{HimitsuError, Result};
 use crate::reference::SecretRef;
 use crate::remote::store;
 
@@ -40,6 +41,18 @@ pub struct LsArgs {
     /// Number of items to skip before displaying.
     #[arg(long, default_value_t = 0)]
     pub offset: usize,
+
+    /// Filter to secrets carrying the given tag. Repeat to AND multiple tags
+    /// (`--tag pci --tag rotate-2026-q1` lists only secrets that carry both).
+    /// Tags follow the grammar `[A-Za-z0-9_.-]+`, 1-64 chars, case-sensitive.
+    ///
+    /// When set, listing decrypts each candidate with the ambient identity to
+    /// inspect its tags; entries that fail to decrypt are dropped (we can't
+    /// verify their tags). Without `--tag`, listing never touches the
+    /// identity, so plain `himitsu ls` keeps working in CI/test environments
+    /// without a key.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tag: Vec<String>,
 }
 
 pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
@@ -47,6 +60,23 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
         usize::MAX
     } else {
         args.depth
+    };
+
+    // Validate every requested tag once up front so we fail fast on bad input
+    // before doing any store discovery or decrypting.
+    for t in &args.tag {
+        tag_grammar::validate_tag(t).map_err(|reason| {
+            HimitsuError::InvalidReference(format!("invalid tag {t:?}: {reason}"))
+        })?;
+    }
+
+    // Only load the ambient identity when we actually need it for tag
+    // filtering. Plain `ls` (no `--tag`) must keep working without a key —
+    // CI fixtures and fresh installs don't have one yet.
+    let identity = if args.tag.is_empty() {
+        None
+    } else {
+        age::read_identity(&ctx.key_path()).ok()
     };
 
     // ── Resolve qualified references ──────────────────────────────────────
@@ -62,6 +92,8 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
                 max_depth,
                 args.limit,
                 args.offset,
+                &args.tag,
+                identity.as_ref(),
             );
         }
     }
@@ -76,7 +108,15 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
 
     let prefix = args.path.as_deref().map(|p| p.trim_end_matches('/'));
 
-    show_items(stores, prefix, max_depth, args.limit, args.offset)
+    show_items(
+        stores,
+        prefix,
+        max_depth,
+        args.limit,
+        args.offset,
+        &args.tag,
+        identity.as_ref(),
+    )
 }
 
 // ── Core listing logic ─────────────────────────────────────────────────────
@@ -87,6 +127,8 @@ fn show_items(
     max_depth: usize,
     limit: usize,
     offset: usize,
+    want_tags: &[String],
+    identity: Option<&::age::x25519::Identity>,
 ) -> Result<()> {
     // prefix_components is the number of '/' segments in the prefix itself;
     // the effective display depth is relative to the prefix.
@@ -101,6 +143,16 @@ fn show_items(
     for (slug, store_path) in &stores {
         let paths = store::list_secrets(store_path, prefix).unwrap_or_default();
         for path in paths {
+            // Filter on the leaf path before depth-truncation: a directory
+            // row appears whenever any secret beneath it matches, so a
+            // dropped leaf can still surface as its parent when a sibling
+            // matches.
+            if !want_tags.is_empty() {
+                let Some(id) = identity else { continue };
+                if !secret_has_all_tags(store_path, &path, id, want_tags) {
+                    continue;
+                }
+            }
             let display = truncate_to_depth(&path, effective_depth);
             rows.insert((slug.clone(), display));
         }
@@ -232,4 +284,93 @@ fn store_label(store: &std::path::Path, ctx: &Context) -> String {
         }
     }
     store.to_string_lossy().to_string()
+}
+
+/// Best-effort tag check: read + decrypt the secret at `secret_path` and
+/// return `true` only when the decoded payload carries every tag in `want`.
+///
+/// Any failure (read error, decrypt error, legacy raw-bytes payload that
+/// has no tags) returns `false` so the entry is dropped — we can't verify
+/// what we can't decrypt.
+fn secret_has_all_tags(
+    store_path: &std::path::Path,
+    secret_path: &str,
+    identity: &::age::x25519::Identity,
+    want: &[String],
+) -> bool {
+    let Ok(ciphertext) = store::read_secret(store_path, secret_path) else {
+        return false;
+    };
+    let Ok(plain) = age::decrypt(&ciphertext, identity) else {
+        return false;
+    };
+    let decoded = secret_value::decode(&plain);
+    matches_all_tags(&decoded.tags, want)
+}
+
+/// AND-semantic tag match: returns `true` when `have` contains every entry
+/// in `want`. An empty `want` always matches; an empty `have` only matches
+/// an empty `want`.
+fn matches_all_tags(have: &[String], want: &[String]) -> bool {
+    want.iter().all(|w| have.iter().any(|h| h == w))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|t| (*t).to_string()).collect()
+    }
+
+    #[test]
+    fn matches_all_tags_empty_want_always_matches() {
+        // An empty filter is the "no `--tag`" case — every entry should pass.
+        assert!(matches_all_tags(&s(&[]), &s(&[])));
+        assert!(matches_all_tags(&s(&["pci"]), &s(&[])));
+        assert!(matches_all_tags(&s(&["pci", "stripe"]), &s(&[])));
+    }
+
+    #[test]
+    fn matches_all_tags_subset_passes() {
+        // `have` is a superset of `want` → match.
+        assert!(matches_all_tags(
+            &s(&["pci", "stripe", "rotate"]),
+            &s(&["pci"])
+        ));
+        assert!(matches_all_tags(
+            &s(&["pci", "stripe", "rotate"]),
+            &s(&["pci", "stripe"])
+        ));
+    }
+
+    #[test]
+    fn matches_all_tags_exact_match_passes() {
+        assert!(matches_all_tags(&s(&["pci"]), &s(&["pci"])));
+        assert!(matches_all_tags(
+            &s(&["pci", "stripe"]),
+            &s(&["pci", "stripe"])
+        ));
+        // Order in `have` shouldn't matter.
+        assert!(matches_all_tags(
+            &s(&["stripe", "pci"]),
+            &s(&["pci", "stripe"])
+        ));
+    }
+
+    #[test]
+    fn matches_all_tags_missing_tag_fails() {
+        // One required tag absent → reject the whole entry (AND semantics).
+        assert!(!matches_all_tags(&s(&["pci"]), &s(&["pci", "stripe"])));
+        assert!(!matches_all_tags(&s(&["stripe"]), &s(&["pci"])));
+        assert!(!matches_all_tags(&s(&[]), &s(&["pci"])));
+    }
+
+    #[test]
+    fn matches_all_tags_is_case_sensitive() {
+        // The grammar (`crate::crypto::tags::validate_tag`) is case-sensitive,
+        // so the filter must be too. "PCI" and "pci" are distinct tags.
+        assert!(!matches_all_tags(&s(&["PCI"]), &s(&["pci"])));
+        assert!(!matches_all_tags(&s(&["pci"]), &s(&["PCI"])));
+    }
 }
