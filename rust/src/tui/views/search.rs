@@ -67,28 +67,42 @@ pub enum SearchAction {
     Joined(String),
     /// A palette command failed. Carries the error for the toast.
     CommandFailed(String),
+    /// A palette command without a TUI form yet — surface the equivalent
+    /// CLI invocation as an info toast.
+    CommandHint(String),
 }
 
-/// A row in the rendered results list. Store and Folder rows are visual-only
-/// headers — they group the secrets that follow and are never selectable;
-/// navigation steps over them. Stores group by origin (`org/repo` slug or
-/// local path); folders group adjacent secrets sharing a top-level path
-/// prefix within a store.
+/// A row in the rendered results list. `Store` headers group secrets by
+/// origin (`org/repo` slug or local path) and are never selectable;
+/// navigation steps over them. `FoldedGroup` rows appear only in folded mode,
+/// one per top-level path prefix shared by ≥ 2 secrets — they collapse the
+/// group's leaves into a single selectable row that expands when the user
+/// unfolds.
 #[derive(Debug, Clone)]
 enum Row {
     Store {
         name: String,
         count: usize,
     },
-    Folder {
-        name: String,
+    FoldedGroup {
+        /// Top-level path segment shared by the collapsed leaves.
+        prefix: String,
+        /// Number of leaves under this prefix.
         count: usize,
+        /// Indentation depth (matches what its children would have if
+        /// expanded). 0 in single-store mode, 1 under a `Store` header.
+        indent: usize,
     },
     Secret {
         result: SearchResult,
-        /// Indentation depth in list-item cells (2 spaces per level). Level
-        /// 0 = flat, 1 = under one header (folder or store), 2 = under both.
+        /// Indentation depth in list-item cells (2 spaces per level).
+        /// 0 in single-store mode, 1 under a `Store` header.
         indent: usize,
+        /// Top-level path segment when this secret shares a prefix with
+        /// ≥ 1 sibling in the same store. The renderer paints this segment
+        /// with a subtle accent so the visual grouping survives without a
+        /// separate header row. `None` for singletons.
+        shared_prefix: Option<String>,
     },
 }
 
@@ -146,6 +160,10 @@ pub struct SearchView {
     /// once at view-construction time from the project + global configs.
     /// Used to render the ENVS column in the results table.
     env_index: std::collections::HashMap<String, Vec<String>>,
+    /// When true, multi-leaf top-level prefix groups collapse to a single
+    /// `FoldedGroup` row. Toggled with Tab. Singleton paths render the same
+    /// in both states. Default: unfolded.
+    folded: bool,
 }
 
 impl SearchView {
@@ -169,6 +187,7 @@ impl SearchView {
             store_health,
             show_store_column: false,
             env_index,
+            folded: false,
         };
         view.refresh_results();
         view
@@ -233,10 +252,23 @@ impl SearchView {
         }
 
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, _) => match self.selected_result().cloned() {
-                Some(r) => SearchAction::OpenViewer(r),
-                None => SearchAction::None,
-            },
+            (KeyCode::Tab, _) => {
+                self.toggle_fold();
+                SearchAction::None
+            }
+            (KeyCode::Enter, _) => {
+                // On a folded group, Enter expands the entire view (1-level
+                // unfold) and lands the cursor on the first leaf of the
+                // group the user just opened.
+                if let Some(prefix) = self.selected_folded_prefix() {
+                    self.unfold_to_prefix(&prefix);
+                    return SearchAction::None;
+                }
+                match self.selected_result().cloned() {
+                    Some(r) => SearchAction::OpenViewer(r),
+                    None => SearchAction::None,
+                }
+            }
             (KeyCode::Up, _) => {
                 self.select_prev();
                 SearchAction::None
@@ -281,8 +313,41 @@ impl SearchView {
 
     fn refresh_results(&mut self) {
         self.results = search_core(&self.ctx, &self.query).unwrap_or_default();
-        self.rows = build_rows(&self.results);
+        self.rows = build_rows(&self.results, self.folded);
         self.list_state.select(self.first_selectable());
+    }
+
+    fn toggle_fold(&mut self) {
+        // Remember the prefix or path under the cursor so we can re-anchor
+        // the selection after rebuilding rows. Otherwise the cursor would
+        // jump to the first selectable line on every toggle.
+        let anchor = self.list_state.selected().and_then(|i| self.rows.get(i)).map(|row| match row {
+            Row::Secret { result, .. } => SelectionAnchor::Path(result.path.clone(), result.store.clone()),
+            Row::FoldedGroup { prefix, .. } => SelectionAnchor::Prefix(prefix.clone()),
+            Row::Store { name, .. } => SelectionAnchor::Store(name.clone()),
+        });
+
+        self.folded = !self.folded;
+        self.rows = build_rows(&self.results, self.folded);
+        self.list_state.select(self.reanchor(anchor));
+    }
+
+    /// Expand the view if currently folded and place the cursor on the first
+    /// leaf belonging to `prefix`. No-op when already unfolded.
+    fn unfold_to_prefix(&mut self, prefix: &str) {
+        if !self.folded {
+            return;
+        }
+        self.folded = false;
+        self.rows = build_rows(&self.results, self.folded);
+        let target = self.rows.iter().position(|row| match row {
+            Row::Secret { result, shared_prefix, .. } => {
+                shared_prefix.as_deref() == Some(prefix)
+                    || prefix_of(&result.path) == prefix
+            }
+            _ => false,
+        });
+        self.list_state.select(target.or_else(|| self.first_selectable()));
     }
 
     fn selected_result(&self) -> Option<&SearchResult> {
@@ -291,12 +356,50 @@ impl SearchView {
             .and_then(|i| self.rows.get(i))
             .and_then(|row| match row {
                 Row::Secret { result, .. } => Some(result),
-                Row::Folder { .. } | Row::Store { .. } => None,
+                Row::FoldedGroup { .. } | Row::Store { .. } => None,
+            })
+    }
+
+    fn selected_folded_prefix(&self) -> Option<String> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.rows.get(i))
+            .and_then(|row| match row {
+                Row::FoldedGroup { prefix, .. } => Some(prefix.clone()),
+                _ => None,
             })
     }
 
     fn is_selectable(&self, i: usize) -> bool {
-        matches!(self.rows.get(i), Some(Row::Secret { .. }))
+        matches!(
+            self.rows.get(i),
+            Some(Row::Secret { .. }) | Some(Row::FoldedGroup { .. })
+        )
+    }
+
+    fn reanchor(&self, anchor: Option<SelectionAnchor>) -> Option<usize> {
+        let anchor = anchor?;
+        for (i, row) in self.rows.iter().enumerate() {
+            let hit = match (&anchor, row) {
+                (SelectionAnchor::Path(p, s), Row::Secret { result, .. }) => {
+                    &result.path == p && &result.store == s
+                }
+                (SelectionAnchor::Path(p, _), Row::FoldedGroup { prefix, .. }) => {
+                    prefix_of(p) == prefix.as_str()
+                }
+                (SelectionAnchor::Prefix(prefix), Row::FoldedGroup { prefix: p, .. }) => prefix == p,
+                (SelectionAnchor::Prefix(prefix), Row::Secret { shared_prefix, result, .. }) => {
+                    shared_prefix.as_deref() == Some(prefix.as_str())
+                        || prefix_of(&result.path) == prefix
+                }
+                (SelectionAnchor::Store(s), Row::Store { name, .. }) => s == name,
+                _ => false,
+            };
+            if hit && self.is_selectable(i) {
+                return Some(i);
+            }
+        }
+        self.first_selectable()
     }
 
     fn first_selectable(&self) -> Option<usize> {
@@ -374,26 +477,34 @@ impl SearchView {
     /// (currently just SwitchStore), we install the picker here and
     /// return [`SearchAction::None`] so the next frame draws the picker.
     fn dispatch_command(&mut self, cmd: Command) -> SearchAction {
+        // Wired commands first; any variant with a CLI-only path falls
+        // through to the hint toast at the bottom.
         match cmd {
-            Command::NewSecret => SearchAction::NewSecret,
-            Command::Sync => self.run_sync(),
-            Command::Rekey => self.run_rekey(),
-            Command::Join => self.run_join(),
-            Command::AddRemote => SearchAction::AddRemote,
+            Command::NewSecret => return SearchAction::NewSecret,
+            Command::Sync => return self.run_sync(),
+            Command::Rekey => return self.run_rekey(),
+            Command::Join => return self.run_join(),
+            Command::AddRemote => return SearchAction::AddRemote,
             Command::SwitchStore => {
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),
                     self.ctx.store.clone(),
                 ));
-                SearchAction::None
+                return SearchAction::None;
             }
             Command::ToggleStoreColumn => {
                 self.show_store_column = !self.show_store_column;
-                SearchAction::None
+                return SearchAction::None;
             }
-            Command::Envs => SearchAction::OpenEnvs,
-            Command::Help => SearchAction::ShowHelp,
-            Command::Quit => SearchAction::Quit,
+            Command::Envs => return SearchAction::OpenEnvs,
+            Command::Help => return SearchAction::ShowHelp,
+            Command::Quit => return SearchAction::Quit,
+            _ => {}
+        }
+
+        match cmd.cli_hint() {
+            Some(hint) => SearchAction::CommandHint(format!("run from CLI: {hint}")),
+            None => SearchAction::None,
         }
     }
 
@@ -586,7 +697,7 @@ impl SearchView {
             .rows
             .iter()
             .map(|row| match row {
-                Row::Secret { result, indent } => {
+                Row::Secret { result, indent, .. } => {
                     let (parent, name) = split_path_basename(&result.path);
                     let ts = result
                         .updated_at
@@ -710,12 +821,14 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::Folder { name, count } => {
+                Row::FoldedGroup { prefix, count, indent } => {
+                    let pad_indent = "  ".repeat(*indent);
                     let line = Line::from(vec![
+                        Span::raw(pad_indent),
                         Span::styled(
-                            format!("▸ {name}/"),
+                            format!("▸ {prefix}/"),
                             Style::default()
-                                .fg(theme::warning())
+                                .fg(theme::accent())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
@@ -723,17 +836,28 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::Secret { result, .. } => {
+                Row::Secret { result, shared_prefix, .. } => {
                     let cells = data.as_ref().unwrap();
-                    // Compose the path cell from three styled spans:
-                    // indent, dimmed parent prefix, full-bright basename.
+                    // Compose the path cell. The parent prefix is split into
+                    // a "shared" segment (top-level path slice when this leaf
+                    // belongs to a multi-leaf group) painted in a subtle
+                    // accent — replacing the old folder header — and the
+                    // remaining parent path which stays dimmed.
                     let indent = "  ".repeat(cells.indent);
+                    let (shared_seg, rest_seg) =
+                        split_shared_prefix(&cells.parent_dim, shared_prefix.as_deref());
                     let consumed = indent.len() + cells.parent_dim.len() + cells.basename.len();
                     let pad = path_w.saturating_sub(consumed);
                     let mut spans = vec![
                         Span::raw(indent),
                         Span::styled(
-                            cells.parent_dim.clone(),
+                            shared_seg.to_string(),
+                            Style::default()
+                                .fg(theme::accent())
+                                .add_modifier(Modifier::DIM),
+                        ),
+                        Span::styled(
+                            rest_seg.to_string(),
                             Style::default().fg(theme::path_dim()),
                         ),
                         Span::raw(cells.basename.clone()),
@@ -957,21 +1081,42 @@ fn store_health_override() -> Option<StoreHealth> {
     }
 }
 
+/// Tracks which row was selected before a fold/unfold toggle so the cursor
+/// can re-anchor on the most semantically equivalent row in the rebuilt list.
+#[derive(Debug, Clone)]
+enum SelectionAnchor {
+    /// A specific secret leaf, identified by `(path, store)`.
+    Path(String, String),
+    /// A folded group, identified by its top-level prefix.
+    Prefix(String),
+    /// A store header (kept selectable-adjacent when only stores remain).
+    Store(String),
+}
+
+/// Top-level path segment of a secret's path, used for prefix grouping.
+fn prefix_of(path: &str) -> &str {
+    match path.split_once('/') {
+        Some((head, _)) => head,
+        None => path,
+    }
+}
+
 /// Group a flat list of results into rows.
 ///
 /// When results span **multiple stores**, rows are partitioned per-store with
 /// a `Store` header row per bucket; within each bucket we apply path-prefix
-/// folder grouping. When only one store is present we fall back to the
-/// single-store layout (no store header, flat path-prefix grouping).
+/// grouping. When only one store is present we fall back to the single-store
+/// layout (no store header).
 ///
-/// A "folder" is any top-level path segment that contains ≥ 2 leaves. Single
-/// leaves render flat. Folders always sort before singles; within each group
-/// entries are alphabetized so the layout is stable regardless of input order.
-fn build_rows(results: &[SearchResult]) -> Vec<Row> {
+/// A "group" is any top-level path segment that contains ≥ 2 leaves. In
+/// folded mode each such group collapses to a single `FoldedGroup` row; in
+/// unfolded mode the leaves render inline with their shared prefix tagged so
+/// the renderer can paint it in a subtle accent. Singletons render the same
+/// in both modes. Within each section entries sort alphabetically so layout
+/// is stable regardless of input order.
+fn build_rows(results: &[SearchResult], folded: bool) -> Vec<Row> {
     use std::collections::BTreeMap;
 
-    // Bucket by store, preserving deterministic alphabetical order so the
-    // rendering is stable across calls.
     let mut by_store: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
     for r in results {
         by_store.entry(r.store.clone()).or_default().push(r.clone());
@@ -986,19 +1131,20 @@ fn build_rows(results: &[SearchResult]) -> Vec<Row> {
                 count: bucket.len(),
             });
         }
-        append_folder_grouped_rows(&mut rows, bucket, multi_store);
+        append_prefix_grouped_rows(&mut rows, bucket, multi_store, folded);
     }
     rows
 }
 
-/// Append `bucket` rows to `rows` applying path-prefix folder grouping.
+/// Append `bucket` rows to `rows` applying path-prefix grouping.
 ///
-/// When `under_store_header` is true, every row gets an extra level of
-/// indentation so the store header visually owns its children.
-fn append_folder_grouped_rows(
+/// `under_store_header` adds one level of indent so each store's children
+/// visually nest. `folded` collapses ≥ 2-leaf groups into `FoldedGroup` rows.
+fn append_prefix_grouped_rows(
     rows: &mut Vec<Row>,
     bucket: Vec<SearchResult>,
     under_store_header: bool,
+    folded: bool,
 ) {
     use std::collections::HashMap;
 
@@ -1007,10 +1153,7 @@ fn append_folder_grouped_rows(
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
     for r in bucket {
-        let prefix = match r.path.split_once('/') {
-            Some((head, _)) => head.to_string(),
-            None => r.path.clone(),
-        };
+        let prefix = prefix_of(&r.path).to_string();
         if !groups.contains_key(&prefix) {
             order.push(prefix.clone());
         }
@@ -1030,14 +1173,22 @@ fn append_folder_grouped_rows(
     folders.sort_by(|a, b| a.0.cmp(&b.0));
     singles.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (name, mut items) in folders {
-        let count = items.len();
-        rows.push(Row::Folder { name, count });
+    for (prefix, mut items) in folders {
+        if folded {
+            rows.push(Row::FoldedGroup {
+                prefix,
+                count: items.len(),
+                indent: store_indent,
+            });
+            continue;
+        }
         items.sort_by(|a, b| a.path.cmp(&b.path));
+        let shared = Some(prefix);
         for result in items {
             rows.push(Row::Secret {
                 result,
-                indent: store_indent + 1,
+                indent: store_indent,
+                shared_prefix: shared.clone(),
             });
         }
     }
@@ -1046,8 +1197,26 @@ fn append_folder_grouped_rows(
             rows.push(Row::Secret {
                 result,
                 indent: store_indent,
+                shared_prefix: None,
             });
         }
+    }
+}
+
+/// Split `parent` (the slash-terminated path prefix in front of a secret's
+/// basename) into a leading "shared" segment and the remainder. The shared
+/// segment is `"<prefix>/"` when the leaf is part of a multi-leaf group;
+/// otherwise the entire parent stays in the second slot for the dimmed
+/// renderer to draw as before.
+fn split_shared_prefix<'a>(parent: &'a str, shared: Option<&str>) -> (&'a str, &'a str) {
+    let Some(prefix) = shared else {
+        return ("", parent);
+    };
+    let head = format!("{prefix}/");
+    if parent.starts_with(&head) {
+        parent.split_at(head.len())
+    } else {
+        ("", parent)
     }
 }
 
@@ -1061,6 +1230,7 @@ impl SearchView {
             ("type", "filter results"),
             ("↑/↓", "navigate"),
             ("enter", "open selection"),
+            ("tab", "fold / unfold groups"),
             ("backspace", "delete char"),
             ("ctrl-p", "open command palette"),
             ("ctrl-n", "new secret"),
@@ -1133,10 +1303,20 @@ mod tests {
         let ctx = make_ctx(&dir.path().join("store"));
         let view = SearchView::new(&ctx);
         assert_eq!(view.results.len(), 3);
-        // Rows: [Folder(prod,2), Secret(prod/API_KEY), Secret(prod/DATABASE_URL), Secret(staging/API_KEY)]
-        assert_eq!(view.rows.len(), 4);
-        assert!(matches!(view.rows[0], Row::Folder { ref name, count: 2 } if name == "prod"));
-        assert_eq!(view.list_state.selected(), Some(1));
+        // Default unfolded: 3 leaves, no header row.
+        assert_eq!(view.rows.len(), 3);
+        match &view.rows[0] {
+            Row::Secret {
+                result,
+                shared_prefix,
+                ..
+            } => {
+                assert_eq!(result.path, "prod/API_KEY");
+                assert_eq!(shared_prefix.as_deref(), Some("prod"));
+            }
+            other => panic!("expected Secret at row 0, got {other:?}"),
+        }
+        assert_eq!(view.list_state.selected(), Some(0));
     }
 
     #[test]
@@ -1149,15 +1329,64 @@ mod tests {
             .iter()
             .map(|r| match r {
                 Row::Store { .. } => "store",
-                Row::Folder { .. } => "folder",
-                Row::Secret { indent, .. } if *indent > 0 => "child",
+                Row::FoldedGroup { .. } => "folded",
+                Row::Secret { shared_prefix, .. } if shared_prefix.is_some() => "grouped",
                 Row::Secret { .. } => "leaf",
             })
             .collect();
-        assert_eq!(kinds, vec!["folder", "child", "child", "leaf"]);
-        match &view.rows[3] {
+        assert_eq!(kinds, vec!["grouped", "grouped", "leaf"]);
+        match &view.rows[2] {
             Row::Secret { result, .. } => assert_eq!(result.path, "staging/API_KEY"),
-            _ => panic!("expected secret leaf at row 3"),
+            _ => panic!("expected secret leaf at row 2"),
+        }
+    }
+
+    #[test]
+    fn tab_folds_groups_into_single_row() {
+        let km = KeyMap::default();
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        // Unfolded baseline: 3 leaves (2 grouped + 1 single).
+        assert_eq!(view.rows.len(), 3);
+
+        view.on_key(key(KeyCode::Tab), &km);
+        // Folded: prod group collapses to a single FoldedGroup row + the
+        // staging singleton stays as a Secret. 2 rows total.
+        assert_eq!(view.rows.len(), 2);
+        match &view.rows[0] {
+            Row::FoldedGroup { prefix, count, .. } => {
+                assert_eq!(prefix, "prod");
+                assert_eq!(*count, 2);
+            }
+            other => panic!("expected FoldedGroup at row 0, got {other:?}"),
+        }
+        match &view.rows[1] {
+            Row::Secret { result, .. } => assert_eq!(result.path, "staging/API_KEY"),
+            other => panic!("expected Secret at row 1, got {other:?}"),
+        }
+
+        view.on_key(key(KeyCode::Tab), &km);
+        assert_eq!(view.rows.len(), 3);
+    }
+
+    #[test]
+    fn folded_group_is_selectable_and_enter_unfolds() {
+        let km = KeyMap::default();
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+
+        view.on_key(key(KeyCode::Tab), &km);
+        assert_eq!(view.list_state.selected(), Some(0));
+        assert!(view.selected_folded_prefix().is_some());
+
+        let action = view.on_key(key(KeyCode::Enter), &km);
+        assert!(matches!(action, SearchAction::None));
+        assert!(!view.folded);
+        match view.rows.get(view.list_state.selected().unwrap()) {
+            Some(Row::Secret { result, .. }) => assert_eq!(result.path, "prod/API_KEY"),
+            other => panic!("expected first prod leaf selected, got {other:?}"),
         }
     }
 
@@ -1242,14 +1471,13 @@ mod tests {
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
-        // Row 0 is a Folder header (unselectable); first secret is row 1.
-        assert_eq!(view.list_state.selected(), Some(1));
+        // Unfolded layout: 3 secret rows, no header row. First selectable
+        // is row 0; Up wraps to the last row.
+        assert_eq!(view.list_state.selected(), Some(0));
         view.on_key(key(KeyCode::Up), &km);
-        // Up skips the folder at row 0 and wraps to the last secret (row 3).
-        assert_eq!(view.list_state.selected(), Some(3));
+        assert_eq!(view.list_state.selected(), Some(2));
         view.on_key(key(KeyCode::Down), &km);
-        // Down from row 3 wraps; row 0 is a folder so lands on row 1.
-        assert_eq!(view.list_state.selected(), Some(1));
+        assert_eq!(view.list_state.selected(), Some(0));
     }
 
     #[test]
@@ -1372,26 +1600,31 @@ mod tests {
             other => panic!("row 0 expected Store, got {other:?}"),
         }
 
-        // Next: folder header "prod/" + two children under alpha (indented).
-        assert!(matches!(view.rows[1], Row::Folder { ref name, count: 2 } if name == "prod"));
-        match &view.rows[2] {
-            Row::Secret { result, indent } => {
+        // Next: alpha's two children (no folder header row anymore). Both
+        // tagged with the shared "prod" prefix and indented under the store.
+        match &view.rows[1] {
+            Row::Secret {
+                result,
+                indent,
+                shared_prefix,
+            } => {
                 assert_eq!(result.store, "acme/alpha");
-                assert!(*indent >= 2, "alpha child indent >= 2 (got {indent})");
+                assert_eq!(*indent, 1, "alpha child indent under store header");
+                assert_eq!(shared_prefix.as_deref(), Some("prod"));
             }
-            other => panic!("row 2 expected Secret, got {other:?}"),
+            other => panic!("row 1 expected Secret, got {other:?}"),
         }
 
-        // Beta store header appears later; its secret is indented >= 1.
+        // Beta store header appears later; its secret is indented under it.
         let beta_idx = view
             .rows
             .iter()
             .position(|r| matches!(r, Row::Store { name, .. } if name == "acme/beta"))
             .expect("acme/beta store header missing");
         match &view.rows[beta_idx + 1] {
-            Row::Secret { result, indent } => {
+            Row::Secret { result, indent, .. } => {
                 assert_eq!(result.store, "acme/beta");
-                assert!(*indent >= 1);
+                assert_eq!(*indent, 1);
             }
             other => panic!("row after beta header expected Secret, got {other:?}"),
         }
