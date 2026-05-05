@@ -221,7 +221,7 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
 
     let mut count = 0;
     for action in &actions {
-        let stored = set_plaintext(ctx, &action.target, action.value.as_bytes())?;
+        let stored = set_plaintext(ctx, &action.target, action.value.as_bytes(), Vec::new())?;
         println!("Imported {stored} from {}", action.source);
         count += 1;
     }
@@ -290,7 +290,7 @@ fn run_sops(sops_file: &str, args: &ImportArgs, ctx: &Context) -> Result<()> {
             continue;
         }
 
-        set_plaintext(ctx, full_path, val.as_bytes())?;
+        set_plaintext(ctx, full_path, val.as_bytes(), Vec::new())?;
         imported += 1;
         println!("Imported {full_path}");
     }
