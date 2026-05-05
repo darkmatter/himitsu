@@ -19,10 +19,16 @@ use ratatui::Frame;
 
 use crate::tui::theme;
 
-/// One command exposed in the palette. Listed roughly in order of expected
-/// usage frequency so the default selection lands on the common case.
+/// One command exposed in the palette. Mirrors the visible top-level
+/// stateless CLI surface so Ctrl+P stays at parity with `himitsu --help`.
+/// Listed in [`COMMANDS`] roughly by usage frequency.
+///
+/// Commands without a full TUI affordance yet dispatch to a hint toast that
+/// names the equivalent CLI invocation — discoverability now, full forms as
+/// follow-up work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    // ── Wired in the TUI ─────────────────────────────────────────────
     NewSecret,
     Sync,
     Rekey,
@@ -33,6 +39,24 @@ pub enum Command {
     Envs,
     Help,
     Quit,
+
+    // ── CLI parity (hint to CLI invocation) ──────────────────────────
+    RecipientLs,
+    RecipientAdd,
+    RecipientRm,
+    RecipientShow,
+    RemoteList,
+    RemoteRemove,
+    RemoteSetDefault,
+    ContextShow,
+    ContextSet,
+    ContextClear,
+    Generate,
+    Export,
+    Check,
+    Docs,
+    Import,
+    Git,
 }
 
 impl Command {
@@ -48,21 +72,34 @@ impl Command {
             Command::Envs => "browse envs",
             Command::Help => "show help",
             Command::Quit => "quit",
+
+            Command::RecipientLs => "list recipients",
+            Command::RecipientAdd => "add recipient",
+            Command::RecipientRm => "remove recipient",
+            Command::RecipientShow => "show recipient",
+            Command::RemoteList => "list remotes",
+            Command::RemoteRemove => "remove remote",
+            Command::RemoteSetDefault => "set default store",
+            Command::ContextShow => "show context",
+            Command::ContextSet => "set context",
+            Command::ContextClear => "clear context",
+            Command::Generate => "generate configs",
+            Command::Export => "export to SOPS",
+            Command::Check => "check stores",
+            Command::Docs => "show docs",
+            Command::Import => "import secrets",
+            Command::Git => "run git",
         }
     }
 
     pub fn shortcut(&self) -> &'static str {
         match self {
             Command::NewSecret => "ctrl-n",
-            Command::Sync => "",
-            Command::Rekey => "",
-            Command::Join => "",
-            Command::AddRemote => "",
             Command::SwitchStore => "ctrl-s",
-            Command::ToggleStoreColumn => "",
             Command::Envs => "shift-e",
             Command::Help => "?",
             Command::Quit => "esc",
+            _ => "",
         }
     }
 
@@ -78,6 +115,58 @@ impl Command {
             Command::Envs => "Browse env presets defined in himitsu.yaml",
             Command::Help => "Open the contextual key reference",
             Command::Quit => "Exit the TUI",
+
+            Command::RecipientLs => "List recipients for the current store",
+            Command::RecipientAdd => "Register a new recipient (needs name + age key)",
+            Command::RecipientRm => "Remove a recipient by name",
+            Command::RecipientShow => "Print a recipient's key and description",
+            Command::RemoteList => "List all configured stores",
+            Command::RemoteRemove => "Remove a store checkout",
+            Command::RemoteSetDefault => "Choose the default store for unqualified paths",
+            Command::ContextShow => "Show the active store context",
+            Command::ContextSet => "Pin a store as the active context",
+            Command::ContextClear => "Clear the active context",
+            Command::Generate => "Emit config files from himitsu.yaml env presets",
+            Command::Export => "Export secrets matching a glob to a SOPS file",
+            Command::Check => "Verify checkouts are up to date with remotes",
+            Command::Docs => "Render the himitsu README",
+            Command::Import => "Import secrets from 1Password or a SOPS file",
+            Command::Git => "Run git inside a store checkout",
+        }
+    }
+
+    /// Equivalent CLI invocation, used by the host view to surface a hint
+    /// toast for commands that don't have a full TUI form yet. Returns
+    /// `None` for commands that are already wired into the TUI.
+    pub fn cli_hint(&self) -> Option<&'static str> {
+        match self {
+            Command::NewSecret
+            | Command::Sync
+            | Command::Rekey
+            | Command::Join
+            | Command::AddRemote
+            | Command::SwitchStore
+            | Command::ToggleStoreColumn
+            | Command::Envs
+            | Command::Help
+            | Command::Quit => None,
+
+            Command::RecipientLs => Some("himitsu recipient ls"),
+            Command::RecipientAdd => Some("himitsu recipient add <name> --age-key <key>"),
+            Command::RecipientRm => Some("himitsu recipient rm <name>"),
+            Command::RecipientShow => Some("himitsu recipient show <name>"),
+            Command::RemoteList => Some("himitsu remote list"),
+            Command::RemoteRemove => Some("himitsu remote remove <slug>"),
+            Command::RemoteSetDefault => Some("himitsu remote default <slug>"),
+            Command::ContextShow => Some("himitsu context"),
+            Command::ContextSet => Some("himitsu context remote <slug>"),
+            Command::ContextClear => Some("himitsu context clear"),
+            Command::Generate => Some("himitsu generate"),
+            Command::Export => Some("himitsu export <glob> --to <file>"),
+            Command::Check => Some("himitsu check"),
+            Command::Docs => Some("himitsu docs"),
+            Command::Import => Some("himitsu import --op <ref> <path>"),
+            Command::Git => Some("himitsu git -- <args>"),
         }
     }
 }
@@ -102,6 +191,7 @@ pub struct CommandPalette {
 }
 
 const COMMANDS: &[Command] = &[
+    // Wired commands first — these are what most users reach for.
     Command::NewSecret,
     Command::Sync,
     Command::Rekey,
@@ -110,6 +200,26 @@ const COMMANDS: &[Command] = &[
     Command::SwitchStore,
     Command::ToggleStoreColumn,
     Command::Envs,
+    // CLI-parity commands — discoverable here, but selecting them surfaces
+    // the equivalent CLI invocation rather than running an in-TUI form.
+    Command::RecipientLs,
+    Command::RecipientAdd,
+    Command::RecipientRm,
+    Command::RecipientShow,
+    Command::RemoteList,
+    Command::RemoteRemove,
+    Command::RemoteSetDefault,
+    Command::ContextShow,
+    Command::ContextSet,
+    Command::ContextClear,
+    Command::Generate,
+    Command::Export,
+    Command::Check,
+    Command::Import,
+    Command::Git,
+    Command::Docs,
+    // Help and Quit at the end so they aren't where the cursor lands by
+    // default but stay one search-keystroke away.
     Command::Help,
     Command::Quit,
 ];
@@ -355,7 +465,9 @@ mod tests {
     #[test]
     fn typing_filters_the_list() {
         let mut p = CommandPalette::new();
-        for ch in "env".chars() {
+        // "browse" only appears in Envs (label "browse envs"); narrower
+        // queries like "env" now also match Generate's description.
+        for ch in "browse".chars() {
             p.on_key(press(KeyCode::Char(ch)));
         }
         assert_eq!(p.filtered, vec![Command::Envs]);
@@ -385,6 +497,37 @@ mod tests {
         assert!(p.filtered.contains(&Command::AddRemote));
         // "remote" also matches "add remote" — just confirm it's in the filtered set.
         assert!(p.filtered.iter().any(|c| *c == Command::AddRemote));
+    }
+
+    #[test]
+    fn cli_hint_set_matches_unwired_commands() {
+        // Every command in the catalog either dispatches to a wired TUI
+        // action (cli_hint == None) or surfaces a CLI invocation. Catch
+        // accidental drift if a new variant gets added without either.
+        for cmd in COMMANDS {
+            let hint = cmd.cli_hint();
+            match cmd {
+                Command::NewSecret
+                | Command::Sync
+                | Command::Rekey
+                | Command::Join
+                | Command::AddRemote
+                | Command::SwitchStore
+                | Command::ToggleStoreColumn
+                | Command::Envs
+                | Command::Help
+                | Command::Quit => assert!(hint.is_none(), "{:?} should be wired", cmd),
+                _ => {
+                    let h = hint.expect("CLI-parity command must have a hint");
+                    assert!(
+                        h.starts_with("himitsu "),
+                        "{:?} hint should start with `himitsu `: {}",
+                        cmd,
+                        h
+                    );
+                }
+            }
+        }
     }
 
     #[test]

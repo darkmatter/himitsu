@@ -146,6 +146,9 @@ impl App {
                 SearchAction::CommandFailed(msg) => {
                     self.push_toast(msg, ToastKind::Error);
                 }
+                SearchAction::CommandHint(msg) => {
+                    self.push_toast(msg, ToastKind::Info);
+                }
             },
             View::SecretViewer(viewer) => match viewer.on_key(key, &self.keymap) {
                 SecretViewerAction::None => {}
