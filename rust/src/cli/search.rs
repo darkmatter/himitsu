@@ -8,8 +8,8 @@ use nucleo_matcher::{Config, Matcher};
 use owo_colors::OwoColorize;
 
 use super::Context;
-use crate::crypto::{age, secret_value};
-use crate::error::Result;
+use crate::crypto::{age, secret_value, tags};
+use crate::error::{HimitsuError, Result};
 use crate::remote::store;
 
 /// Search secrets across all known stores.
@@ -22,6 +22,13 @@ pub struct SearchArgs {
     /// directly from store files so no separate refresh step is required.
     #[arg(long)]
     pub refresh: bool,
+
+    /// Restrict results to secrets carrying every listed tag. Repeatable;
+    /// AND-semantics across flags. Tags follow the grammar `[A-Za-z0-9_.-]+`
+    /// (1-64 chars). Secrets the current identity can't decrypt are excluded
+    /// when any `--tag` is set, since their tags can't be verified.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
 
     /// Output as JSON array (for machine/TUI consumption).
     #[arg(long, hide = true)]
@@ -59,7 +66,16 @@ pub struct SearchResult {
 ///
 /// Pure IO-in/data-out: no printing. Shared by the CLI (`run`) and the TUI
 /// search view so both see the same results.
-pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
+///
+/// `tag_filter` restricts results to candidates carrying every listed tag
+/// (AND-semantics). An empty slice disables tag filtering. Validation of
+/// individual tag strings is the caller's responsibility — see [`run`] for
+/// the CLI path that runs them through [`crate::crypto::tags::validate_tag`].
+pub fn search_core(
+    ctx: &Context,
+    query: &str,
+    tag_filter: &[String],
+) -> Result<Vec<SearchResult>> {
     let mut candidates: Vec<SearchResult> = Vec::new();
 
     // Try to load the age identity once so we can best-effort extract the
@@ -95,6 +111,8 @@ pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
         }
     }
 
+    let candidates = apply_tag_filter(candidates, tag_filter);
+
     let results = if query.trim().is_empty() {
         let mut r = candidates;
         r.sort_by(|a, b| (&a.store, &a.path).cmp(&(&b.store, &b.path)));
@@ -104,6 +122,25 @@ pub fn search_core(ctx: &Context, query: &str) -> Result<Vec<SearchResult>> {
     };
 
     Ok(results)
+}
+
+/// Drop candidates that don't satisfy the tag filter.
+///
+/// Empty `tag_filter` is a no-op (returns all candidates untouched). When
+/// any tag is requested, candidates with `tags = None` (couldn't decrypt)
+/// are excluded — we can't verify they match. AND-semantics across
+/// `tag_filter`: a candidate must carry every requested tag to survive.
+fn apply_tag_filter(candidates: Vec<SearchResult>, tag_filter: &[String]) -> Vec<SearchResult> {
+    if tag_filter.is_empty() {
+        return candidates;
+    }
+    candidates
+        .into_iter()
+        .filter(|c| match &c.tags {
+            None => false,
+            Some(have) => tag_filter.iter().all(|want| have.contains(want)),
+        })
+        .collect()
 }
 
 /// Score every candidate against `query`, returning matches sorted by
@@ -178,7 +215,14 @@ fn read_metadata(
 }
 
 pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
-    let results = search_core(ctx, &args.query)?;
+    // Validate every --tag up front so a typo fails fast with a clear error
+    // rather than silently returning zero hits. `validate_tag` borrows on
+    // success; we only need the side effect, not the returned slice.
+    for tag in &args.tags {
+        tags::validate_tag(tag).map_err(HimitsuError::InvalidReference)?;
+    }
+
+    let results = search_core(ctx, &args.query, &args.tags)?;
 
     if args.json {
         print_json(&results);
@@ -248,8 +292,10 @@ fn store_label(store: &std::path::Path, ctx: &Context) -> String {
 fn print_json(results: &[SearchResult]) {
     // JSON mode emits raw RFC3339 timestamps (not humanized strings) so
     // machine consumers get absolute times they can re-render in any
-    // locale / timezone. Description is included alongside so the TUI
-    // and other scripts can show it without re-decrypting.
+    // locale / timezone. Description and tags are included alongside so
+    // the TUI and other scripts can show them without re-decrypting.
+    // `tags: null` distinguishes "couldn't decrypt" from "decrypted, no tags"
+    // (which serializes as `[]`).
     let items: Vec<_> = results
         .iter()
         .map(|r| {
@@ -259,6 +305,7 @@ fn print_json(results: &[SearchResult]) {
                 "created_at":  r.created_at,
                 "updated_at":  r.updated_at,
                 "description": r.description,
+                "tags":        r.tags,
             })
         })
         .collect();
@@ -666,6 +713,67 @@ mod tests {
         let out = render_table(&results, false, now);
         let row = out.lines().nth(1).unwrap();
         assert!(row.contains("—"), "expected em-dash fallback in: {row}");
+    }
+
+    /// Build a result with a specific `tags` field. Other fields don't matter
+    /// for tag-filter tests so we leave them defaulted.
+    fn mk_tagged(path: &str, tags: Option<Vec<&str>>) -> SearchResult {
+        SearchResult {
+            store: "acme/prod".into(),
+            store_path: PathBuf::new(),
+            path: path.to_string(),
+            created_at: None,
+            updated_at: None,
+            description: None,
+            tags: tags.map(|v| v.into_iter().map(String::from).collect()),
+        }
+    }
+
+    #[test]
+    fn tag_filter_keeps_subset_match() {
+        let candidates = vec![mk_tagged("API_KEY", Some(vec!["a", "b"]))];
+        let out = apply_tag_filter(candidates, &["a".to_string()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "API_KEY");
+    }
+
+    #[test]
+    fn tag_filter_drops_when_tag_missing() {
+        let candidates = vec![mk_tagged("API_KEY", Some(vec!["a", "b"]))];
+        let out = apply_tag_filter(candidates, &["c".to_string()]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tag_filter_and_semantics_keeps_when_all_present() {
+        let candidates = vec![mk_tagged("API_KEY", Some(vec!["a", "b", "c"]))];
+        let out = apply_tag_filter(candidates, &["a".to_string(), "b".to_string()]);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn tag_filter_and_semantics_drops_when_one_missing() {
+        let candidates = vec![mk_tagged("API_KEY", Some(vec!["a"]))];
+        let out = apply_tag_filter(candidates, &["a".to_string(), "b".to_string()]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tag_filter_drops_undecryptable_when_filter_set() {
+        // tags = None means we couldn't decrypt and can't verify the match,
+        // so any non-empty filter must exclude the candidate.
+        let candidates = vec![mk_tagged("API_KEY", None)];
+        let out = apply_tag_filter(candidates, &["a".to_string()]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tag_filter_keeps_undecryptable_when_filter_empty() {
+        // No filter = no verification needed; everything passes through.
+        let candidates = vec![mk_tagged("API_KEY", None)];
+        let out = apply_tag_filter(candidates, &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "API_KEY");
     }
 
     #[test]

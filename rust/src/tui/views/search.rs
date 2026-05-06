@@ -312,7 +312,9 @@ impl SearchView {
     }
 
     fn refresh_results(&mut self) {
-        self.results = search_core(&self.ctx, &self.query).unwrap_or_default();
+        // Pass an empty tag filter; the TUI handles tag chips/filtering in a
+        // separate worker so this view always asks for everything.
+        self.results = search_core(&self.ctx, &self.query, &[]).unwrap_or_default();
         self.rows = build_rows(&self.results, self.folded);
         self.list_state.select(self.first_selectable());
     }
