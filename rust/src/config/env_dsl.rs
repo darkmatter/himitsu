@@ -198,7 +198,7 @@ pub fn resolve_all(
     combined
 }
 
-fn last_component(path: &str) -> &str {
+pub(crate) fn last_component(path: &str) -> &str {
     path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
 }
 
