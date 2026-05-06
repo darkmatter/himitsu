@@ -32,7 +32,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::cli::{duration, rekey, Context};
-use crate::crypto::{age, secret_value};
+use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::HimitsuError;
 use crate::proto::SecretValue;
 use crate::remote::store::{self, SecretMeta};
@@ -284,14 +284,14 @@ impl SecretViewerView {
 
         let recipients =
             age::collect_recipients(&self.store_path, self.ctx.recipients_path.as_deref())?;
-        // Preserve any tags carried on the existing decrypted snapshot;
-        // the secret_viewer edit form does not expose tags directly, so a
-        // round-trip save must not silently strip them.
-        let preserved_tags = self
-            .decoded
-            .as_ref()
-            .map(|d| d.tags.clone())
-            .unwrap_or_default();
+        // Validate every tag against the shared grammar before any I/O so a
+        // typo doesn't produce an unreadable envelope. The edit doc renders
+        // tags as a comma-separated `tags:` row, so removing the row clears
+        // them — matching how the other metadata fields behave.
+        for t in &parsed.tags {
+            tag_grammar::validate_tag(t)
+                .map_err(|reason| HimitsuError::InvalidReference(format!("edit: {reason}")))?;
+        }
         let sv = SecretValue {
             data: parsed.value.as_bytes().to_vec(),
             content_type: String::new(),
@@ -301,7 +301,7 @@ impl SecretViewerView {
             expires_at,
             description: parsed.description,
             env_key: parsed.env_key,
-            tags: preserved_tags,
+            tags: parsed.tags,
         };
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
@@ -537,6 +537,12 @@ impl SecretViewerView {
                     }
                 }
             }
+            // Tags render as inline accent bracket-chips on a single
+            // labeled row, e.g. `tags  [pci] [stripe]`. Empty tags emit no
+            // row so short secrets don't grow a blank "tags" line.
+            if !d.tags.is_empty() {
+                lines.push(tag_chips_line(&d.tags));
+            }
             // Annotations: sorted for stable display order.
             if !d.annotations.is_empty() {
                 let mut keys: Vec<&String> = d.annotations.keys().collect();
@@ -636,6 +642,10 @@ struct ParsedEdit {
     totp: String,
     expires_at: String,
     env_key: String,
+    /// Tags parsed from the comma-separated `tags:` row. Each entry has been
+    /// trimmed and non-empty; grammar validation happens at persist time so
+    /// the editor still surfaces a friendly error if the user typos a tag.
+    tags: Vec<String>,
     annotations: HashMap<String, String>,
     value: String,
 }
@@ -661,13 +671,18 @@ fn render_edit_doc(path: &str, decoded: &secret_value::Decoded) -> String {
         })
         .unwrap_or_default();
     let value = String::from_utf8_lossy(&decoded.data);
+    // Tags serialise as a single comma-separated row so the user can edit
+    // them inline. The tag grammar forbids commas + whitespace, so this is
+    // a lossless round-trip with `parse_edit_doc`.
+    let tags_csv = decoded.tags.join(", ");
     let mut buf = format!(
-        "{EDIT_DOC_HEADER}path: {path}\ndescription: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}",
+        "{EDIT_DOC_HEADER}path: {path}\ndescription: {desc}\nurl: {url}\ntotp: {totp}\nexpires_at: {exp}\nenv_key: {env}\ntags: {tags}",
         desc = decoded.description,
         url = decoded.url,
         totp = decoded.totp,
         exp = expires,
         env = decoded.env_key,
+        tags = tags_csv,
     );
     // Append annotations in sorted order for deterministic output.
     let mut keys: Vec<&String> = decoded.annotations.keys().collect();
@@ -710,6 +725,16 @@ fn parse_edit_doc(doc: &str) -> std::result::Result<ParsedEdit, String> {
             "totp" => parsed.totp = val,
             "expires_at" => parsed.expires_at = val,
             "env_key" => parsed.env_key = val,
+            "tags" => {
+                // Split on commas, trim each entry, drop empties so a blank
+                // `tags:` row produces an empty Vec rather than `[""]`.
+                parsed.tags = val
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
             other => {
                 parsed.annotations.insert(other.to_string(), val);
             }
@@ -759,6 +784,24 @@ fn labeled_line_owned(label: String, value: String) -> Line<'static> {
         Span::styled(format!("  {label} "), Style::default().fg(theme::muted())),
         Span::raw(value),
     ])
+}
+
+/// Render `tags` as an inline-chip row, e.g. `  tags         [pci] [stripe]`.
+/// Caller must guard against an empty list — this helper always emits a
+/// labeled row so the metadata pane keeps its alignment.
+fn tag_chips_line(tags: &[String]) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        "  tags         ",
+        Style::default().fg(theme::muted()),
+    )];
+    let chip_style = Style::default().fg(theme::accent());
+    for (i, tag) in tags.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(format!("[{tag}]"), chip_style));
+    }
+    Line::from(spans)
 }
 
 /// Render the `expires_at` row with severity-based coloring (dim when far
@@ -1257,7 +1300,7 @@ s3cret";
             env_key: "API".to_string(),
             expires_at: None,
             annotations,
-            tags: Vec::new(),
+            tags: vec!["pci".to_string(), "stripe".to_string()],
         };
         let doc = render_edit_doc("prod/SECRET", &decoded);
         let parsed = parse_edit_doc(&doc).unwrap();
@@ -1267,7 +1310,116 @@ s3cret";
         assert_eq!(parsed.totp, "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP");
         assert_eq!(parsed.env_key, "API");
         assert_eq!(parsed.annotations.get("team").unwrap(), "backend");
+        assert_eq!(parsed.tags, vec!["pci".to_string(), "stripe".to_string()]);
         assert_eq!(parsed.value, "pw");
+    }
+
+    // ── Tag chip rendering ────────────────────────────────────────────
+
+    /// Flatten a `Line` to its display string so tests can assert on the
+    /// exact rendered text without poking at private `Span` internals.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn tag_chips_line_renders_bracketed_tags_separated_by_spaces() {
+        // The exact bracket form is part of the contract — both the user
+        // (visual identity) and downstream readers (screenshots, transcripts)
+        // depend on it.
+        let line = tag_chips_line(&[
+            "pci".to_string(),
+            "stripe".to_string(),
+            "mobile".to_string(),
+        ]);
+        let text = line_text(&line);
+        assert!(text.contains("tags"), "missing label: {text:?}");
+        assert!(text.contains("[pci] [stripe] [mobile]"), "got {text:?}");
+    }
+
+    #[test]
+    fn tag_chips_render_in_metadata_pane_for_decoded_with_tags() {
+        // Drive the same code path the viewer uses (`draw` → `meta_lines`)
+        // so we catch regressions in the `meta_lines → tag_chips_line` glue.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        // Seed the decoded snapshot with tags so meta_lines emits the chip
+        // row on the next draw — this avoids round-tripping through the
+        // store rewrite path in this rendering-focused test.
+        view.decoded = Some(secret_value::Decoded {
+            data: b"s3cret".to_vec(),
+            tags: vec!["pci".to_string(), "stripe".to_string()],
+            ..Default::default()
+        });
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| view.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(
+            rendered.contains("[pci]"),
+            "missing pci chip in rendered metadata: {rendered}"
+        );
+        assert!(
+            rendered.contains("[stripe]"),
+            "missing stripe chip in rendered metadata: {rendered}"
+        );
+    }
+
+    #[test]
+    fn empty_tags_renders_no_chip_row() {
+        // `meta_lines` is what the viewer feeds to ratatui — assert directly
+        // that an empty-tags `Decoded` produces zero lines containing "tags"
+        // as a label. We can't easily look at a private method on the view,
+        // but `tag_chips_line` is the only producer of such a label, so it
+        // suffices to confirm the guard at its caller.
+        let (_dir, ctx, path) = seeded_store_with_secret();
+        let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
+        view.decoded = Some(secret_value::Decoded {
+            data: b"s3cret".to_vec(),
+            tags: Vec::new(),
+            ..Default::default()
+        });
+        let lines = view.meta_lines();
+        for line in &lines {
+            let text = line_text(line);
+            assert!(
+                !text.contains("tags "),
+                "empty tags should not render a tags row, got line: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_edit_doc_handles_blank_tags_row() {
+        // A user clearing out the tags row (`tags:` with no value) must
+        // produce an empty Vec rather than `[""]`. This protects the persist
+        // path from writing a blank string that would trip the validator.
+        let doc = "path: p\ndescription:\nurl:\ntotp:\nexpires_at:\nenv_key:\ntags:\n---\nbody";
+        let parsed = parse_edit_doc(doc).unwrap();
+        assert!(parsed.tags.is_empty(), "got {:?}", parsed.tags);
+    }
+
+    #[test]
+    fn parse_edit_doc_handles_csv_tags_with_whitespace() {
+        let doc = "path: p\ntags: pci, stripe ,  mobile\n---\nbody";
+        let parsed = parse_edit_doc(doc).unwrap();
+        assert_eq!(
+            parsed.tags,
+            vec!["pci".to_string(), "stripe".to_string(), "mobile".to_string()]
+        );
     }
 
     #[test]
