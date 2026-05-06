@@ -24,6 +24,7 @@ pub mod search;
 pub mod set;
 pub mod share;
 pub mod sync;
+pub mod tag;
 pub mod write;
 
 use std::io::{self, IsTerminal, Write};
@@ -286,6 +287,9 @@ pub enum Command {
     /// Search secrets across all known projects.
     Search(search::SearchArgs),
 
+    /// Manage tags on a secret (add, rm, list).
+    Tag(tag::TagArgs),
+
     /// Manage recipients.
     Recipient(recipient::RecipientArgs),
 
@@ -418,6 +422,7 @@ impl Cli {
                 | Command::Codegen(_)
                 | Command::Share(_)
                 | Command::Import(_)
+                | Command::Tag(_)
         );
 
         let store = if let Some(ref p) = store_override {
@@ -520,6 +525,7 @@ impl Cli {
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
+            Command::Tag(args) => tag::run(args, &ctx),
         };
 
         // Post-dispatch: enforce the append-only invariant for mutating
@@ -601,6 +607,11 @@ fn mutation_message(cmd: &Command) -> Option<String> {
         },
         Command::Share(_) => Some("share".to_string()),
         Command::Inbox(_) => Some("inbox".to_string()),
+        Command::Tag(a) => match &a.action {
+            tag::TagAction::Add { .. } => Some(format!("tag add {}", a.path)),
+            tag::TagAction::Rm { .. } => Some(format!("tag rm {}", a.path)),
+            tag::TagAction::List => None,
+        },
         _ => None,
     }
 }
@@ -634,6 +645,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Codegen(_)
             | Command::Share(_)
             | Command::Import(_)
+            | Command::Tag(_)
     )
 }
 
