@@ -75,8 +75,18 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
 }
 
 /// Encrypt raw `plaintext` bytes and persist them at `path`. Used by
-/// `himitsu write` and other scripting paths that don't carry metadata.
-pub fn set_plaintext(ctx: &Context, path: &str, plaintext: &[u8]) -> Result<String> {
+/// `himitsu write` and other scripting paths that carry only minimal metadata.
+///
+/// `tags` are stored verbatim on the resulting `SecretValue`. Callers that
+/// don't want tags should pass `Vec::new()`. Tags are NOT validated here —
+/// validation must happen at the CLI/UI layer so users see errors before any
+/// I/O.
+pub fn set_plaintext(
+    ctx: &Context,
+    path: &str,
+    plaintext: &[u8],
+    tags: Vec<String>,
+) -> Result<String> {
     let sv = SecretValue {
         data: plaintext.to_vec(),
         content_type: String::new(),
@@ -86,7 +96,7 @@ pub fn set_plaintext(ctx: &Context, path: &str, plaintext: &[u8]) -> Result<Stri
         expires_at: None,
         description: String::new(),
         env_key: String::new(),
-        tags: Vec::new(),
+        tags,
     };
     encrypt_and_write(ctx, path, &sv)
 }
