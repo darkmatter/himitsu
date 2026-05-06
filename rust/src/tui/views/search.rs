@@ -1019,10 +1019,14 @@ fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
                 match entry {
                     EnvEntry::Single(path) => record(path.clone(), label),
                     EnvEntry::Alias { path, .. } => record(path.clone(), label),
-                    // Glob: skip — we don't have a way to expand against the
-                    // result set here without more plumbing. The label still
-                    // shows up against any explicit Single/Alias references.
-                    EnvEntry::Glob(_) => {}
+                    // Glob/Tag: skip — we don't have a way to expand against
+                    // the result set here without more plumbing (Glob would
+                    // need the full path list, Tag needs decryption). The
+                    // label still shows up against any explicit Single/Alias
+                    // references.
+                    EnvEntry::Glob(_)
+                    | EnvEntry::Tag(_)
+                    | EnvEntry::AliasTag { .. } => {}
                 }
             }
         }

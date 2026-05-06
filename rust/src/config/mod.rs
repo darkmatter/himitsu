@@ -187,6 +187,13 @@ pub struct ProjectConfig {
 /// - `"dev/API_KEY"` → `Single("dev/API_KEY")` — key name = last path component
 /// - `"dev/*"` → `Glob("dev")` — all secrets under prefix
 /// - `{MY_KEY: "dev/DB_PASSWORD"}` → `Alias { key: "MY_KEY", path: "dev/DB_PASSWORD" }`
+/// - `"tag:pci"` or `{tag: pci}` → `Tag("pci")` — every secret carrying tag `pci`
+/// - `{STRIPE: "tag:stripe"}` → `AliasTag { key: "STRIPE", tag: "stripe" }`
+///
+/// Tag entries select secrets by their encrypted `SecretValue.tags` field;
+/// resolution requires decrypting candidate secrets (see
+/// [`super::env_resolver::resolve_with_tags`]). Capture-ref interpolation
+/// (`$1`) is **not** supported on tag entries — the tag string is opaque.
 #[derive(Debug, Clone)]
 pub enum EnvEntry {
     /// Explicit alias: output key `key`, value from store path `path`.
@@ -195,6 +202,13 @@ pub enum EnvEntry {
     Single(String),
     /// All secrets whose path starts with `prefix/`.
     Glob(String),
+    /// All secrets carrying the named tag. Output key per-secret = last path
+    /// component of the matched secret.
+    Tag(String),
+    /// Aliased tag selector: exactly one secret must carry the named tag,
+    /// and its value is bound to the explicit output key. Errors when zero
+    /// or more than one secret matches.
+    AliasTag { key: String, tag: String },
 }
 
 impl Serialize for EnvEntry {
@@ -203,9 +217,15 @@ impl Serialize for EnvEntry {
         match self {
             EnvEntry::Single(p) => s.serialize_str(p),
             EnvEntry::Glob(prefix) => s.serialize_str(&format!("{prefix}/*")),
+            EnvEntry::Tag(name) => s.serialize_str(&format!("tag:{name}")),
             EnvEntry::Alias { key, path } => {
                 let mut map = s.serialize_map(Some(1))?;
                 map.serialize_entry(key, path)?;
+                map.end()
+            }
+            EnvEntry::AliasTag { key, tag } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(key, &format!("tag:{tag}"))?;
                 map.end()
             }
         }
@@ -222,9 +242,29 @@ impl<'de> Deserialize<'de> for EnvEntry {
             Map(BTreeMap<String, String>),
         }
 
+        // Strip a leading `tag:` and validate the suffix against the shared
+        // tag grammar. Returns `Some(validated_tag)` on the prefix path, or
+        // `None` when the input was not a tag selector at all. Surfaces
+        // grammar errors as `serde::de::Error::custom` so YAML callers see
+        // a clean parse-time failure rather than a downstream resolver error.
+        fn parse_tag_selector<E: serde::de::Error>(
+            s: &str,
+        ) -> std::result::Result<Option<String>, E> {
+            let Some(rest) = s.strip_prefix("tag:") else {
+                return Ok(None);
+            };
+            crate::crypto::tags::validate_tag(rest).map_err(serde::de::Error::custom)?;
+            Ok(Some(rest.to_string()))
+        }
+
         match Raw::deserialize(d)? {
             Raw::Str(s) => {
-                if let Some(prefix) = s.strip_suffix("/*") {
+                // Order matters: `tag:` prefix must be checked before the
+                // path/glob branch, otherwise `tag:pci` would parse as a
+                // literal `Single` path.
+                if let Some(tag) = parse_tag_selector(&s)? {
+                    Ok(EnvEntry::Tag(tag))
+                } else if let Some(prefix) = s.strip_suffix("/*") {
                     Ok(EnvEntry::Glob(prefix.to_string()))
                 } else {
                     Ok(EnvEntry::Single(s))
@@ -236,8 +276,20 @@ impl<'de> Deserialize<'de> for EnvEntry {
                         "alias entry must have exactly one key-value pair",
                     ));
                 }
-                let (key, path) = m.into_iter().next().unwrap();
-                Ok(EnvEntry::Alias { key, path })
+                let (key, value) = m.into_iter().next().unwrap();
+                // Map form `{ tag: pci }` — the literal key is `tag` and the
+                // value is the tag name itself.
+                if key == "tag" {
+                    crate::crypto::tags::validate_tag(&value)
+                        .map_err(serde::de::Error::custom)?;
+                    return Ok(EnvEntry::Tag(value));
+                }
+                // Map form `{ STRIPE: tag:stripe }` — alias whose value is
+                // a `tag:` selector rather than a path.
+                if let Some(tag) = parse_tag_selector(&value)? {
+                    return Ok(EnvEntry::AliasTag { key, tag });
+                }
+                Ok(EnvEntry::Alias { key, path: value })
             }
         }
     }
@@ -352,9 +404,13 @@ pub fn validate_envs(envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
         validate_env_label(label)?;
         let is_wild = is_wildcard_label(label);
         for (idx, entry) in entries.iter().enumerate() {
+            // Tag selectors are opaque tag names, not paths — capture refs
+            // and `$1` checks don't apply. Tag grammar was enforced at
+            // deserialize time via `crate::crypto::tags::validate_tag`.
             let path = match entry {
                 EnvEntry::Single(p) | EnvEntry::Glob(p) => p,
                 EnvEntry::Alias { path, .. } => path,
+                EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => continue,
             };
             let captures = parse_captures(path);
             if !captures.is_empty() && !is_wild {
@@ -1048,6 +1104,99 @@ envs:
         assert!(
             matches!(back, EnvEntry::Alias { ref key, ref path } if key == "MY_DB" && path == "prod/DB_PASS")
         );
+    }
+
+    // ── Tag selector entries ───────────────────────────────────────────
+
+    #[test]
+    fn env_entry_deserialize_tag_string_form() {
+        // `- tag:pci` — bare string with the `tag:` prefix.
+        let e: EnvEntry = serde_yaml::from_str("\"tag:pci\"").unwrap();
+        assert!(matches!(e, EnvEntry::Tag(ref t) if t == "pci"));
+    }
+
+    #[test]
+    fn env_entry_deserialize_tag_map_form() {
+        // `- { tag: stripe }` — map whose literal key is `tag`.
+        let e: EnvEntry = serde_yaml::from_str("{tag: stripe}").unwrap();
+        assert!(matches!(e, EnvEntry::Tag(ref t) if t == "stripe"));
+    }
+
+    #[test]
+    fn env_entry_deserialize_alias_tag_map_form() {
+        // `- { STRIPE: tag:stripe }` — alias whose value is a `tag:` selector.
+        let e: EnvEntry = serde_yaml::from_str("{STRIPE: \"tag:stripe\"}").unwrap();
+        match e {
+            EnvEntry::AliasTag { key, tag } => {
+                assert_eq!(key, "STRIPE");
+                assert_eq!(tag, "stripe");
+            }
+            other => panic!("expected AliasTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_entry_round_trip_tag_variants() {
+        // Tag → string form `tag:foo`, round-trip preserves the variant.
+        let e = EnvEntry::Tag("pci".into());
+        let s = serde_yaml::to_string(&e).unwrap();
+        assert_eq!(s.trim(), "tag:pci");
+        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
+        assert!(matches!(back, EnvEntry::Tag(ref t) if t == "pci"));
+
+        // AliasTag → map form `{ STRIPE: tag:stripe }`, round-trip preserves
+        // the variant (not lowered to a plain Alias).
+        let e = EnvEntry::AliasTag {
+            key: "STRIPE".into(),
+            tag: "stripe".into(),
+        };
+        let s = serde_yaml::to_string(&e).unwrap();
+        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
+        assert!(
+            matches!(back, EnvEntry::AliasTag { ref key, ref tag } if key == "STRIPE" && tag == "stripe")
+        );
+    }
+
+    #[test]
+    fn env_entry_rejects_invalid_tag_grammar_in_string_form() {
+        // Whitespace is forbidden by the tag grammar.
+        let err = serde_yaml::from_str::<EnvEntry>("\"tag:bad tag\"").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid character"), "msg: {msg}");
+    }
+
+    #[test]
+    fn env_entry_rejects_invalid_tag_grammar_in_map_form() {
+        // `{ tag: "bad tag" }` — same grammar check, alternate shape.
+        let err = serde_yaml::from_str::<EnvEntry>("{tag: \"bad tag\"}").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid character"), "msg: {msg}");
+    }
+
+    #[test]
+    fn env_entry_rejects_invalid_tag_in_alias_value() {
+        // `{ STRIPE: "tag:bad tag" }` — invalid tag inside alias-rename form
+        // also fails at parse time, not later in resolve.
+        let err = serde_yaml::from_str::<EnvEntry>("{STRIPE: \"tag:bad tag\"}").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid character"), "msg: {msg}");
+    }
+
+    #[test]
+    fn validate_envs_accepts_tag_entries_in_concrete_label() {
+        // Tag entries skip the capture-ref check entirely (no `$1` to bind).
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "dev".into(),
+            vec![
+                EnvEntry::Tag("pci".into()),
+                EnvEntry::AliasTag {
+                    key: "STRIPE".into(),
+                    tag: "stripe".into(),
+                },
+            ],
+        );
+        validate_envs(&envs).unwrap();
     }
 
     // ── Env label grammar ──────────────────────────────────────────────

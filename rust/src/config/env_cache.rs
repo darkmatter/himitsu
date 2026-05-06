@@ -182,10 +182,17 @@ impl EnvCache {
             let env_id = tx.last_insert_rowid();
 
             for (pos, entry) in entries.iter().enumerate() {
+                // Tag selectors are persisted as new kinds (`tag` / `alias_tag`)
+                // so the cache round-trips cleanly through the same
+                // (kind, value, alias_key) tuple shape every other entry uses.
                 let (kind, value, alias_key): (&str, &str, Option<&str>) = match entry {
                     EnvEntry::Single(p) => ("single", p.as_str(), None),
                     EnvEntry::Glob(p) => ("glob", p.as_str(), None),
                     EnvEntry::Alias { key, path } => ("alias", path.as_str(), Some(key.as_str())),
+                    EnvEntry::Tag(t) => ("tag", t.as_str(), None),
+                    EnvEntry::AliasTag { key, tag } => {
+                        ("alias_tag", tag.as_str(), Some(key.as_str()))
+                    }
                 };
                 tx.execute(
                     "INSERT INTO env_entries (env_id, position, kind, value, alias_key) \
@@ -314,6 +321,13 @@ fn read_entries(conn: &Connection, env_id: i64) -> Result<Vec<EnvEntry>> {
                 key: alias_key
                     .ok_or_else(|| HimitsuError::Index("alias row missing alias_key".into()))?,
                 path: value,
+            },
+            "tag" => EnvEntry::Tag(value),
+            "alias_tag" => EnvEntry::AliasTag {
+                key: alias_key.ok_or_else(|| {
+                    HimitsuError::Index("alias_tag row missing alias_key".into())
+                })?,
+                tag: value,
             },
             other => {
                 return Err(HimitsuError::Index(format!(

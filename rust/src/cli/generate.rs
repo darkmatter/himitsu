@@ -173,6 +173,16 @@ fn resolve_entries(
                     }
                 }
             }
+            // Tag selectors require decrypting candidate secrets to read
+            // their `SecretValue.tags` field. The legacy `generate` command
+            // doesn't share `codegen`'s resolver pipeline — point users at
+            // `himitsu codegen <env>` (which calls `resolve_with_tags`).
+            EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {
+                return Err(HimitsuError::InvalidConfig(format!(
+                    "env '{env_name}' uses a `tag:` selector — `himitsu generate` does not \
+                     support tag-based selection; use `himitsu codegen <env>` instead"
+                )));
+            }
         }
     }
     Ok(result)
