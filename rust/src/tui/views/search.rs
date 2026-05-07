@@ -27,7 +27,7 @@ use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
 use crate::tui::icons;
-use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::keymap::{KeyAction, KeyMap};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 
@@ -227,28 +227,12 @@ impl SearchView {
         // Configurable action bindings take precedence over the fall-through
         // text-editing keys below. Quit is checked first so a user who rebinds
         // new_secret to a printable character still has an escape hatch.
-        if keymap.quit.matches(&key) {
-            return SearchAction::Quit;
-        }
-        if keymap.command_palette.matches(&key) {
-            self.palette = Some(CommandPalette::new());
-            return SearchAction::None;
-        }
-        if keymap.new_secret.matches(&key) {
-            return SearchAction::NewSecret;
-        }
-        if keymap.envs.matches(&key) {
-            return SearchAction::OpenEnvs;
-        }
-        if keymap.switch_store.matches(&key) {
-            self.picker = Some(StorePicker::new(
-                &self.ctx.stores_dir(),
-                self.ctx.store.clone(),
-            ));
-            return SearchAction::None;
-        }
-        if keymap.copy_selected.matches(&key) {
-            return self.copy_selected_to_clipboard();
+        // All matches route through `dispatch_action` so leader-key chord
+        // completions (resolved at the App layer) take the same code path.
+        if let Some(action) = match_keymap_action(keymap, &key) {
+            if let Some(outcome) = self.dispatch_action(action) {
+                return outcome;
+            }
         }
 
         match (key.code, key.modifiers) {
@@ -292,6 +276,36 @@ impl SearchView {
         }
     }
 
+    /// Run a [`KeyAction`] against the search view. Returns `None` for
+    /// actions this view doesn't own (so the caller can fall through to
+    /// raw-key handling), `Some(SearchAction::None)` for actions that are
+    /// consumed but produce no router work (overlay opens, etc.), and
+    /// other variants for outcomes the router needs to surface.
+    ///
+    /// Used both by the single-key matcher in `on_key` and by the leader-
+    /// key dispatcher in `App::on_key` when a multi-step chord completes.
+    pub fn dispatch_action(&mut self, action: KeyAction) -> Option<SearchAction> {
+        match action {
+            KeyAction::Quit => Some(SearchAction::Quit),
+            KeyAction::CommandPalette => {
+                self.palette = Some(CommandPalette::new());
+                Some(SearchAction::None)
+            }
+            KeyAction::NewSecret => Some(SearchAction::NewSecret),
+            KeyAction::Envs => Some(SearchAction::OpenEnvs),
+            KeyAction::SwitchStore => {
+                self.picker = Some(StorePicker::new(
+                    &self.ctx.stores_dir(),
+                    self.ctx.store.clone(),
+                ));
+                Some(SearchAction::None)
+            }
+            KeyAction::CopySelected => Some(self.copy_selected_to_clipboard()),
+            KeyAction::CopyRefSelected => Some(self.copy_selected_ref_to_clipboard()),
+            _ => None,
+        }
+    }
+
     /// Decrypt the currently selected secret and copy its value to the system
     /// clipboard. Returns a [`SearchAction`] carrying the copy outcome so the
     /// router can surface it as a toast; never panics on headless/no-selection.
@@ -307,6 +321,24 @@ impl SearchView {
         };
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
             Ok(()) => SearchAction::Copied(result.path),
+            Err(e) => SearchAction::CopyFailed(format!("clipboard unavailable: {e}")),
+        }
+    }
+
+    /// Copy `himitsu read <ref>` for the selected row to the clipboard. No
+    /// decryption — just the path, suitable for pasting into a terminal,
+    /// pull request, or chat message without putting plaintext on the
+    /// clipboard. The ref is qualified with `-r <store>` when the active
+    /// store differs from the selected row's store, so the command works
+    /// from a different shell.
+    fn copy_selected_ref_to_clipboard(&mut self) -> SearchAction {
+        let Some(result) = self.selected_result().cloned() else {
+            return SearchAction::CopyFailed("no selection to copy".to_string());
+        };
+        let active_label = crate::cli::search::store_label(&self.ctx.store, &self.ctx);
+        let cmd = format_read_command(&result.store, &result.path, &active_label);
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(cmd.clone())) {
+            Ok(()) => SearchAction::Copied(format!("$ {cmd}")),
             Err(e) => SearchAction::CopyFailed(format!("clipboard unavailable: {e}")),
         }
     }
@@ -1045,6 +1077,40 @@ fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
         .collect()
 }
 
+/// Search view's keymap action priority. Quit comes first so a user who
+/// rebinds an action to a printable character still has an escape hatch.
+/// `CopyRefSelected` is listed before `CopySelected` because their
+/// default bindings overlap on the bare `y` key: shift-insensitive
+/// matching means a `y` binding would otherwise claim `Shift+Y` first.
+const SEARCH_ACTION_PRIORITY: &[KeyAction] = &[
+    KeyAction::Quit,
+    KeyAction::CommandPalette,
+    KeyAction::NewSecret,
+    KeyAction::Envs,
+    KeyAction::SwitchStore,
+    KeyAction::CopyRefSelected,
+    KeyAction::CopySelected,
+];
+
+fn match_keymap_action(keymap: &KeyMap, key: &crossterm::event::KeyEvent) -> Option<KeyAction> {
+    keymap.action_for_key_in(key, SEARCH_ACTION_PRIORITY)
+}
+
+/// Build the `himitsu read <ref>` command for a given (store, path) pair.
+///
+/// `active_label` is the canonical label of the currently-active store,
+/// produced by [`crate::cli::search::store_label`] — same function that
+/// populates `SearchResult.store`. Comparing labels directly means
+/// `same_store` is decided in one place and stays consistent whether the
+/// active store is set by slug or by absolute path.
+fn format_read_command(row_store: &str, secret_path: &str, active_label: &str) -> String {
+    if row_store == active_label {
+        format!("himitsu read {secret_path}")
+    } else {
+        format!("himitsu -r {row_store} read {secret_path}")
+    }
+}
+
 /// Decrypt a search result's ciphertext to its UTF-8 value, using the
 /// identity file tied to the result's origin store. Kept as a free function
 /// so it stays trivially testable without the full view state.
@@ -1307,6 +1373,31 @@ impl SearchView {
 
     pub fn help_title() -> &'static str {
         "search · keys"
+    }
+}
+
+#[cfg(test)]
+mod read_command_tests {
+    use super::*;
+
+    #[test]
+    fn same_store_emits_bare_path() {
+        let cmd = format_read_command("acme/secrets", "prod/API_KEY", "acme/secrets");
+        assert_eq!(cmd, "himitsu read prod/API_KEY");
+    }
+
+    #[test]
+    fn cross_store_qualifies_with_remote_flag() {
+        let cmd = format_read_command("acme/infra", "prod/SHARED_KEY", "acme/secrets");
+        assert_eq!(cmd, "himitsu -r acme/infra read prod/SHARED_KEY");
+    }
+
+    #[test]
+    fn full_path_label_round_trips_too() {
+        // When the active store is set by absolute path, store_label
+        // returns the same path string — equality still says "same store".
+        let cmd = format_read_command("/tmp/x/.himitsu", "p", "/tmp/x/.himitsu");
+        assert_eq!(cmd, "himitsu read p");
     }
 }
 

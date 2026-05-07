@@ -182,6 +182,7 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 | `ctrl-n` | new secret |
 | `ctrl-s` | switch store |
 | `ctrl-y` | copy selected value |
+| `Y` (`shift-y`) | copy `himitsu read <ref>` for the selected row |
 | `shift-e` | browse env presets |
 | `?` | help |
 | `esc` / `ctrl-c` | quit |
@@ -191,12 +192,19 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 | Key | Action |
 |-----|--------|
 | `r` | reveal / hide value |
-| `y` | copy to clipboard |
+| `y` | copy decrypted value to clipboard |
+| `Y` (`shift-y`) | copy `himitsu read <ref>` (the *command*, not the value) |
 | `e` | edit in `$EDITOR` |
 | `R` | rekey for current recipients |
 | `d` | delete (confirms with `y`) |
 | `?` | help |
 | `esc` | back |
+
+`Y` lets you share *how to fetch* a secret in a PR comment, chat message,
+or runbook without putting the plaintext on your clipboard. The clipboard
+gets `himitsu read prod/API_KEY` (or `himitsu -r org/repo read …` when the
+row lives in a different store from the active one), ready to paste into
+a terminal that has the right age key.
 
 ![secret viewer](demo/tui-us-012.gif)
 
@@ -502,10 +510,12 @@ tui:
 
   # Per-action keybindings. Each action takes a list, so multiple keys can
   # trigger the same action. Unspecified actions fall back to the
-  # hardcoded defaults documented in [TUI](#tui).
+  # hardcoded defaults documented in [TUI](#tui). Leader-key chords are
+  # whitespace-separated (see "Leader-key chords" below).
   keys:
-    new_secret: ["F2", "ctrl+n"]
-    quit:       ["esc", "ctrl+q"]
+    new_secret:  ["F2", "ctrl+n"]
+    save_secret: ["ctrl+x s"]
+    quit:        ["esc", "ctrl+q"]
 ```
 
 Binding strings are `<mod>+<mod>+<code>`, lowercased, modifiers first --
@@ -514,11 +524,39 @@ characters imply `shift` (`"Y"` == `"shift+y"`). Bare letters match
 case-insensitively, so `"y"` matches both `y` and `Y`. Malformed bindings
 surface as a clear config error at startup.
 
+#### Leader-key chords
+
+Multi-step chord bindings are written as whitespace-separated steps:
+
+```yaml
+tui:
+  keys:
+    # Press Ctrl+X, then s. Useful when terminal/tmux ate Ctrl+S (XOFF).
+    save_secret: ["ctrl+x s"]
+    # Mix and match — multiple bindings per action; chord and single-step
+    # entries can coexist.
+    new_secret:  ["F2", "ctrl+x ctrl+n"]
+```
+
+When you press the first step of a chord, the dashboard shows a `ctrl+x …`
+breadcrumb at the bottom of the screen and waits for the continuation.
+A non-continuation key aborts the chord (no spurious action fires; the
+breadcrumb flips to `chord aborted: …`). Single-step bindings still flow
+through each view's normal key handling, so you can keep typing into the
+search box without your letters getting eaten.
+
+There is no chord timeout — the dispatcher resolves on the next key,
+not on a wall clock. If you bind both `ctrl+x` (single-step) and
+`ctrl+x s` (chord) to different actions, the chord wins: pressing
+`ctrl+x` enters the pending state instead of firing the single-step
+binding immediately.
+
 The full action list (with defaults) is in
 [`rust/src/tui/keymap.rs`](rust/src/tui/keymap.rs):
 `quit`, `help`, `command_palette`, `new_secret`, `switch_store`,
-`copy_selected`, `envs`, `reveal`, `copy_value`, `rekey`, `edit`, `delete`,
-`back`, `save_secret`, `next_field`, `prev_field`, `cancel`.
+`copy_selected`, `copy_ref_selected`, `envs`, `reveal`, `copy_value`,
+`copy_ref`, `rekey`, `edit`, `delete`, `back`, `save_secret`,
+`next_field`, `prev_field`, `cancel`.
 
 ## Sync & Store Health
 

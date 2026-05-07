@@ -277,7 +277,7 @@ fn collect_stores(ctx: &Context) -> Result<Vec<(String, PathBuf)>> {
 ///
 /// If the path is under `stores_dir`, returns the `org/repo` slug.
 /// Otherwise falls back to the full path string.
-fn store_label(store: &std::path::Path, ctx: &Context) -> String {
+pub(crate) fn store_label(store: &std::path::Path, ctx: &Context) -> String {
     if let Ok(rel) = store.strip_prefix(ctx.stores_dir()) {
         let s = rel.to_string_lossy().replace('\\', "/");
         if !s.is_empty() {

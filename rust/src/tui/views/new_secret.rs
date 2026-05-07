@@ -43,7 +43,18 @@ use crate::cli::Context;
 use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::proto::SecretValue;
 use crate::remote::store;
-use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::keymap::{Bindings, KeyAction, KeyMap};
+
+/// New-secret form's keymap action priority (excluding NextField, which
+/// is dispatched inside the field-specific handlers since it must run
+/// the per-field validator before advancing). Cancel comes before save
+/// so an explicit Esc binding always wins over any save chord that
+/// happens to share its first key.
+const FORM_ACTION_PRIORITY: &[KeyAction] = &[
+    KeyAction::Cancel,
+    KeyAction::SaveSecret,
+    KeyAction::PrevField,
+];
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
 #[derive(Debug, Clone)]
@@ -184,28 +195,35 @@ impl NewSecretView {
         ) {
             return NewSecretAction::Quit;
         }
-        if keymap.cancel.matches(&key) {
-            return NewSecretAction::Cancel;
-        }
-
-        // Save from any step. Default bindings are Ctrl+S and Ctrl+W —
-        // Ctrl+W being the tmux-safe alternative to Ctrl+S for users who
-        // bind tmux's prefix to Ctrl+S.
-        if keymap.save_secret.matches(&key) {
-            return self.submit();
-        }
-
-        // Prev-field wraps backward from any step. Checked before field
-        // dispatch so a keymap override still works inside the multi-line
-        // value editor.
-        if keymap.prev_field.matches(&key) {
-            self.move_to(self.step.prev());
-            return NewSecretAction::None;
+        // Resolve cancel / save / prev_field up front so a chord-completed
+        // action takes the same path as the bare keystroke. NextField
+        // stays inside the field-specific handlers because it interacts
+        // with per-field validation.
+        if let Some(action) = keymap.action_for_key_in(&key, FORM_ACTION_PRIORITY) {
+            if let Some(outcome) = self.dispatch_action(action) {
+                return outcome;
+            }
         }
 
         match self.step {
             Step::Value => self.handle_value_key(key, keymap),
             _ => self.handle_single_line_key(key, keymap),
+        }
+    }
+
+    /// Run a [`KeyAction`] against the new-secret form. Returns `None` for
+    /// actions this form doesn't own (e.g. NextField, which is intentionally
+    /// scoped to the field-specific handlers below so it interacts with the
+    /// per-field validate-then-advance flow).
+    pub fn dispatch_action(&mut self, action: KeyAction) -> Option<NewSecretAction> {
+        match action {
+            KeyAction::Cancel => Some(NewSecretAction::Cancel),
+            KeyAction::SaveSecret => Some(self.submit()),
+            KeyAction::PrevField => {
+                self.move_to(self.step.prev());
+                Some(NewSecretAction::None)
+            }
+            _ => None,
         }
     }
 
