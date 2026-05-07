@@ -6,6 +6,7 @@ pub mod decrypt;
 pub mod docs;
 pub mod duration;
 pub mod encrypt;
+pub mod exec;
 pub mod export;
 pub mod generate;
 pub mod get;
@@ -313,6 +314,9 @@ pub enum Command {
     #[command(hide = true)]
     Codegen(codegen::CodegenArgs),
 
+    /// Run a command with secrets injected as environment variables.
+    Exec(exec::ExecArgs),
+
     /// Run git commands inside a store checkout (or all stores with --all).
     Git(git::GitArgs),
 
@@ -420,6 +424,7 @@ impl Cli {
                 | Command::Generate(_)
                 | Command::Export(_)
                 | Command::Codegen(_)
+                | Command::Exec(_)
                 | Command::Share(_)
                 | Command::Import(_)
                 | Command::Tag(_)
@@ -513,6 +518,7 @@ impl Cli {
             Command::Generate(args) => generate::run(args, &ctx),
             Command::Export(args) => export::run(args, &ctx),
             Command::Codegen(args) => codegen::run(args, &ctx),
+            Command::Exec(args) => exec::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Check(args) => check::run(args, &ctx),
             Command::Docs => docs::run(),
@@ -643,6 +649,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Generate(_)
             | Command::Export(_)
             | Command::Codegen(_)
+            | Command::Exec(_)
             | Command::Share(_)
             | Command::Import(_)
             | Command::Tag(_)

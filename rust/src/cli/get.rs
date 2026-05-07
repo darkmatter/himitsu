@@ -39,6 +39,18 @@ pub fn get_plaintext(ctx: &Context, path: &str) -> Result<Vec<u8>> {
 
 /// Decrypt and return the full decoded SecretValue for a secret reference.
 fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
+    let identity = age::read_identity(&ctx.key_path())?;
+    get_decoded_with_identity(ctx, path, &identity)
+}
+
+/// Same as [`get_decoded`] but reuses a pre-loaded identity. Use this when
+/// decrypting many secrets in a loop so the key file isn't re-parsed per
+/// iteration (e.g. `himitsu exec` over a glob or env label).
+pub(crate) fn get_decoded_with_identity(
+    ctx: &Context,
+    path: &str,
+    identity: &::age::x25519::Identity,
+) -> Result<secret_value::Decoded> {
     let secret_ref = SecretRef::parse(path)?;
 
     let (effective_store, secret_path) = if secret_ref.is_qualified() {
@@ -55,8 +67,7 @@ fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
     };
 
     let ciphertext = store::read_secret(&effective_store, &secret_path)?;
-    let identity = age::read_identity(&ctx.key_path())?;
-    let plaintext = age::decrypt(&ciphertext, &identity)?;
+    let plaintext = age::decrypt(&ciphertext, identity)?;
     Ok(secret_value::decode(&plaintext))
 }
 
