@@ -11,12 +11,13 @@ set -euo pipefail
 # captures output, and emits a deterministic .cast file with realistic
 # typing animation.  No TTY or asciinema-rec session required.
 #
-# Sections (14 total):
-#   1. Help            6. List secrets    10. Decrypt rejected  13. --remote flag
-#   2. Initialize      7. Rekey            11. File layout       14. Sync
-#   3. Git integration 8. Recipients       12. Remote add
-#   4. Set secrets     9. Search
-#   5. Get secrets
+# Sections (16 total):
+#   1. Help             6. List secrets     10. Decrypt rejected
+#   2. Initialize       7. Rekey            11. File layout
+#   3. Git integration  8. Recipients       12. Remote add
+#   4. Set secrets      9. Search           13. --remote flag
+#   5. Get secrets                          14. Sync
+#  15. Tags                                 16. Exec (inject env vars)
 #
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -311,6 +312,41 @@ h sync acme/infra
 note "Synced secrets are now accessible:"
 h ls
 h get prod/SHARED_API_KEY
+
+# ----------------------------------------------------------
+banner "15. Tags — group secrets across path hierarchies"
+
+note "Tag the prod secrets so we can address them as a group:"
+h tag prod/API_KEY add pci stripe
+h tag prod/DB_PASSWORD add pci
+h tag dev/DB_PASSWORD add dev-only
+
+note "List + filter by tag (AND-semantics across multiple --tag flags):"
+h ls --tag pci
+h search "" --tag stripe
+
+note "Inspect tags on a single secret:"
+h tag prod/API_KEY list
+
+# ----------------------------------------------------------
+banner "16. Exec — run a command with secrets injected as env vars"
+
+note "Inject prod/* into the child env. Var names come from set --env-key when"
+note "set, otherwise derived from the path tail (api-key → API_KEY):"
+ts_add 0.1
+type_cmd "himitsu exec 'prod/*' -- sh -c 'echo STRIPE_API_KEY=\$STRIPE_API_KEY'"
+_eout=$("$HIMITSU_BIN" -s "$DEMO_STORE" exec 'prod/*' -- sh -c 'echo "STRIPE_API_KEY=$STRIPE_API_KEY"' 2>&1) || true
+if [[ -n "$_eout" ]]; then emit "$_eout"$'\n'; ts_add 0.05; fi
+emit $'\n'
+ts_add 0.2
+
+note "Combine a ref with --tag for AND-filtering before injection:"
+ts_add 0.1
+type_cmd "himitsu exec 'prod/*' --tag stripe -- sh -c 'env | grep ^STRIPE'"
+_eout=$("$HIMITSU_BIN" -s "$DEMO_STORE" exec 'prod/*' --tag stripe -- sh -c 'env | grep ^STRIPE' 2>&1) || true
+if [[ -n "$_eout" ]]; then emit "$_eout"$'\n'; ts_add 0.05; fi
+emit $'\n'
+ts_add 0.3
 
 # Done
 emit $'\n'

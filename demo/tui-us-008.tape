@@ -32,7 +32,7 @@ Sleep 1.5s
 
 # Open the new-secret form with Ctrl+N. The form starts focused on
 # the path field; Tab/Shift-Tab cycle through path → value →
-# description → url → totp → env_key → expires_at.
+# description → tags → url → totp → env_key → expires_at.
 Ctrl+N
 Sleep 900ms
 
@@ -50,6 +50,13 @@ Sleep 500ms
 
 # Description.
 Type "Stripe live secret key"
+Sleep 500ms
+Tab
+Sleep 400ms
+
+# Tags — comma-separated; only [A-Za-z0-9_.-,] accepted at typing time,
+# and each tag is validated against the grammar on save.
+Type "pci,stripe,rotate-2026-q1"
 Sleep 500ms
 Tab
 Sleep 400ms

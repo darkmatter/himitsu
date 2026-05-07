@@ -22,6 +22,8 @@ Age-based secrets manager that supports cross-repo sharing. Secrets stored one-f
   - [ls](#himitsu-ls-prefix)
   - [rekey](#himitsu-rekey-prefix)
   - [search](#himitsu-search-query)
+  - [tag](#himitsu-tag-path-addrmlist)
+  - [exec](#himitsu-exec-ref----cmd)
   - [recipient](#himitsu-recipient-addrmlsshow)
   - [remote](#himitsu-remote-addremovelistdefault)
   - [sync](#himitsu-sync-env)
@@ -47,8 +49,8 @@ himitsu solves duplication and eases maintenance, and is made for the following 
 - Create your personal store as a git repo e.g. `user/secrets` - personal secrets go here.
 - Any orgs/teams you are part of have a store at `org/secrets` - team secrets go here.
 - Access-control is path-based - configure who can access `prod/*` in `.himitsu.yaml`
-- Store secrets, organizing using plain directories
-- Map secrets to environments:
+- Store secrets, organizing using plain directories, and tag them for crosscutting groupings (`pci`, `mobile`, `rotate-2026-q1`)
+- Map secrets to environments by path *or* tag:
 
 ```yaml
 # .himitsu.yaml
@@ -63,9 +65,16 @@ envs:
     - SOME_VALUE: path/to/some-secret
     # use the full ref to access external stores
     - SHARED_SECRET: github:org/secrets#prod/api-key
+
+  pci-prod:
+    # AND-semantics across tag entries: every secret carrying both tags
+    - tag:pci
+    - tag:prod
+    # alias-rename a single tagged secret
+    - { STRIPE: tag:stripe }
 ```
 
-With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory.
+With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory, or `himitsu exec <env> -- <cmd>` to launch a process with the resolved secrets injected as environment variables.
 
 
 ## Features
@@ -75,6 +84,8 @@ With this config you can run `himitsu generate --target gen` which will build SO
 - **Path-based recipients** -- organize keys into directories (e.g. `ops/alice`, `team/*`); re-encrypt for all with `rekey`.
 - **Typed codegen** -- generate TypeScript, Go, Python, or Rust type stubs from your secret store.
 - **Cross-store search** -- `himitsu search` reads every known store directly; results are live, no index to rebuild.
+- **Tags** -- attach free-form labels to secrets (`pci`, `stripe`, `rotate-2026-q1`); filter with `--tag` on `set`, `search`, `ls`, and `exec`, or compose envs with `tag:foo` entries.
+- **Run with secrets** -- `himitsu exec <ref> -- <cmd>` resolves an env, glob, or single secret and launches a process with the values injected as environment variables.
 - **TUI** -- in-terminal dashboard with fuzzy search, secret viewer, inline editing, and store health.
 - **Import / Export** -- bulk import from 1Password (`op`) or SOPS files; export as SOPS-encrypted YAML/JSON.
 - **Nix integration** -- flake library for devShell injection, secret packaging, and container entrypoints.
@@ -122,16 +133,22 @@ shell scripts, or when you'd rather stay in your editor:
 himitsu init --name you/secrets
 
 # Store and read secrets
-himitsu set prod/API_KEY     "sk_live_abc123"
+himitsu set prod/API_KEY     "sk_live_abc123" --tag pci --tag stripe
 himitsu set prod/DB_PASSWORD "hunter2"
 himitsu set dev/DB_PASSWORD  "devpass" --no-push   # batch-friendly
 himitsu get prod/API_KEY                            # -> sk_live_abc123
 
 # List, rekey, search
-himitsu ls                # -> dev/, prod/
-himitsu ls prod           # -> API_KEY, DB_PASSWORD
-himitsu rekey             # re-encrypt for current recipient set
-himitsu search DB         # cross-store fuzzy search
+himitsu ls                  # -> dev/, prod/
+himitsu ls prod             # -> API_KEY, DB_PASSWORD
+himitsu ls --tag pci        # AND-filter by tag (drops undecryptable entries)
+himitsu rekey               # re-encrypt for current recipient set
+himitsu search DB           # cross-store fuzzy search
+himitsu search "" --tag pci # all secrets carrying tag `pci`
+
+# Run a command with secrets in its environment
+himitsu exec prod/* -- node app.js                     # inject every prod secret
+himitsu exec pci-prod --tag rotate -- ./run-checks.sh  # env label + tag filter
 ```
 
 Override the active store with `-s` (path) or `-r` (slug):
@@ -185,7 +202,10 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 
 ### New-secret form
 
-Fields: `path`, `value`, `description`, `url`, `totp`, `env_key`, `expires_at`.
+Fields: `path`, `value`, `description`, `tags`, `url`, `totp`, `env_key`,
+`expires_at`. The `tags` field accepts a comma-separated list (e.g.
+`pci, stripe, rotate-2026-q1`); only `[A-Za-z0-9_.-,]` is accepted at
+typing time, and each tag is validated against the grammar on submit.
 
 | Key | Action |
 |-----|--------|
@@ -195,6 +215,10 @@ Fields: `path`, `value`, `description`, `url`, `totp`, `env_key`, `expires_at`.
 | `esc` / `ctrl-c` | cancel |
 
 ![create secret](demo/tui-us-008.gif)
+
+The secret viewer renders tags as accent-colored chips alongside the
+description and other metadata, and search rows show the same chips
+inline next to the description column.
 
 ## Store Layout
 
@@ -243,7 +267,19 @@ Encrypt and store a secret. Path is slash-delimited (`prod/API_KEY`).
 ```bash
 himitsu set prod/API_KEY "sk_live_abc123"
 himitsu set dev/DB_PASSWORD "devpass" --no-push
+himitsu set prod/STRIPE_KEY "sk_live_..." --tag pci --tag stripe
 ```
+
+Optional flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--description <text>` | Human-readable description, surfaced in `search` and the TUI viewer. |
+| `--url <url>` | Associated dashboard URL. |
+| `--totp <otpauth-or-base32>` | TOTP secret (URI or raw base32 ≥ 16 chars). |
+| `--env-key <NAME>` | Default env-var name when this secret is injected via `exec` (else derived from the path tail). |
+| `--expires-at <when>` | RFC 3339 timestamp, relative duration (`30d`, `6mo`, `1y`), or `never`. |
+| `--tag <T>` | Attach a tag. Repeatable. Grammar: `[A-Za-z0-9_.-]+`, 1-64 chars, case-sensitive. |
 
 ### `himitsu get <path>`
 
@@ -255,11 +291,16 @@ himitsu get prod/API_KEY
 
 ### `himitsu ls [prefix]`
 
-Browse secrets like a directory.
+Browse secrets like a directory. Pass `--tag` to filter to secrets carrying
+the listed tag(s); the filter decrypts each candidate to read its tags, so
+entries the current identity can't decrypt are dropped (we can't verify
+their tags). Plain `himitsu ls` never touches the identity.
 
 ```bash
-himitsu ls         # -> dev/, prod/
-himitsu ls prod    # -> API_KEY, DB_PASSWORD
+himitsu ls                # -> dev/, prod/
+himitsu ls prod           # -> API_KEY, DB_PASSWORD
+himitsu ls --tag pci      # AND across multiple --tag flags
+himitsu ls prod --tag pci --tag rotate-2026-q1
 ```
 
 ### `himitsu rekey [prefix]`
@@ -275,12 +316,61 @@ himitsu rekey prod    # one subtree
 
 Fuzzy-search secret paths across every known store. Results are read live
 from store files on every invocation -- there is no SQLite index to rebuild,
-and decrypted descriptions are pulled best-effort with the ambient age key.
+and decrypted descriptions and tags are pulled best-effort with the ambient
+age key.
 
 ```bash
-himitsu search DB             # search all stores
-himitsu search DB --refresh   # accepted as a no-op; kept for backward compat
+himitsu search DB                 # fuzzy across all stores
+himitsu search "" --tag pci       # empty query + tag = "all PCI secrets"
+himitsu search stripe --tag pci   # fuzzy AND tag-filtered
+himitsu search DB --refresh       # accepted as a no-op; kept for backward compat
 ```
+
+`--tag` is repeatable with AND-semantics. Secrets the current identity
+can't decrypt are excluded when any `--tag` is set, since their tags
+can't be verified.
+
+### `himitsu tag <path> add|rm|list`
+
+Add, remove, or list tags on a single secret. Mutates by decrypt → edit
+`tags` → re-encrypt → write, preserving every other field.
+
+```bash
+himitsu tag prod/STRIPE_KEY add pci stripe rotate-2026-q1
+himitsu tag prod/STRIPE_KEY list           # -> pci\nrotate-2026-q1\nstripe
+himitsu tag prod/STRIPE_KEY rm rotate-2026-q1
+```
+
+`add` is idempotent (existing tags don't duplicate); `rm` is a no-op for
+absent tags. The grammar `[A-Za-z0-9_.-]+` (1-64 chars, case-sensitive)
+is validated up front for both `add` and `rm`.
+
+### `himitsu exec <REF> -- <CMD>...`
+
+Run a command with secrets injected as environment variables. `<REF>` is
+one of:
+
+1. **Env label** from `.himitsu.yaml` (e.g. `pci-prod`) -- uses the env
+   DSL alias key (or path-derived key) as the variable name.
+2. **Path glob** ending in `/*` (e.g. `prod/*`).
+3. **Concrete secret path** (e.g. `prod/API_KEY`, optionally
+   `github:org/repo/prod/API_KEY`).
+
+```bash
+himitsu exec pci-prod -- node app.js
+himitsu exec prod/* --tag rotate-2026-q1 -- ./run-checks.sh
+himitsu exec prod/API_KEY -i -- env | grep API_KEY    # `-i` = clean env
+```
+
+The variable name for each secret comes from (in priority order): the env
+DSL alias → `SecretValue.env_key` → `derive_env_key(path tail)` (e.g.
+`api-key` → `API_KEY`, `group/item-name` → `GROUP__ITEM_NAME`). Two
+secrets resolving to the same env-var name is a hard error naming both
+source paths.
+
+`--clean` / `-i` starts the child with an empty environment plus only
+`PATH`, `HOME`, and `TERM`. The child's exit code is propagated; signal
+termination reports `128 + signum` on Unix.
 
 ### `himitsu recipient add|rm|ls|show`
 

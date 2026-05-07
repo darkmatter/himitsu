@@ -34,9 +34,9 @@ tui_demo_prepare() {
   mkdir -p "$(dirname "$DEMO_STORE")"
 
   "$HIMITSU_BIN" -s "$DEMO_STORE" init --no-tui >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/API_KEY        "sk_live_abc123"  --description "Stripe production API key" --env-key STRIPE_API_KEY --no-push >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/DATABASE_URL   "postgres://prod" --description "Production database URL" --env-key DATABASE_URL --no-push >/dev/null
-  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/API_KEY     "sk_test_xyz789"  --description "Staging API key" --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/API_KEY        "sk_live_abc123"  --description "Stripe production API key" --env-key STRIPE_API_KEY --tag pci --tag stripe --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set prod/DATABASE_URL   "postgres://prod" --description "Production database URL" --env-key DATABASE_URL --tag pci --no-push >/dev/null
+  "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/API_KEY     "sk_test_xyz789"  --description "Staging API key" --tag stripe --no-push >/dev/null
   "$HIMITSU_BIN" -s "$DEMO_STORE" set staging/DEBUG_TOKEN "dbg_42"          --description "Temporary debug token" --no-push >/dev/null
 }
 

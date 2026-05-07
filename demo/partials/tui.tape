@@ -58,6 +58,8 @@ Type "sk_live_demo_456"
 Tab
 Type "Stripe checkout key"
 Tab
+Type "pci,stripe,rotate-2026-q1"
+Tab
 Type "https://dashboard.stripe.com"
 Tab
 Tab
