@@ -36,7 +36,7 @@ use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::HimitsuError;
 use crate::proto::SecretValue;
 use crate::remote::store::{self, SecretMeta};
-use crate::tui::keymap::{Bindings, KeyMap};
+use crate::tui::keymap::{KeyAction, KeyMap};
 
 /// Outcome of handling a key — routed by [`crate::tui::app::App`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,31 +153,40 @@ impl SecretViewerView {
             return self.on_key_confirm_delete(key);
         }
 
-        // Rekey is checked before reveal/copy because its default binding
-        // (`Shift+R`) overlaps the same `KeyCode::Char('r')` as `reveal`;
-        // matching in this order keeps the existing behaviour exact.
-        if keymap.rekey.matches(&key) {
-            self.rekey();
-            return SecretViewerAction::None;
-        }
-        if keymap.reveal.matches(&key) {
-            self.toggle_reveal();
-            return SecretViewerAction::None;
-        }
-        if keymap.copy_value.matches(&key) {
-            return self.copy_to_clipboard();
-        }
-        if keymap.edit.matches(&key) {
-            return self.begin_edit();
-        }
-        if keymap.delete.matches(&key) {
-            self.enter_confirm_delete();
-            return SecretViewerAction::None;
-        }
-        if keymap.back.matches(&key) {
-            return SecretViewerAction::Back;
+        // Resolve the keymap action in view-defined priority order so
+        // overlapping bindings (Shift+R vs `r`, copy_ref vs copy_value)
+        // match the way they did before chord support landed.
+        if let Some(action) = match_keymap_action(keymap, &key) {
+            if let Some(outcome) = self.dispatch_action(action) {
+                return outcome;
+            }
         }
         SecretViewerAction::None
+    }
+
+    /// Run a [`KeyAction`] against the secret viewer. Returns `None` for
+    /// actions this view doesn't own. See [`super::search::SearchView::dispatch_action`]
+    /// for the same contract.
+    pub fn dispatch_action(&mut self, action: KeyAction) -> Option<SecretViewerAction> {
+        match action {
+            KeyAction::Rekey => {
+                self.rekey();
+                Some(SecretViewerAction::None)
+            }
+            KeyAction::Reveal => {
+                self.toggle_reveal();
+                Some(SecretViewerAction::None)
+            }
+            KeyAction::CopyValue => Some(self.copy_to_clipboard()),
+            KeyAction::CopyRef => Some(self.copy_ref_to_clipboard()),
+            KeyAction::Edit => Some(self.begin_edit()),
+            KeyAction::Delete => {
+                self.enter_confirm_delete();
+                Some(SecretViewerAction::None)
+            }
+            KeyAction::Back => Some(SecretViewerAction::Back),
+            _ => None,
+        }
     }
 
     /// Decrypt the current secret, render it as an editable document
@@ -371,6 +380,17 @@ impl SecretViewerView {
         // display server is available. Surface via an action so the router
         // can turn it into a toast instead of crashing.
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
+            Ok(()) => SecretViewerAction::Copied,
+            Err(e) => SecretViewerAction::CopyFailed(format!("clipboard unavailable: {e}")),
+        }
+    }
+
+    /// Copy `himitsu read <ref>` to the clipboard — the *command* that
+    /// would fetch this secret, not the value itself. Lets the user share
+    /// "how to grab this" in a PR / chat without leaking plaintext.
+    fn copy_ref_to_clipboard(&mut self) -> SecretViewerAction {
+        let cmd = format!("himitsu read {}", self.path);
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(cmd)) {
             Ok(()) => SecretViewerAction::Copied,
             Err(e) => SecretViewerAction::CopyFailed(format!("clipboard unavailable: {e}")),
         }
@@ -657,6 +677,25 @@ const EDIT_DOC_HEADER: &str = "# himitsu edit — metadata above, secret value b
 # Custom fields (any other `key: value` lines) are stored as annotations.
 
 ";
+
+/// Secret-viewer keymap priority. The order encodes overlap-resolution
+/// for default bindings: `Shift+R` (rekey) must beat bare `r` (reveal);
+/// explicit `Shift+Y` (copy_ref) must beat shift-insensitive `y`
+/// (copy_value); `back` (Esc) lands before any future `quit` overlap so
+/// Esc reliably navigates rather than quitting from inside the viewer.
+const VIEWER_ACTION_PRIORITY: &[KeyAction] = &[
+    KeyAction::Rekey,
+    KeyAction::Reveal,
+    KeyAction::CopyRef,
+    KeyAction::CopyValue,
+    KeyAction::Edit,
+    KeyAction::Delete,
+    KeyAction::Back,
+];
+
+fn match_keymap_action(keymap: &KeyMap, key: &KeyEvent) -> Option<KeyAction> {
+    keymap.action_for_key_in(key, VIEWER_ACTION_PRIORITY)
+}
 
 fn render_edit_doc(path: &str, decoded: &secret_value::Decoded) -> String {
     let expires = decoded

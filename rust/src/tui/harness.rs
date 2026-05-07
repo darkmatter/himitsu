@@ -539,6 +539,89 @@ new_secret: ["F2"]
         );
     }
 
+    /// Multi-step (leader-key) chords must drive their bound action through
+    /// the App's chord dispatcher: press Ctrl+X, see a breadcrumb toast and
+    /// pending state, then press `s` and watch the new-secret form save
+    /// even though `Ctrl+S` is unbound.
+    #[test]
+    fn leader_key_chord_fires_save_after_completion() {
+        let fx = Fixture::new();
+        let yaml = r#"
+save_secret: ["ctrl+x s"]
+"#;
+        let keymap: KeyMap = serde_yaml::from_str(yaml).expect("parse keymap");
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, keymap);
+
+        // Open the new-secret form, type a path + value.
+        h.press_ctrl('n');
+        assert_eq!(h.app.current_view(), "new_secret");
+        h.type_str("prod/CHORD_KEY");
+        h.press(KeyCode::Tab);
+        h.type_str("chord-fired-value");
+
+        // Ctrl+S must NOT save — it's no longer bound.
+        h.press_ctrl('s');
+        assert_eq!(
+            h.app.current_view(),
+            "new_secret",
+            "ctrl+s should be inert under the chord-only save binding:\n{}",
+            h.rendered()
+        );
+
+        // Step 1 of the leader chord: Ctrl+X enters Pending state.
+        h.press_ctrl('x');
+        assert_eq!(
+            h.app.pending_chord_len(),
+            1,
+            "Ctrl+X should enter pending chord state"
+        );
+        assert_eq!(h.app.current_view(), "new_secret");
+
+        // Step 2 completes the chord and submits the form.
+        h.press(KeyCode::Char('s'));
+        assert_eq!(
+            h.app.pending_chord_len(),
+            0,
+            "chord buffer should clear after match"
+        );
+        assert_eq!(
+            h.app.current_view(),
+            "search",
+            "chord should have triggered save (form returned to search):\n{}",
+            h.rendered()
+        );
+        assert!(
+            h.contains("CHORD_KEY"),
+            "saved secret should appear in search:\n{}",
+            h.rendered()
+        );
+    }
+
+    /// A pending chord that doesn't continue must abort cleanly: pending
+    /// buffer clears, no spurious action fires.
+    #[test]
+    fn leader_key_chord_aborts_on_non_continuation() {
+        let fx = Fixture::new();
+        let yaml = r#"
+save_secret: ["ctrl+x s"]
+"#;
+        let keymap: KeyMap = serde_yaml::from_str(yaml).expect("parse keymap");
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, keymap);
+
+        h.press_ctrl('n');
+        assert_eq!(h.app.current_view(), "new_secret");
+
+        // Enter pending state with Ctrl+X.
+        h.press_ctrl('x');
+        assert_eq!(h.app.pending_chord_len(), 1);
+
+        // 'q' isn't a continuation of `ctrl+x` — chord aborts and the
+        // key is consumed by the abort path (no view-side typing).
+        h.press(KeyCode::Char('q'));
+        assert_eq!(h.app.pending_chord_len(), 0);
+        assert_eq!(h.app.current_view(), "new_secret");
+    }
+
     /// A malformed binding string must surface as a parse error at config
     /// load time, not silently ignore the user's intent.
     #[test]
