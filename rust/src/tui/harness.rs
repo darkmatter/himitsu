@@ -563,6 +563,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn default_keymap_question_mark_opens_search_help() {
+        let fx = Fixture::new();
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
+        assert_eq!(h.app.current_view(), "search");
+
+        h.press(KeyCode::Char('?'));
+
+        assert!(
+            h.contains("filter results"),
+            "question mark should open search help, not filter text:\n{}",
+            h.rendered()
+        );
+        assert!(
+            !h.contains("no matches"),
+            "question mark was treated as search input:\n{}",
+            h.rendered()
+        );
+    }
+
     /// A user who rebinds `new_secret` to `F2` should be able to press F2
     /// and land in the new-secret form — and the former default (Ctrl+N)
     /// must stop working, proving the override fully replaces that action.

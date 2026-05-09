@@ -153,6 +153,14 @@ impl App {
             }
         }
 
+        if self
+            .keymap
+            .action_for_key_in(&key, &[KeyAction::Help])
+            .is_some()
+        {
+            return self.run_keymap_action(KeyAction::Help);
+        }
+
         // ── Single-key fallthrough (no active chord) ──────────────────
         match &mut self.view {
             View::Search(search) => {
