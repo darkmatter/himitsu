@@ -275,15 +275,13 @@ impl InitWizardView {
                 _ => {}
             },
             Step::Provider => match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if self.provider_index > 0 {
-                        self.provider_index -= 1;
-                    }
+                KeyCode::Up | KeyCode::Char('k') if self.provider_index > 0 => {
+                    self.provider_index -= 1;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.provider_index + 1 < self.provider_options.len() {
-                        self.provider_index += 1;
-                    }
+                KeyCode::Down | KeyCode::Char('j')
+                    if self.provider_index + 1 < self.provider_options.len() =>
+                {
+                    self.provider_index += 1;
                 }
                 KeyCode::Enter => self.begin_init(),
                 KeyCode::Esc => {
