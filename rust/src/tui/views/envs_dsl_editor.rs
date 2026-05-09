@@ -215,7 +215,7 @@ fn fuzzy_top(corpus: &[String], pattern_str: &str, n: usize) -> Vec<String> {
             pattern.score(h, &mut matcher).map(|s| (s, c.clone()))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|item| std::cmp::Reverse(item.0));
     scored.into_iter().take(n).map(|(_, s)| s).collect()
 }
 
