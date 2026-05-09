@@ -667,11 +667,7 @@ impl KeyMap {
     /// priority slice (e.g. the secret viewer wants `Rekey` before
     /// `Reveal` so `Shift+R` doesn't fall through to bare `r`); shared
     /// here so the per-view helpers don't each rebuild the same iteration.
-    pub fn action_for_key_in(
-        &self,
-        key: &KeyEvent,
-        priority: &[KeyAction],
-    ) -> Option<KeyAction> {
+    pub fn action_for_key_in(&self, key: &KeyEvent, priority: &[KeyAction]) -> Option<KeyAction> {
         priority
             .iter()
             .copied()

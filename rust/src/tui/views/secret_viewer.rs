@@ -1457,7 +1457,11 @@ s3cret";
         let parsed = parse_edit_doc(doc).unwrap();
         assert_eq!(
             parsed.tags,
-            vec!["pci".to_string(), "stripe".to_string(), "mobile".to_string()]
+            vec![
+                "pci".to_string(),
+                "stripe".to_string(),
+                "mobile".to_string()
+            ]
         );
     }
 

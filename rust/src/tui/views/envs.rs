@@ -188,7 +188,9 @@ impl CreateEditor {
             // TUI editor predates them. Fall back to the DSL editor by
             // refusing this single-entry shortcut.
             EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {
-                return Err("edit not yet supported for `tag:` selectors — use the DSL editor".into());
+                return Err(
+                    "edit not yet supported for `tag:` selectors — use the DSL editor".into(),
+                );
             }
         }
 

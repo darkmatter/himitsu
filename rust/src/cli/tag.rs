@@ -169,11 +169,7 @@ mod tests {
         apply_add(&mut tags, &["mu".to_string()]);
         assert_eq!(
             tags,
-            vec![
-                "zeta".to_string(),
-                "alpha".to_string(),
-                "mu".to_string(),
-            ]
+            vec!["zeta".to_string(), "alpha".to_string(), "mu".to_string(),]
         );
     }
 

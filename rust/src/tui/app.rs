@@ -127,10 +127,7 @@ impl App {
                     // their leader sequence didn't fire anything.
                     let summary = format_pending(&self.pending_chord);
                     self.pending_chord.clear();
-                    self.push_toast(
-                        format!("chord aborted: {summary}"),
-                        ToastKind::Info,
-                    );
+                    self.push_toast(format!("chord aborted: {summary}"), ToastKind::Info);
                     return None;
                 }
             }

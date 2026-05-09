@@ -17,6 +17,7 @@ mod terminal;
 mod theme;
 mod toast;
 mod views;
+pub mod widgets;
 
 use std::path::PathBuf;
 use std::time::Duration;

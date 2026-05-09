@@ -296,9 +296,7 @@ impl NewSecretView {
     /// printable char and defers validation to leave/submit time.
     fn accepts_char(step: Step, c: char) -> bool {
         match step {
-            Step::Tags => {
-                c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ','
-            }
+            Step::Tags => c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ',',
             _ => true,
         }
     }
@@ -1010,7 +1008,10 @@ mod tests {
         // Belt-and-braces against pasted/injected input that bypasses the
         // typing-time filter.
         let err = parse_tags_input("a,bad tag,b").unwrap_err();
-        assert!(err.contains("bad tag"), "error mentions offending tag: {err}");
+        assert!(
+            err.contains("bad tag"),
+            "error mentions offending tag: {err}"
+        );
     }
 
     #[test]

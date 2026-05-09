@@ -324,9 +324,8 @@ fn read_entries(conn: &Connection, env_id: i64) -> Result<Vec<EnvEntry>> {
             },
             "tag" => EnvEntry::Tag(value),
             "alias_tag" => EnvEntry::AliasTag {
-                key: alias_key.ok_or_else(|| {
-                    HimitsuError::Index("alias_tag row missing alias_key".into())
-                })?,
+                key: alias_key
+                    .ok_or_else(|| HimitsuError::Index("alias_tag row missing alias_key".into()))?,
                 tag: value,
             },
             other => {

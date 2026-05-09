@@ -676,9 +676,7 @@ mod tests {
     /// paths fall back to "no tags" rather than erroring, mirroring the
     /// expected real-world behaviour for secrets that decrypt cleanly but
     /// happen to carry no `SecretValue.tags` field.
-    fn mk_tag_lookup(
-        map: BTreeMap<String, Vec<String>>,
-    ) -> impl Fn(&str) -> Result<Vec<String>> {
+    fn mk_tag_lookup(map: BTreeMap<String, Vec<String>>) -> impl Fn(&str) -> Result<Vec<String>> {
         move |path: &str| Ok(map.get(path).cloned().unwrap_or_default())
     }
 
@@ -687,18 +685,17 @@ mod tests {
         // `tag:pci` should pull in every secret carrying the tag, keyed
         // by last-path-segment. Non-pci secrets must be excluded.
         let e = envs(vec![("dev", vec![EnvEntry::Tag("pci".into())])]);
-        let secrets = strs(&[
-            "dev/STRIPE_KEY",
-            "dev/POSTGRES_URL",
-            "extras/RATE_LIMITER",
-        ]);
+        let secrets = strs(&["dev/STRIPE_KEY", "dev/POSTGRES_URL", "extras/RATE_LIMITER"]);
         let mut tags = BTreeMap::new();
         tags.insert("dev/STRIPE_KEY".to_string(), vec!["pci".to_string()]);
         tags.insert(
             "dev/POSTGRES_URL".to_string(),
             vec!["pci".to_string(), "rotate".to_string()],
         );
-        tags.insert("extras/RATE_LIMITER".to_string(), vec!["mobile".to_string()]);
+        tags.insert(
+            "extras/RATE_LIMITER".to_string(),
+            vec!["mobile".to_string()],
+        );
         let lookup = mk_tag_lookup(tags);
 
         let tree = resolve_with_tags(&e, "dev", &secrets, &lookup).unwrap();
@@ -809,7 +806,9 @@ mod tests {
         let e = envs(vec![("dev", vec![EnvEntry::Tag("pci".into())])]);
         let secrets = strs(&["dev/UNREADABLE"]);
         let failing = |_: &str| -> Result<Vec<String>> {
-            Err(HimitsuError::DecryptionFailed("test: cannot decrypt".into()))
+            Err(HimitsuError::DecryptionFailed(
+                "test: cannot decrypt".into(),
+            ))
         };
 
         let err = resolve_with_tags(&e, "dev", &secrets, &failing).unwrap_err();

@@ -1039,10 +1039,7 @@ mod tests {
             normalize_key_path("database/HOST_NAME"),
             "database/host-name"
         );
-        assert_eq!(
-            normalize_key_path("PROD/API_KEY"),
-            "prod/api-key"
-        );
+        assert_eq!(normalize_key_path("PROD/API_KEY"), "prod/api-key");
         assert_eq!(normalize_key_path("simple"), "simple");
     }
 

@@ -302,8 +302,18 @@ mod tests {
 
     #[test]
     fn tag_flag_accumulates_multiple_invocations() {
-        let a = parse(&["prod/API_KEY", "secret-value", "--tag", "pci", "--tag", "rotate-2026-q1"]);
-        assert_eq!(a.tags, vec!["pci".to_string(), "rotate-2026-q1".to_string()]);
+        let a = parse(&[
+            "prod/API_KEY",
+            "secret-value",
+            "--tag",
+            "pci",
+            "--tag",
+            "rotate-2026-q1",
+        ]);
+        assert_eq!(
+            a.tags,
+            vec!["pci".to_string(), "rotate-2026-q1".to_string()]
+        );
     }
 
     #[test]
@@ -323,13 +333,20 @@ mod tests {
         let raw = vec!["ok".to_string(), "bad tag".to_string()];
         let err = validate_tags(&raw).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("bad tag"), "error mentions offending tag: {msg}");
+        assert!(
+            msg.contains("bad tag"),
+            "error mentions offending tag: {msg}"
+        );
         assert!(msg.contains("invalid tag"), "uses canonical prefix: {msg}");
     }
 
     #[test]
     fn validate_tags_passes_through_valid_list() {
-        let raw = vec!["pci".to_string(), "team_backend".to_string(), "v1.2.3".to_string()];
+        let raw = vec![
+            "pci".to_string(),
+            "team_backend".to_string(),
+            "v1.2.3".to_string(),
+        ];
         assert_eq!(validate_tags(&raw).unwrap(), raw);
     }
 }
