@@ -113,12 +113,14 @@ impl ProtoForm for RemoteAddArgs {
                 "org/repo (e.g. acme/secrets) or a full git URL",
             )
             .required()
-            .with_validator(validate_slug_or_url),
+            .with_validator(validate_slug_or_url)
+            .placeholder("myorg/myrepo"),
             Field::text(
                 "url",
                 "URL",
                 "optional override; defaults to git@github.com:<slug>.git",
-            ),
+            )
+            .placeholder("git@github.com:myorg/myrepo.git"),
         ]
     }
 

@@ -57,6 +57,10 @@ pub struct Field {
     pub required: bool,
     pub value: String,
     pub validator: Option<Validator>,
+    /// Hint shown in muted style when the field is empty AND unfocused.
+    /// Cleared as soon as the user types or focuses the field — it is a
+    /// suggestion, not a default.
+    pub placeholder: Option<&'static str>,
 }
 
 impl Field {
@@ -71,6 +75,7 @@ impl Field {
             required: false,
             value: String::new(),
             validator: None,
+            placeholder: None,
         }
     }
 
@@ -81,6 +86,11 @@ impl Field {
 
     pub fn with_validator(mut self, v: Validator) -> Self {
         self.validator = Some(v);
+        self
+    }
+
+    pub fn placeholder(mut self, p: &'static str) -> Self {
+        self.placeholder = Some(p);
         self
     }
 
@@ -351,11 +361,26 @@ impl FormView {
             } else {
                 Style::default().fg(theme::muted())
             });
-        let mut text = field.value.clone();
-        if focused {
-            text.push('_');
-        }
-        let para = Paragraph::new(text).block(block);
+        // Empty + unfocused renders the placeholder hint in muted style.
+        // Focused always shows the buffer with a trailing cursor — typing
+        // immediately replaces the hint, so we don't show both.
+        let para = if !focused && field.value.is_empty() {
+            if let Some(ph) = field.placeholder {
+                Paragraph::new(Line::from(Span::styled(
+                    ph,
+                    Style::default().fg(theme::muted()),
+                )))
+                .block(block)
+            } else {
+                Paragraph::new(String::new()).block(block)
+            }
+        } else {
+            let mut text = field.value.clone();
+            if focused {
+                text.push('_');
+            }
+            Paragraph::new(text).block(block)
+        };
         match field.widget {
             Widget::Text => frame.render_widget(para, area),
             Widget::TextArea => frame.render_widget(para.wrap(Wrap { trim: false }), area),
@@ -542,6 +567,7 @@ mod tests {
                 required: false,
                 value: String::new(),
                 validator: None,
+                placeholder: None,
             }],
         );
         typ(&mut f, &km, "line1");
@@ -575,6 +601,61 @@ mod tests {
         let f = FormView::for_proto::<DummyArgs>();
         assert_eq!(f.fields().len(), 1);
         assert_eq!(f.fields()[0].label, "Slug");
+    }
+
+    // ── Placeholder rendering ──────────────────────────────────────────
+
+    fn render_field(form: &FormView, focused: bool, field_idx: usize) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        let area = Rect::new(0, 0, 40, 3);
+        terminal
+            .draw(|frame| form.draw_field(frame, area, &form.fields[field_idx], focused))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn placeholder_renders_when_empty_and_unfocused() {
+        let form = FormView::new(
+            "test",
+            vec![Field::text("a", "A", "").placeholder("e.g. hint")],
+        );
+        let rendered = render_field(&form, false, 0);
+        assert!(rendered.contains("e.g. hint"));
+        assert!(!rendered.contains('_'));
+    }
+
+    #[test]
+    fn placeholder_hidden_when_focused() {
+        let form = FormView::new(
+            "test",
+            vec![Field::text("a", "A", "").placeholder("e.g. hint")],
+        );
+        let rendered = render_field(&form, true, 0);
+        assert!(!rendered.contains("e.g. hint"));
+        assert!(rendered.contains('_'));
+    }
+
+    #[test]
+    fn placeholder_hidden_when_value_present() {
+        let mut form = FormView::new(
+            "test",
+            vec![Field::text("a", "A", "").placeholder("e.g. hint")],
+        );
+        form.fields[0].value = "typed".to_string();
+        let rendered = render_field(&form, false, 0);
+        assert!(!rendered.contains("e.g. hint"));
+        assert!(rendered.contains("typed"));
     }
 
     #[test]
