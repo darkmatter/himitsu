@@ -70,6 +70,13 @@ pub enum NewSecretAction {
     /// Submission failed but the form should stay open so the user can
     /// edit. Carries the error message to show in the status line.
     Failed(String),
+    /// Ask the router to publish an ambient bottom-left hint. Routed
+    /// through the action enum (rather than reaching into the App
+    /// directly) to mirror the existing pattern used for toasts.
+    SetHint(String),
+    /// Ask the router to clear the ambient hint, e.g. when focus leaves
+    /// a field that had a tip pinned.
+    ClearHint,
 }
 
 /// Which field currently has focus.
@@ -269,20 +276,63 @@ impl NewSecretView {
             return self.handle_confirm_exit_key(key);
         }
 
+        // Snapshot the step before key dispatch so we can detect step
+        // transitions and emit a hint action without any per-field handler
+        // having to know about the bottom-left strip.
+        let before = self.step;
+
         // Resolve cancel / save / prev_field up front so a chord-completed
         // action takes the same path as the bare keystroke. NextField
         // stays inside the field-specific handlers because it interacts
-        // with per-field validation.
+        // with per-field validation. Note: outcomes from `dispatch_action`
+        // are forwarded untouched — submission/save can refocus fields
+        // internally (e.g. snap back to Path on validation error), and
+        // we don't want that internal step churn to clobber the action.
         if let Some(action) = keymap.action_for_key_in(&key, FORM_ACTION_PRIORITY) {
             if let Some(outcome) = self.dispatch_action(action) {
+                // Only `PrevField` is purely navigational; map its `None`
+                // outcome to a hint sync if the step actually moved.
+                if matches!(action, KeyAction::PrevField) {
+                    return self.maybe_swap_for_hint(outcome, before);
+                }
                 return outcome;
             }
         }
 
-        match self.step {
+        let inner = match self.step {
             Step::Value => self.handle_value_key(key, keymap),
             Step::Submit => self.handle_submit_step_key(key, keymap),
             _ => self.handle_single_line_key(key, keymap),
+        };
+        self.maybe_swap_for_hint(inner, before)
+    }
+
+    /// Replace `inner` with a `SetHint`/`ClearHint` action when the step
+    /// changed and the inner action carried no other meaning (i.e. `None`).
+    /// Submission/cancellation outcomes are forwarded untouched so a hint
+    /// transition never masks a meaningful router action.
+    fn maybe_swap_for_hint(&self, inner: NewSecretAction, before: Step) -> NewSecretAction {
+        if !matches!(inner, NewSecretAction::None) || before == self.step {
+            return inner;
+        }
+        match Self::hint_for_step(self.step) {
+            Some(msg) => NewSecretAction::SetHint(msg.to_string()),
+            None => NewSecretAction::ClearHint,
+        }
+    }
+
+    /// Hint message associated with each step. `None` means the step has
+    /// no ambient tip — the router should clear any leftover hint.
+    pub(crate) fn hint_for_step(step: Step) -> Option<&'static str> {
+        match step {
+            // Slashes turn into folder headers in the search view, so the
+            // tip nudges users toward the same convention used elsewhere.
+            Step::Path => Some("· tip: use slashes (prod/api/KEY) for grouping"),
+            // Commas separate tags and the grammar forbids whitespace.
+            Step::Tags => Some("· tip: comma-separated, no spaces"),
+            // RFC 3339 + relative durations + `never` is a lot to remember.
+            Step::ExpiresAt => Some("· tip: never, 30d, 6mo, 1y, or RFC 3339"),
+            _ => None,
         }
     }
 
@@ -750,13 +800,10 @@ impl NewSecretView {
             .title(" value ")
             .title_style(Style::default().fg(theme::border_label()))
             .border_style(Self::border_style(focused));
-        let para = Self::field_paragraph(
-            &self.value,
-            "value here — Enter inserts a newline",
-            focused,
-        )
-        .block(block)
-        .wrap(Wrap { trim: false });
+        let para =
+            Self::field_paragraph(&self.value, "value here — Enter inserts a newline", focused)
+                .block(block)
+                .wrap(Wrap { trim: false });
         frame.render_widget(para, area);
     }
 
@@ -764,11 +811,7 @@ impl NewSecretView {
     /// when empty + unfocused, otherwise the buffer with a trailing cursor
     /// while focused. Centralised so the placeholder behaviour is uniform
     /// across single-line and multi-line inputs.
-    fn field_paragraph<'a>(
-        content: &'a str,
-        placeholder: &'a str,
-        focused: bool,
-    ) -> Paragraph<'a> {
+    fn field_paragraph<'a>(content: &'a str, placeholder: &'a str, focused: bool) -> Paragraph<'a> {
         if !focused && content.is_empty() {
             Paragraph::new(Line::from(Span::styled(
                 placeholder,
@@ -898,7 +941,10 @@ impl NewSecretView {
 
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
-            ("tab / enter", "next field (wraps); tab cycles into [ submit ]"),
+            (
+                "tab / enter",
+                "next field (wraps); tab cycles into [ submit ]",
+            ),
             ("shift-tab", "previous field (wraps)"),
             ("enter (value)", "insert newline"),
             ("enter (submit)", "save the new secret"),
@@ -1159,8 +1205,13 @@ mod tests {
         assert_eq!(view.step(), Step::Submit);
         let out = view.on_key(press(KeyCode::Enter), &km);
         // Empty value rejects with focus snapped back to Value — confirms
-        // Enter on the Submit step reached submit().
-        assert!(matches!(out, NewSecretAction::None));
+        // Enter on the Submit step reached submit(). The step transition
+        // (Submit → Value) gets translated into a hint sync; Value has
+        // no ambient tip, so ClearHint is the expected outcome.
+        assert!(
+            matches!(out, NewSecretAction::ClearHint),
+            "expected ClearHint, got {out:?}"
+        );
         assert_eq!(view.step(), Step::Value);
         assert!(view.status().unwrap().contains("value"));
     }
@@ -1387,6 +1438,57 @@ mod tests {
         assert_eq!(parse_tags_input("").unwrap(), Vec::<String>::new());
     }
 
+    // ── hm-isi: ambient hints follow step focus ───────────────────────
+
+    #[test]
+    fn tab_off_path_emits_clear_hint_for_step_without_tip() {
+        // Path → Value: Path has a tip, Value has none. Leaving a tipped
+        // step for a tipless one must emit ClearHint so the router drops
+        // the stale tip.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        let action = view.on_key(press(KeyCode::Tab), &km);
+        assert!(
+            matches!(action, NewSecretAction::ClearHint),
+            "expected ClearHint on Path → Value, got {action:?}"
+        );
+        assert_eq!(view.step(), Step::Value);
+    }
+
+    #[test]
+    fn shift_tab_to_submit_emits_clear_hint() {
+        // Shift-Tab from initial Path wraps backward to Submit (no tip),
+        // so the router should clear any leftover hint.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        let action = view.on_key(back_tab(), &km);
+        match action {
+            NewSecretAction::ClearHint => {}
+            other => panic!("expected ClearHint, got {other:?}"),
+        }
+        assert_eq!(view.step(), Step::Submit);
+    }
+
+    #[test]
+    fn typing_within_a_step_does_not_emit_hint_actions() {
+        // Plain character input must not churn the hint surface; only
+        // step transitions do.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        let action = view.on_key(press(KeyCode::Char('p')), &km);
+        assert!(matches!(action, NewSecretAction::None));
+    }
+
+    #[test]
+    fn hint_for_step_covers_path_tags_and_expires_at() {
+        assert!(NewSecretView::hint_for_step(Step::Path).is_some());
+        assert!(NewSecretView::hint_for_step(Step::Tags).is_some());
+        assert!(NewSecretView::hint_for_step(Step::ExpiresAt).is_some());
+        assert!(NewSecretView::hint_for_step(Step::Value).is_none());
+        assert!(NewSecretView::hint_for_step(Step::Submit).is_none());
+    }
+
     #[test]
     fn tags_step_filters_disallowed_characters_at_typing_time() {
         let km = KeyMap::default();
@@ -1415,6 +1517,10 @@ mod tests {
         // filter by writing straight to the buffer simulates a paste.
         view.tags = "a".repeat(65);
         let out = view.on_key(ctrl('s'), &km);
+        // Submit refocuses Tags (validation error); the step transition
+        // currently doesn't trigger a hint swap because Ctrl+S routes
+        // through `dispatch_action` (router-level intent) rather than
+        // navigation. The action here is the original `None` from submit().
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Tags);
         assert!(view.status().is_some());
