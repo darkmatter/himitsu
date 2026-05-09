@@ -280,8 +280,7 @@ impl<'de> Deserialize<'de> for EnvEntry {
                 // Map form `{ tag: pci }` — the literal key is `tag` and the
                 // value is the tag name itself.
                 if key == "tag" {
-                    crate::crypto::tags::validate_tag(&value)
-                        .map_err(serde::de::Error::custom)?;
+                    crate::crypto::tags::validate_tag(&value).map_err(serde::de::Error::custom)?;
                     return Ok(EnvEntry::Tag(value));
                 }
                 // Map form `{ STRIPE: tag:stripe }` — alias whose value is

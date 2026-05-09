@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Clear};
 use ratatui::Frame;
 
 use crate::cli::Context;
+pub use crate::tui::hint::Hint;
 use crate::tui::keymap::{Dispatch, KeyAction, KeyMap};
 use crate::tui::theme;
 pub use crate::tui::toast::{Toast, ToastKind};
@@ -56,6 +57,11 @@ pub struct App {
     /// until [`Toast::is_expired`] returns true, at which point `draw`
     /// clears it. Non-modal: key events still flow to the current view.
     toast: Option<Toast>,
+    /// Active ambient hint, if any. Painted in the bottom-left strip and
+    /// persists until the owning view replaces or clears it. Suppressed
+    /// while a toast is on screen so the two surfaces never fight for
+    /// attention — see `App::draw`.
+    hint: Option<Hint>,
     /// Buffer of chord steps already pressed but not yet resolved. Set by
     /// [`KeyMap::dispatch`] returning [`Dispatch::Pending`]; cleared on the
     /// next match, abort, or non-chord keypress.
@@ -78,6 +84,7 @@ impl App {
             keymap,
             help: None,
             toast: None,
+            hint: None,
             pending_chord: Vec::new(),
             chord_breadcrumb_active: false,
         }
@@ -90,6 +97,19 @@ impl App {
     pub fn push_toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
         self.toast = Some(Toast::new(msg, kind));
         self.chord_breadcrumb_active = false;
+    }
+
+    /// Publish an ambient bottom-left hint, replacing any previous one.
+    /// No expiry — callers must clear via [`App::clear_hint`] when the
+    /// context the hint described goes away (e.g. the view closes or
+    /// focus moves to a field with no associated tip).
+    pub fn set_hint(&mut self, msg: impl Into<String>) {
+        self.hint = Some(Hint::new(msg));
+    }
+
+    /// Drop the active hint, if any.
+    pub fn clear_hint(&mut self) {
+        self.hint = None;
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
@@ -127,10 +147,7 @@ impl App {
                     // their leader sequence didn't fire anything.
                     let summary = format_pending(&self.pending_chord);
                     self.pending_chord.clear();
-                    self.push_toast(
-                        format!("chord aborted: {summary}"),
-                        ToastKind::Info,
-                    );
+                    self.push_toast(format!("chord aborted: {summary}"), ToastKind::Info);
                     return None;
                 }
             }
@@ -218,6 +235,14 @@ impl App {
             }
             SearchAction::NewSecret => {
                 self.view = View::NewSecret(NewSecretView::new(&self.ctx));
+                // Seed the bottom-left hint with the tip for the initial
+                // focus (Path) so the user sees guidance immediately,
+                // before they press any keys.
+                if let Some(msg) =
+                    NewSecretView::hint_for_step(crate::tui::views::new_secret::Step::Path)
+                {
+                    self.set_hint(msg);
+                }
             }
             SearchAction::AddRemote => {
                 self.view = View::RemoteAdd(RemoteAddView::new(&self.ctx));
@@ -329,16 +354,21 @@ impl App {
             NewSecretAction::Quit => self.should_quit = true,
             NewSecretAction::Cancel => {
                 self.view = View::Search(SearchView::new(&self.ctx));
+                self.clear_hint();
                 self.push_toast("create cancelled", ToastKind::Info);
             }
             NewSecretAction::Created(path) => {
                 self.view = View::Search(SearchView::new(&self.ctx));
+                self.clear_hint();
                 self.push_toast(format!("created {path}"), ToastKind::Success);
             }
             NewSecretAction::Failed(err) => {
                 self.view = View::Search(SearchView::new(&self.ctx));
+                self.clear_hint();
                 self.push_toast(format!("create failed: {err}"), ToastKind::Error);
             }
+            NewSecretAction::SetHint(msg) => self.set_hint(msg),
+            NewSecretAction::ClearHint => self.clear_hint(),
         }
         None
     }
@@ -394,6 +424,12 @@ impl App {
     #[cfg(test)]
     pub fn toast(&self) -> Option<&Toast> {
         self.toast.as_ref()
+    }
+
+    /// Borrow the active hint for integration-test assertions.
+    #[cfg(test)]
+    pub fn hint(&self) -> Option<&Hint> {
+        self.hint.as_ref()
     }
 
     /// Force-expire the active toast by rewinding `expires_at` to the
@@ -469,6 +505,21 @@ impl App {
                 // through on rows shorter than the toast.
                 frame.render_widget(Clear, strip);
                 t.render(frame, strip);
+            }
+        } else if let Some(h) = self.hint.as_ref() {
+            // Hint is suppressed whenever a toast is active so the two
+            // bottom-row surfaces never fight for the same cells. Toasts
+            // are transient (3s TTL); the hint reappears as soon as the
+            // toast clears.
+            let area = frame.area();
+            if area.height > 0 {
+                let strip = Rect {
+                    x: area.x,
+                    y: area.y + area.height - 1,
+                    width: area.width,
+                    height: 1,
+                };
+                h.render(frame, strip);
             }
         }
         // Help overlay is drawn last so it paints over the underlying view.

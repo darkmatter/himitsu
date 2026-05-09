@@ -30,6 +30,7 @@ use crate::tui::icons;
 use crate::tui::keymap::{KeyAction, KeyMap};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
+use crate::tui::widgets::secret_ref_autocomplete::SecretRefAutocomplete;
 
 /// Outcome of handling a key — lets the app router decide where to go next.
 #[derive(Debug, Clone)]
@@ -164,6 +165,17 @@ pub struct SearchView {
     /// `FoldedGroup` row. Toggled with Tab. Singleton paths render the same
     /// in both states. Default: unfolded.
     folded: bool,
+    /// Levenshtein-backed autocomplete popup over the search query.
+    ///
+    /// Wired here (rather than into the secret-viewer rename path, where it
+    /// would also be useful) because the search bar is the highest-frequency
+    /// "I'm typing a reference to a secret" surface in the TUI: every user who
+    /// opens the TUI lands on this view first. The popup is non-modal — the
+    /// query input keeps consuming every printable key — and only intercepts
+    /// Up/Down/Enter while the user has explicitly opened it via Ctrl+Space.
+    /// Tab is already bound to fold-toggle so we picked Ctrl+Space; that
+    /// chord is broadly available on macOS/iTerm + Linux terminals.
+    autocomplete: SecretRefAutocomplete,
 }
 
 impl SearchView {
@@ -188,6 +200,7 @@ impl SearchView {
             show_store_column: false,
             env_index,
             folded: false,
+            autocomplete: SecretRefAutocomplete::new(Vec::new()),
         };
         view.refresh_results();
         view
@@ -235,12 +248,35 @@ impl SearchView {
             }
         }
 
+        // Ctrl+Space opens the autocomplete popup. We re-toggle it (rather
+        // than only opening) so a user who pulled it up by accident can
+        // dismiss it with the same chord.
+        if matches!(key.code, KeyCode::Char(' ')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let want_open = !self.autocomplete.is_open();
+            self.autocomplete.set_open(want_open);
+            return SearchAction::None;
+        }
+        // Esc closes the popup before falling through to the view's own
+        // cancel/quit semantics.
+        if key.code == KeyCode::Esc && self.autocomplete.is_open() {
+            self.autocomplete.set_open(false);
+            return SearchAction::None;
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Tab, _) => {
                 self.toggle_fold();
                 SearchAction::None
             }
             (KeyCode::Enter, _) => {
+                // Open popup wins: Enter accepts the highlighted suggestion
+                // into the query field.
+                if let Some(pick) = self.autocomplete.accepted() {
+                    self.query = pick.to_string();
+                    self.autocomplete.set_open(false);
+                    self.refresh_results();
+                    return SearchAction::None;
+                }
                 // On a folded group, Enter expands the entire view (1-level
                 // unfold) and lands the cursor on the first leaf of the
                 // group the user just opened.
@@ -254,11 +290,19 @@ impl SearchView {
                 }
             }
             (KeyCode::Up, _) => {
-                self.select_prev();
+                if self.autocomplete.is_open() {
+                    self.autocomplete.move_selection(-1);
+                } else {
+                    self.select_prev();
+                }
                 SearchAction::None
             }
             (KeyCode::Down, _) => {
-                self.select_next();
+                if self.autocomplete.is_open() {
+                    self.autocomplete.move_selection(1);
+                } else {
+                    self.select_next();
+                }
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
@@ -349,17 +393,30 @@ impl SearchView {
         self.results = search_core(&self.ctx, &self.query, &[]).unwrap_or_default();
         self.rows = build_rows(&self.results, self.folded);
         self.list_state.select(self.first_selectable());
+        // Keep the autocomplete corpus aligned with what the user could
+        // possibly land on: every secret path search_core just returned for
+        // an unfiltered scan. This is cheap (already in memory) and dodges
+        // having to re-walk the store when the popup wants to open.
+        let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
+        self.autocomplete.set_corpus(corpus);
+        self.autocomplete.update_query(&self.query);
     }
 
     fn toggle_fold(&mut self) {
         // Remember the prefix or path under the cursor so we can re-anchor
         // the selection after rebuilding rows. Otherwise the cursor would
         // jump to the first selectable line on every toggle.
-        let anchor = self.list_state.selected().and_then(|i| self.rows.get(i)).map(|row| match row {
-            Row::Secret { result, .. } => SelectionAnchor::Path(result.path.clone(), result.store.clone()),
-            Row::FoldedGroup { prefix, .. } => SelectionAnchor::Prefix(prefix.clone()),
-            Row::Store { name, .. } => SelectionAnchor::Store(name.clone()),
-        });
+        let anchor = self
+            .list_state
+            .selected()
+            .and_then(|i| self.rows.get(i))
+            .map(|row| match row {
+                Row::Secret { result, .. } => {
+                    SelectionAnchor::Path(result.path.clone(), result.store.clone())
+                }
+                Row::FoldedGroup { prefix, .. } => SelectionAnchor::Prefix(prefix.clone()),
+                Row::Store { name, .. } => SelectionAnchor::Store(name.clone()),
+            });
 
         self.folded = !self.folded;
         self.rows = build_rows(&self.results, self.folded);
@@ -375,13 +432,15 @@ impl SearchView {
         self.folded = false;
         self.rows = build_rows(&self.results, self.folded);
         let target = self.rows.iter().position(|row| match row {
-            Row::Secret { result, shared_prefix, .. } => {
-                shared_prefix.as_deref() == Some(prefix)
-                    || prefix_of(&result.path) == prefix
-            }
+            Row::Secret {
+                result,
+                shared_prefix,
+                ..
+            } => shared_prefix.as_deref() == Some(prefix) || prefix_of(&result.path) == prefix,
             _ => false,
         });
-        self.list_state.select(target.or_else(|| self.first_selectable()));
+        self.list_state
+            .select(target.or_else(|| self.first_selectable()));
     }
 
     fn selected_result(&self) -> Option<&SearchResult> {
@@ -421,8 +480,17 @@ impl SearchView {
                 (SelectionAnchor::Path(p, _), Row::FoldedGroup { prefix, .. }) => {
                     prefix_of(p) == prefix.as_str()
                 }
-                (SelectionAnchor::Prefix(prefix), Row::FoldedGroup { prefix: p, .. }) => prefix == p,
-                (SelectionAnchor::Prefix(prefix), Row::Secret { shared_prefix, result, .. }) => {
+                (SelectionAnchor::Prefix(prefix), Row::FoldedGroup { prefix: p, .. }) => {
+                    prefix == p
+                }
+                (
+                    SelectionAnchor::Prefix(prefix),
+                    Row::Secret {
+                        shared_prefix,
+                        result,
+                        ..
+                    },
+                ) => {
                     shared_prefix.as_deref() == Some(prefix.as_str())
                         || prefix_of(&result.path) == prefix
                 }
@@ -494,6 +562,12 @@ impl SearchView {
         self.draw_input(frame, chunks[2]);
         self.draw_results(frame, chunks[3]);
         self.draw_footer(frame, chunks[5]);
+
+        // The autocomplete popup sits between the input bar and the modal
+        // overlays — picker/palette still need to draw on top of it when
+        // they are open, but the popup itself should hide whatever it
+        // overlaps in the results area.
+        self.autocomplete.draw(frame, chunks[2]);
 
         // Render the picker / palette overlays last so they sit on top of
         // the rest of the chrome.
@@ -787,7 +861,10 @@ impl SearchView {
             .max("ENVS".len());
         let desc_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| desc_cell_width(&c.desc, c.tags.as_deref())))
+            .filter_map(|d| {
+                d.as_ref()
+                    .map(|c| desc_cell_width(&c.desc, c.tags.as_deref()))
+            })
             .max()
             .unwrap_or(0)
             .max("DESCRIPTION".len());
@@ -857,7 +934,11 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::FoldedGroup { prefix, count, indent } => {
+                Row::FoldedGroup {
+                    prefix,
+                    count,
+                    indent,
+                } => {
                     let pad_indent = "  ".repeat(*indent);
                     let line = Line::from(vec![
                         Span::raw(pad_indent),
@@ -872,7 +953,11 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::Secret { result, shared_prefix, .. } => {
+                Row::Secret {
+                    result,
+                    shared_prefix,
+                    ..
+                } => {
                     let cells = data.as_ref().unwrap();
                     // Compose the path cell. The parent prefix is split into
                     // a "shared" segment (top-level path slice when this leaf
@@ -897,10 +982,7 @@ impl SearchView {
                                 .fg(theme::accent())
                                 .add_modifier(Modifier::DIM),
                         ),
-                        Span::styled(
-                            rest_seg.to_string(),
-                            Style::default().fg(theme::path_dim()),
-                        ),
+                        Span::styled(rest_seg.to_string(), Style::default().fg(theme::path_dim())),
                         Span::raw(cells.basename.clone()),
                         Span::raw(format!("{:<pad$}  ", "", pad = pad)),
                         Span::styled(
@@ -1018,7 +1100,11 @@ fn tag_chips_width(tags: Option<&[String]>) -> usize {
 /// the per-row right-padding so they can't drift apart.
 fn desc_cell_width(desc: &str, tags: Option<&[String]>) -> usize {
     let chips_w = tag_chips_width(tags);
-    let sep = if !desc.is_empty() && chips_w > 0 { 1 } else { 0 };
+    let sep = if !desc.is_empty() && chips_w > 0 {
+        1
+    } else {
+        0
+    };
     desc.len() + sep + chips_w
 }
 
@@ -1056,9 +1142,7 @@ fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
                     // need the full path list, Tag needs decryption). The
                     // label still shows up against any explicit Single/Alias
                     // references.
-                    EnvEntry::Glob(_)
-                    | EnvEntry::Tag(_)
-                    | EnvEntry::AliasTag { .. } => {}
+                    EnvEntry::Glob(_) | EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {}
                 }
             }
         }

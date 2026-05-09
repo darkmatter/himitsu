@@ -61,9 +61,7 @@ pub fn run(args: JoinArgs, ctx: &Context) -> Result<()> {
 fn read_own_pubkey(ctx: &Context) -> Result<String> {
     let key_path = ctx.key_path();
     let contents = std::fs::read_to_string(&key_path).map_err(|_| {
-        HimitsuError::Recipient(
-            "no age key found — run `himitsu init` first".into(),
-        )
+        HimitsuError::Recipient("no age key found — run `himitsu init` first".into())
     })?;
     for line in contents.lines() {
         if let Some(rest) = line.strip_prefix("# public key: ") {
@@ -100,7 +98,6 @@ pub fn is_self_recipient(ctx: &Context) -> bool {
 mod tests {
     use super::*;
     use crate::remote::store as rstore;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn mk_ctx_with_key(tmp: &TempDir) -> Context {
@@ -139,7 +136,14 @@ mod tests {
         .unwrap();
         assert!(!is_self_recipient(&ctx));
 
-        run(JoinArgs { name: None, no_push: true }, &ctx).unwrap();
+        run(
+            JoinArgs {
+                name: None,
+                no_push: true,
+            },
+            &ctx,
+        )
+        .unwrap();
 
         assert!(is_self_recipient(&ctx));
     }
@@ -149,9 +153,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ctx = mk_ctx_with_key(&tmp);
 
-        run(JoinArgs { name: Some("me".into()), no_push: true }, &ctx).unwrap();
+        run(
+            JoinArgs {
+                name: Some("me".into()),
+                no_push: true,
+            },
+            &ctx,
+        )
+        .unwrap();
         // Second call should succeed silently
-        run(JoinArgs { name: Some("me".into()), no_push: true }, &ctx).unwrap();
+        run(
+            JoinArgs {
+                name: Some("me".into()),
+                no_push: true,
+            },
+            &ctx,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -168,7 +186,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(JoinArgs { name: None, no_push: true }, &ctx);
+        let result = run(
+            JoinArgs {
+                name: None,
+                no_push: true,
+            },
+            &ctx,
+        );
         assert!(result.is_err());
     }
 

@@ -27,14 +27,14 @@
 //! correct the input.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::cli::duration::{self, ExpiresAt};
@@ -70,6 +70,13 @@ pub enum NewSecretAction {
     /// Submission failed but the form should stay open so the user can
     /// edit. Carries the error message to show in the status line.
     Failed(String),
+    /// Ask the router to publish an ambient bottom-left hint. Routed
+    /// through the action enum (rather than reaching into the App
+    /// directly) to mirror the existing pattern used for toasts.
+    SetHint(String),
+    /// Ask the router to clear the ambient hint, e.g. when focus leaves
+    /// a field that had a tip pinned.
+    ClearHint,
 }
 
 /// Which field currently has focus.
@@ -83,12 +90,15 @@ pub enum Step {
     Totp,
     EnvKey,
     ExpiresAt,
+    /// Final tab stop — a submit-button row. Pressing Enter here triggers
+    /// the same `submit()` path as Ctrl+S/Ctrl+W.
+    Submit,
 }
 
 impl Step {
     /// All steps in display/tab order. Used for Tab / Shift-Tab cycling
     /// and for tests asserting the cycle visits every field.
-    const ORDER: [Step; 8] = [
+    const ORDER: [Step; 9] = [
         Step::Path,
         Step::Value,
         Step::Description,
@@ -97,6 +107,7 @@ impl Step {
         Step::Totp,
         Step::EnvKey,
         Step::ExpiresAt,
+        Step::Submit,
     ];
 
     fn index(self) -> usize {
@@ -117,6 +128,46 @@ impl Step {
     }
 }
 
+/// Buttons in the unsaved-changes confirm dialog. Drawn left-to-right in the
+/// declared order; `KeepEditing` is the safe default focus when the modal
+/// opens (a stray Esc + Enter shouldn't lose work).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmButton {
+    KeepEditing,
+    Save,
+    Discard,
+}
+
+impl ConfirmButton {
+    const ORDER: [ConfirmButton; 3] = [
+        ConfirmButton::KeepEditing,
+        ConfirmButton::Save,
+        ConfirmButton::Discard,
+    ];
+
+    fn index(self) -> usize {
+        Self::ORDER.iter().position(|b| *b == self).unwrap()
+    }
+
+    fn next(self) -> Self {
+        let i = self.index();
+        Self::ORDER[(i + 1) % Self::ORDER.len()]
+    }
+
+    fn prev(self) -> Self {
+        let i = self.index();
+        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ConfirmButton::KeepEditing => "[ keep editing ]",
+            ConfirmButton::Save => "[ save ]",
+            ConfirmButton::Discard => "[ discard ]",
+        }
+    }
+}
+
 pub struct NewSecretView {
     step: Step,
     path: String,
@@ -128,6 +179,9 @@ pub struct NewSecretView {
     env_key: String,
     expires_at: String,
     status: Option<String>,
+    /// `Some(focused_button)` while the unsaved-changes modal is up.
+    /// `None` means the modal is closed and the form behaves normally.
+    confirm_exit: Option<ConfirmButton>,
     ctx: Context,
 }
 
@@ -144,8 +198,27 @@ impl NewSecretView {
             env_key: String::new(),
             expires_at: String::new(),
             status: None,
+            confirm_exit: None,
             ctx: ctx.clone(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn confirm_exit(&self) -> Option<ConfirmButton> {
+        self.confirm_exit
+    }
+
+    /// `true` if any field carries content the user might want to save.
+    /// Used to decide whether Esc opens the confirm dialog or just bails.
+    fn has_unsaved_changes(&self) -> bool {
+        !self.path.is_empty()
+            || !self.value.is_empty()
+            || !self.description.is_empty()
+            || !self.tags.is_empty()
+            || !self.url.is_empty()
+            || !self.totp.is_empty()
+            || !self.env_key.is_empty()
+            || !self.expires_at.is_empty()
     }
 
     #[cfg(test)]
@@ -170,7 +243,8 @@ impl NewSecretView {
 
     /// Mutable accessor to the buffer that backs the currently focused step.
     /// `Value` is multi-line so it lives in its own helper; every other field
-    /// routes through this single-line path.
+    /// routes through this single-line path. The `Submit` step has no
+    /// buffer — its handler is keyboard-only.
     fn field_buffer_mut(&mut self, step: Step) -> Option<&mut String> {
         match step {
             Step::Path => Some(&mut self.path),
@@ -181,6 +255,7 @@ impl NewSecretView {
             Step::Totp => Some(&mut self.totp),
             Step::EnvKey => Some(&mut self.env_key),
             Step::ExpiresAt => Some(&mut self.expires_at),
+            Step::Submit => None,
         }
     }
 
@@ -195,35 +270,154 @@ impl NewSecretView {
         ) {
             return NewSecretAction::Quit;
         }
+
+        // Confirm dialog swallows everything else while active.
+        if self.confirm_exit.is_some() {
+            return self.handle_confirm_exit_key(key);
+        }
+
+        // Snapshot the step before key dispatch so we can detect step
+        // transitions and emit a hint action without any per-field handler
+        // having to know about the bottom-left strip.
+        let before = self.step;
+
         // Resolve cancel / save / prev_field up front so a chord-completed
         // action takes the same path as the bare keystroke. NextField
         // stays inside the field-specific handlers because it interacts
-        // with per-field validation.
+        // with per-field validation. Note: outcomes from `dispatch_action`
+        // are forwarded untouched — submission/save can refocus fields
+        // internally (e.g. snap back to Path on validation error), and
+        // we don't want that internal step churn to clobber the action.
         if let Some(action) = keymap.action_for_key_in(&key, FORM_ACTION_PRIORITY) {
             if let Some(outcome) = self.dispatch_action(action) {
+                // Only `PrevField` is purely navigational; map its `None`
+                // outcome to a hint sync if the step actually moved.
+                if matches!(action, KeyAction::PrevField) {
+                    return self.maybe_swap_for_hint(outcome, before);
+                }
                 return outcome;
             }
         }
 
-        match self.step {
+        let inner = match self.step {
             Step::Value => self.handle_value_key(key, keymap),
+            Step::Submit => self.handle_submit_step_key(key, keymap),
             _ => self.handle_single_line_key(key, keymap),
+        };
+        self.maybe_swap_for_hint(inner, before)
+    }
+
+    /// Replace `inner` with a `SetHint`/`ClearHint` action when the step
+    /// changed and the inner action carried no other meaning (i.e. `None`).
+    /// Submission/cancellation outcomes are forwarded untouched so a hint
+    /// transition never masks a meaningful router action.
+    fn maybe_swap_for_hint(&self, inner: NewSecretAction, before: Step) -> NewSecretAction {
+        if !matches!(inner, NewSecretAction::None) || before == self.step {
+            return inner;
+        }
+        match Self::hint_for_step(self.step) {
+            Some(msg) => NewSecretAction::SetHint(msg.to_string()),
+            None => NewSecretAction::ClearHint,
+        }
+    }
+
+    /// Hint message associated with each step. `None` means the step has
+    /// no ambient tip — the router should clear any leftover hint.
+    pub(crate) fn hint_for_step(step: Step) -> Option<&'static str> {
+        match step {
+            // Slashes turn into folder headers in the search view, so the
+            // tip nudges users toward the same convention used elsewhere.
+            Step::Path => Some("· tip: use slashes (prod/api/KEY) for grouping"),
+            // Commas separate tags and the grammar forbids whitespace.
+            Step::Tags => Some("· tip: comma-separated, no spaces"),
+            // RFC 3339 + relative durations + `never` is a lot to remember.
+            Step::ExpiresAt => Some("· tip: never, 30d, 6mo, 1y, or RFC 3339"),
+            _ => None,
         }
     }
 
     /// Run a [`KeyAction`] against the new-secret form. Returns `None` for
     /// actions this form doesn't own (e.g. NextField, which is intentionally
     /// scoped to the field-specific handlers below so it interacts with the
-    /// per-field validate-then-advance flow).
+    /// per-field validate-then-advance flow). Cancel routes through the
+    /// confirm-exit gate so a stray Esc never silently throws away typed
+    /// input.
     pub fn dispatch_action(&mut self, action: KeyAction) -> Option<NewSecretAction> {
         match action {
-            KeyAction::Cancel => Some(NewSecretAction::Cancel),
+            KeyAction::Cancel => {
+                if self.has_unsaved_changes() {
+                    self.confirm_exit = Some(ConfirmButton::KeepEditing);
+                    Some(NewSecretAction::None)
+                } else {
+                    Some(NewSecretAction::Cancel)
+                }
+            }
             KeyAction::SaveSecret => Some(self.submit()),
             KeyAction::PrevField => {
                 self.move_to(self.step.prev());
                 Some(NewSecretAction::None)
             }
             _ => None,
+        }
+    }
+
+    /// Submit-step keys: Enter triggers submission; Up/Tab/Down navigate;
+    /// every other key is ignored (no buffer to type into).
+    fn handle_submit_step_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
+        if keymap.next_field.matches(&key) {
+            self.move_to(self.step.next());
+            return NewSecretAction::None;
+        }
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) => self.submit(),
+            (KeyCode::Up, _) => {
+                self.move_to(self.step.prev());
+                NewSecretAction::None
+            }
+            (KeyCode::Down, _) => {
+                self.move_to(self.step.next());
+                NewSecretAction::None
+            }
+            _ => NewSecretAction::None,
+        }
+    }
+
+    /// Modal key handler for the unsaved-changes confirm dialog. Left/Right
+    /// (and Tab) cycle the focused button, Enter activates it, Esc resolves
+    /// to the safe option (`keep editing`) — i.e. dismiss the modal without
+    /// taking action.
+    fn handle_confirm_exit_key(&mut self, key: KeyEvent) -> NewSecretAction {
+        let Some(focused) = self.confirm_exit else {
+            return NewSecretAction::None;
+        };
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                self.confirm_exit = None;
+                NewSecretAction::None
+            }
+            (KeyCode::Left, _) => {
+                self.confirm_exit = Some(focused.prev());
+                NewSecretAction::None
+            }
+            (KeyCode::Right, _) | (KeyCode::Tab, _) => {
+                self.confirm_exit = Some(focused.next());
+                NewSecretAction::None
+            }
+            (KeyCode::Enter, _) => match focused {
+                ConfirmButton::Save => {
+                    self.confirm_exit = None;
+                    self.submit()
+                }
+                ConfirmButton::Discard => {
+                    self.confirm_exit = None;
+                    NewSecretAction::Cancel
+                }
+                ConfirmButton::KeepEditing => {
+                    self.confirm_exit = None;
+                    NewSecretAction::None
+                }
+            },
+            _ => NewSecretAction::None,
         }
     }
 
@@ -296,9 +490,7 @@ impl NewSecretView {
     /// printable char and defers validation to leave/submit time.
     fn accepts_char(step: Step, c: char) -> bool {
         match step {
-            Step::Tags => {
-                c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ','
-            }
+            Step::Tags => c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ',',
             _ => true,
         }
     }
@@ -368,6 +560,7 @@ impl NewSecretView {
                     .map(|_| ())
                     .map_err(|e| format!("{e}"))
             }
+            Step::Submit => Ok(()),
         }
     }
 
@@ -499,12 +692,20 @@ impl NewSecretView {
                 Constraint::Length(3), // totp
                 Constraint::Length(3), // env_key
                 Constraint::Length(3), // expires_at
+                Constraint::Length(3), // submit button
                 Constraint::Length(1), // footer
             ])
             .split(area);
 
         self.draw_header(frame, chunks[0]);
-        self.draw_single_line(frame, chunks[1], Step::Path, " path ", &self.path);
+        self.draw_single_line(
+            frame,
+            chunks[1],
+            Step::Path,
+            " path ",
+            &self.path,
+            "prod/api/STRIPE_KEY",
+        );
         self.draw_value_field(frame, chunks[2]);
         self.draw_single_line(
             frame,
@@ -512,19 +713,55 @@ impl NewSecretView {
             Step::Description,
             " description ",
             &self.description,
+            "human-readable note (optional)",
         );
-        self.draw_tags_field(frame, chunks[4]);
-        self.draw_single_line(frame, chunks[5], Step::Url, " url ", &self.url);
-        self.draw_single_line(frame, chunks[6], Step::Totp, " totp ", &self.totp);
-        self.draw_single_line(frame, chunks[7], Step::EnvKey, " env_key ", &self.env_key);
+        self.draw_single_line(
+            frame,
+            chunks[4],
+            Step::Tags,
+            " tags ",
+            &self.tags,
+            "comma-separated, e.g. pci,stripe",
+        );
+        self.draw_single_line(
+            frame,
+            chunks[5],
+            Step::Url,
+            " url ",
+            &self.url,
+            "https://example.com",
+        );
+        self.draw_single_line(
+            frame,
+            chunks[6],
+            Step::Totp,
+            " totp ",
+            &self.totp,
+            "otpauth://... or base32 secret",
+        );
+        self.draw_single_line(
+            frame,
+            chunks[7],
+            Step::EnvKey,
+            " env_key ",
+            &self.env_key,
+            "STRIPE_KEY",
+        );
         self.draw_single_line(
             frame,
             chunks[8],
             Step::ExpiresAt,
             " expires_at ",
             &self.expires_at,
+            "never | 30d | 6mo | 2027-01-01T00:00:00Z",
         );
-        self.draw_footer(frame, chunks[9]);
+        self.draw_submit_button(frame, chunks[9]);
+        self.draw_footer(frame, chunks[10]);
+
+        // Modal overlay paints last so it sits above the form.
+        if let Some(focused) = self.confirm_exit {
+            self.draw_confirm_exit(frame, focused);
+        }
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -544,6 +781,7 @@ impl NewSecretView {
         step: Step,
         title: &str,
         content: &str,
+        placeholder: &str,
     ) {
         let focused = self.step == step;
         let block = Block::default()
@@ -551,36 +789,7 @@ impl NewSecretView {
             .title(title.to_string())
             .title_style(Style::default().fg(theme::border_label()))
             .border_style(Self::border_style(focused));
-        let mut text = content.to_string();
-        if focused {
-            text.push('_');
-        }
-        frame.render_widget(Paragraph::new(text).block(block), area);
-    }
-
-    /// Render the `Tags` step. When the buffer is empty and unfocused we
-    /// surface a muted hint inside the input so the user sees the
-    /// comma-separated DSL without having to read external help text.
-    fn draw_tags_field(&self, frame: &mut Frame<'_>, area: Rect) {
-        let focused = self.step == Step::Tags;
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" tags ")
-            .title_style(Style::default().fg(theme::border_label()))
-            .border_style(Self::border_style(focused));
-        let para = if self.tags.is_empty() && !focused {
-            Paragraph::new(Span::styled(
-                "comma-separated, e.g. pci,stripe",
-                Style::default().fg(theme::muted()),
-            ))
-            .block(block)
-        } else {
-            let mut text = self.tags.clone();
-            if focused {
-                text.push('_');
-            }
-            Paragraph::new(text).block(block)
-        };
+        let para = Self::field_paragraph(content, placeholder, focused).block(block);
         frame.render_widget(para, area);
     }
 
@@ -591,14 +800,30 @@ impl NewSecretView {
             .title(" value ")
             .title_style(Style::default().fg(theme::border_label()))
             .border_style(Self::border_style(focused));
-        let mut text = self.value.clone();
-        if focused {
-            text.push('_');
+        let para =
+            Self::field_paragraph(&self.value, "value here — Enter inserts a newline", focused)
+                .block(block)
+                .wrap(Wrap { trim: false });
+        frame.render_widget(para, area);
+    }
+
+    /// Build the paragraph body shared by every field: muted placeholder
+    /// when empty + unfocused, otherwise the buffer with a trailing cursor
+    /// while focused. Centralised so the placeholder behaviour is uniform
+    /// across single-line and multi-line inputs.
+    fn field_paragraph<'a>(content: &'a str, placeholder: &'a str, focused: bool) -> Paragraph<'a> {
+        if !focused && content.is_empty() {
+            Paragraph::new(Line::from(Span::styled(
+                placeholder,
+                Style::default().fg(theme::muted()),
+            )))
+        } else {
+            let mut text = content.to_string();
+            if focused {
+                text.push('_');
+            }
+            Paragraph::new(text)
         }
-        frame.render_widget(
-            Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
-            area,
-        );
     }
 
     fn border_style(focused: bool) -> Style {
@@ -607,6 +832,87 @@ impl NewSecretView {
         } else {
             Style::default().fg(theme::muted())
         }
+    }
+
+    /// Submit-button row. Same 3-row footprint as a text field so the layout
+    /// above stays stable; only the contents and border colour change with
+    /// focus.
+    fn draw_submit_button(&self, frame: &mut Frame<'_>, area: Rect) {
+        let focused = self.step == Step::Submit;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Self::border_style(focused));
+        let label_style = if focused {
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::muted())
+        };
+        let para = Paragraph::new(Line::from(Span::styled("[ submit ]", label_style)))
+            .alignment(Alignment::Center)
+            .block(block);
+        frame.render_widget(para, area);
+    }
+
+    /// Centered "unsaved changes" popup. Painted on top of the form when the
+    /// user presses Esc with at least one populated field.
+    fn draw_confirm_exit(&self, frame: &mut Frame<'_>, focused: ConfirmButton) {
+        let area = confirm_popup_rect(frame.area());
+        frame.render_widget(Clear, area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " unsaved changes ",
+                Style::default()
+                    .fg(theme::border_label())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::default().fg(theme::accent()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // top pad
+                Constraint::Length(1), // body
+                Constraint::Length(1), // pad
+                Constraint::Length(1), // buttons
+                Constraint::Min(0),
+            ])
+            .split(inner);
+
+        let body = Paragraph::new(Line::from(Span::styled(
+            "save the new secret, discard, or keep editing?",
+            Style::default().fg(theme::footer_text()),
+        )))
+        .alignment(Alignment::Center);
+        frame.render_widget(body, rows[1]);
+
+        let buttons: Vec<Span<'_>> = ConfirmButton::ORDER
+            .iter()
+            .enumerate()
+            .flat_map(|(i, b)| {
+                let style = if *b == focused {
+                    Style::default()
+                        .fg(theme::accent())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::muted())
+                };
+                let mut spans = vec![Span::styled(b.label(), style)];
+                if i + 1 < ConfirmButton::ORDER.len() {
+                    spans.push(Span::raw("  "));
+                }
+                spans
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Line::from(buttons)).alignment(Alignment::Center),
+            rows[3],
+        );
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -635,17 +941,37 @@ impl NewSecretView {
 
     pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         &[
-            ("tab / enter", "next field (wraps)"),
+            (
+                "tab / enter",
+                "next field (wraps); tab cycles into [ submit ]",
+            ),
             ("shift-tab", "previous field (wraps)"),
             ("enter (value)", "insert newline"),
+            ("enter (submit)", "save the new secret"),
             ("ctrl-s / ctrl-w", "save from any field"),
-            ("esc / ctrl-c", "cancel"),
+            ("esc", "cancel (prompts if any field has content)"),
+            ("ctrl-c", "quit"),
             ("?", "toggle this help"),
         ]
     }
 
     pub fn help_title() -> &'static str {
         "new secret · keys"
+    }
+}
+
+/// Centered rect for the unsaved-changes popup. ~50 columns × 7 rows keeps
+/// the dialog readable on small terminals while staying compact.
+fn confirm_popup_rect(area: Rect) -> Rect {
+    const W: u16 = 50;
+    const H: u16 = 7;
+    let width = W.min(area.width);
+    let height = H.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(width) / 2),
+        y: area.y + (area.height.saturating_sub(height) / 2),
+        width,
+        height,
     }
 }
 
@@ -761,14 +1087,26 @@ mod tests {
     }
 
     #[test]
-    fn esc_cancels_the_form() {
+    fn esc_on_empty_form_cancels_immediately() {
         let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
-        typ(&mut view, "x");
+        // No fields populated → no point prompting.
         assert!(matches!(
             view.on_key(press(KeyCode::Esc), &km),
             NewSecretAction::Cancel
         ));
+        assert!(view.confirm_exit().is_none());
+    }
+
+    #[test]
+    fn esc_with_unsaved_changes_opens_confirm_dialog() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "x");
+        let out = view.on_key(press(KeyCode::Esc), &km);
+        // Modal swallows the cancel — the form must stay alive.
+        assert!(matches!(out, NewSecretAction::None));
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::KeepEditing));
     }
 
     #[test]
@@ -819,10 +1157,10 @@ mod tests {
     #[test]
     fn tab_cycle_visits_every_field_and_wraps_to_path() {
         let km = KeyMap::default();
-        // hm-r4i: cycling forward must hit every metadata field and wrap.
+        // hm-r4i + hm-3rr: cycling forward must hit every metadata field,
+        // pass through the new submit step, and wrap back to path.
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        // Value is multi-line, so skip past it explicitly.
         let expected = [
             Step::Path,
             Step::Value,
@@ -832,6 +1170,7 @@ mod tests {
             Step::Totp,
             Step::EnvKey,
             Step::ExpiresAt,
+            Step::Submit,
             Step::Path, // wrap-around
         ];
         let mut seen = vec![view.step()];
@@ -843,14 +1182,92 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_wraps_backward_from_path_to_expires_at() {
+    fn shift_tab_wraps_backward_from_path_to_submit() {
         let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         assert_eq!(view.step(), Step::Path);
         view.on_key(back_tab(), &km);
-        assert_eq!(view.step(), Step::ExpiresAt);
+        // Submit is now the last tab stop.
+        assert_eq!(view.step(), Step::Submit);
         view.on_key(back_tab(), &km);
-        assert_eq!(view.step(), Step::EnvKey);
+        assert_eq!(view.step(), Step::ExpiresAt);
+    }
+
+    #[test]
+    fn enter_on_submit_step_invokes_submit() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        // Walk all the way to Submit (8 Tab presses from Path).
+        for _ in 0..8 {
+            view.on_key(press(KeyCode::Tab), &km);
+        }
+        assert_eq!(view.step(), Step::Submit);
+        let out = view.on_key(press(KeyCode::Enter), &km);
+        // Empty value rejects with focus snapped back to Value — confirms
+        // Enter on the Submit step reached submit(). The step transition
+        // (Submit → Value) gets translated into a hint sync; Value has
+        // no ambient tip, so ClearHint is the expected outcome.
+        assert!(
+            matches!(out, NewSecretAction::ClearHint),
+            "expected ClearHint, got {out:?}"
+        );
+        assert_eq!(view.step(), Step::Value);
+        assert!(view.status().unwrap().contains("value"));
+    }
+
+    #[test]
+    fn confirm_dialog_right_cycles_focused_button() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "x");
+        view.on_key(press(KeyCode::Esc), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::KeepEditing));
+        view.on_key(press(KeyCode::Right), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::Save));
+        view.on_key(press(KeyCode::Right), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::Discard));
+    }
+
+    #[test]
+    fn confirm_dialog_left_reverses() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "x");
+        view.on_key(press(KeyCode::Esc), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::KeepEditing));
+        view.on_key(press(KeyCode::Left), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::Discard));
+        view.on_key(press(KeyCode::Left), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::Save));
+    }
+
+    #[test]
+    fn confirm_dialog_enter_on_discard_emits_cancel() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "x");
+        view.on_key(press(KeyCode::Esc), &km);
+        // KeepEditing → Save → Discard
+        view.on_key(press(KeyCode::Right), &km);
+        view.on_key(press(KeyCode::Right), &km);
+        assert_eq!(view.confirm_exit(), Some(ConfirmButton::Discard));
+        let out = view.on_key(press(KeyCode::Enter), &km);
+        assert!(matches!(out, NewSecretAction::Cancel));
+    }
+
+    #[test]
+    fn confirm_dialog_esc_returns_to_form() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "x");
+        view.on_key(press(KeyCode::Esc), &km);
+        assert!(view.confirm_exit().is_some());
+        let out = view.on_key(press(KeyCode::Esc), &km);
+        assert!(matches!(out, NewSecretAction::None));
+        assert!(view.confirm_exit().is_none());
+        // The form is still editable: the buffer is intact.
+        assert_eq!(view.path(), "x");
     }
 
     #[test]
@@ -1010,12 +1427,66 @@ mod tests {
         // Belt-and-braces against pasted/injected input that bypasses the
         // typing-time filter.
         let err = parse_tags_input("a,bad tag,b").unwrap_err();
-        assert!(err.contains("bad tag"), "error mentions offending tag: {err}");
+        assert!(
+            err.contains("bad tag"),
+            "error mentions offending tag: {err}"
+        );
     }
 
     #[test]
     fn parse_tags_input_empty_string_yields_empty_vec() {
         assert_eq!(parse_tags_input("").unwrap(), Vec::<String>::new());
+    }
+
+    // ── hm-isi: ambient hints follow step focus ───────────────────────
+
+    #[test]
+    fn tab_off_path_emits_clear_hint_for_step_without_tip() {
+        // Path → Value: Path has a tip, Value has none. Leaving a tipped
+        // step for a tipless one must emit ClearHint so the router drops
+        // the stale tip.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        let action = view.on_key(press(KeyCode::Tab), &km);
+        assert!(
+            matches!(action, NewSecretAction::ClearHint),
+            "expected ClearHint on Path → Value, got {action:?}"
+        );
+        assert_eq!(view.step(), Step::Value);
+    }
+
+    #[test]
+    fn shift_tab_to_submit_emits_clear_hint() {
+        // Shift-Tab from initial Path wraps backward to Submit (no tip),
+        // so the router should clear any leftover hint.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        let action = view.on_key(back_tab(), &km);
+        match action {
+            NewSecretAction::ClearHint => {}
+            other => panic!("expected ClearHint, got {other:?}"),
+        }
+        assert_eq!(view.step(), Step::Submit);
+    }
+
+    #[test]
+    fn typing_within_a_step_does_not_emit_hint_actions() {
+        // Plain character input must not churn the hint surface; only
+        // step transitions do.
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        let action = view.on_key(press(KeyCode::Char('p')), &km);
+        assert!(matches!(action, NewSecretAction::None));
+    }
+
+    #[test]
+    fn hint_for_step_covers_path_tags_and_expires_at() {
+        assert!(NewSecretView::hint_for_step(Step::Path).is_some());
+        assert!(NewSecretView::hint_for_step(Step::Tags).is_some());
+        assert!(NewSecretView::hint_for_step(Step::ExpiresAt).is_some());
+        assert!(NewSecretView::hint_for_step(Step::Value).is_none());
+        assert!(NewSecretView::hint_for_step(Step::Submit).is_none());
     }
 
     #[test]
@@ -1046,6 +1517,10 @@ mod tests {
         // filter by writing straight to the buffer simulates a paste.
         view.tags = "a".repeat(65);
         let out = view.on_key(ctrl('s'), &km);
+        // Submit refocuses Tags (validation error); the step transition
+        // currently doesn't trigger a hint swap because Ctrl+S routes
+        // through `dispatch_action` (router-level intent) rather than
+        // navigation. The action here is the original `None` from submit().
         assert!(matches!(out, NewSecretAction::None));
         assert_eq!(view.step(), Step::Tags);
         assert!(view.status().is_some());

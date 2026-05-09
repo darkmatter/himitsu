@@ -9,6 +9,7 @@ pub mod keyring;
 pub mod proto;
 pub mod reference;
 pub mod remote;
+pub mod suggest;
 pub mod tui;
 
 use clap::Parser;

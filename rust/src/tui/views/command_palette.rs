@@ -496,7 +496,7 @@ mod tests {
         }
         assert!(p.filtered.contains(&Command::AddRemote));
         // "remote" also matches "add remote" — just confirm it's in the filtered set.
-        assert!(p.filtered.iter().any(|c| *c == Command::AddRemote));
+        assert!(p.filtered.contains(&Command::AddRemote));
     }
 
     #[test]

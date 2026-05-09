@@ -347,6 +347,64 @@ mod tests {
         );
     }
 
+    // ── hm-isi: ambient bottom-left hint follows field focus ─────────
+    //
+    // Opening the new-secret form should seed the bottom-left hint with the
+    // tip for the path field, then swap to the tags / expires_at tip as the
+    // user tabs through, and clear the hint when the form closes (Esc /
+    // Cancel). The hint sits in the left third of the bottom strip.
+
+    #[test]
+    fn ambient_hint_tracks_focus_and_clears_on_cancel() {
+        let fx = Fixture::new();
+        let mut h = TuiHarness::new(&fx.ctx);
+
+        // No hint on the search view by default.
+        assert!(h.app.hint().is_none(), "search view should not set a hint");
+
+        h.press_ctrl('n');
+        assert_eq!(h.app.current_view(), "new_secret");
+        let hint = h
+            .app
+            .hint()
+            .expect("opening new-secret should seed the path hint");
+        assert!(
+            hint.message.contains("slashes"),
+            "expected slashes tip on path step, got {:?}",
+            hint.message
+        );
+
+        // Tab forward through Path → Value → Description → Tags. Tags has
+        // its own hint so the router should swap.
+        h.type_str("prod/KEY");
+        h.press(KeyCode::Tab); // value
+        h.type_str("v");
+        h.press(KeyCode::Tab); // description
+        h.press(KeyCode::Tab); // tags
+        let hint = h.app.hint().expect("tags step should swap in its hint");
+        assert!(
+            hint.message.contains("comma-separated"),
+            "expected tags tip, got {:?}",
+            hint.message
+        );
+
+        // Cancelling the form pushes a toast; toast visually suppresses
+        // the hint, but the underlying hint state should also be cleared
+        // so the search view starts hint-free.
+        h.press(KeyCode::Esc);
+        // The first Esc opens the unsaved-changes modal (path field has
+        // content). Confirm-button cycles to Discard (Right twice past
+        // KeepEditing → Save → Discard) then Enter discards.
+        h.press(KeyCode::Right);
+        h.press(KeyCode::Right);
+        h.press(KeyCode::Enter);
+        assert_eq!(h.app.current_view(), "search");
+        assert!(
+            h.app.hint().is_none(),
+            "hint should be cleared after cancelling new-secret"
+        );
+    }
+
     // ── Flow 4: Ctrl+Y in search → toast visible in rendered buffer ──
     //
     // Exercises the global toast surface (hm-o15). On headless CI the

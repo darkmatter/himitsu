@@ -11,12 +11,14 @@ mod event;
 pub mod forms;
 #[cfg(test)]
 mod harness;
+mod hint;
 mod icons;
 pub mod keymap;
 mod terminal;
 mod theme;
 mod toast;
 mod views;
+pub mod widgets;
 
 use std::path::PathBuf;
 use std::time::Duration;

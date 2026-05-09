@@ -124,7 +124,7 @@
 
         devShells.coverage = pkgs.mkShell {
           inputsFrom = [
-            derivation
+            self.devShells.${system}.default
           ];
         };
 

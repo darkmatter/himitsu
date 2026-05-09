@@ -196,7 +196,11 @@ fn build_env_map(
     let mut env_map: BTreeMap<String, (String, String)> = BTreeMap::new();
 
     for (r, decoded) in items {
-        if !want_tags.is_empty() && !want_tags.iter().all(|t| decoded.tags.iter().any(|d| d == t)) {
+        if !want_tags.is_empty()
+            && !want_tags
+                .iter()
+                .all(|t| decoded.tags.iter().any(|d| d == t))
+        {
             continue;
         }
 
@@ -387,7 +391,10 @@ mod tests {
         // Two secrets resolving to the same env-var name.
         let items = vec![
             (rref("a/api-key", None), decoded("first", "", &[])),
-            (rref("b/API_KEY", Some("API_KEY")), decoded("second", "", &[])),
+            (
+                rref("b/API_KEY", Some("API_KEY")),
+                decoded("second", "", &[]),
+            ),
         ];
         let err = build_env_map(items, &[]).unwrap_err();
         let msg = err.to_string();
@@ -424,10 +431,9 @@ mod tests {
             args: ExecArgs,
         }
 
-        let cli = Cli::try_parse_from([
-            "test", "prod/API_KEY", "--", "node", "-e", "console.log(1)",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["test", "prod/API_KEY", "--", "node", "-e", "console.log(1)"])
+                .unwrap();
         assert_eq!(cli.args.r#ref, "prod/API_KEY");
         assert_eq!(cli.args.command, vec!["node", "-e", "console.log(1)"]);
         assert!(!cli.args.clean);

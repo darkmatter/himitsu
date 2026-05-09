@@ -11,6 +11,7 @@ use super::Context;
 use crate::crypto::{age, secret_value, tags};
 use crate::error::{HimitsuError, Result};
 use crate::remote::store;
+use crate::suggest;
 
 /// Search secrets across all known stores.
 #[derive(Debug, Args)]
@@ -71,11 +72,7 @@ pub struct SearchResult {
 /// (AND-semantics). An empty slice disables tag filtering. Validation of
 /// individual tag strings is the caller's responsibility — see [`run`] for
 /// the CLI path that runs them through [`crate::crypto::tags::validate_tag`].
-pub fn search_core(
-    ctx: &Context,
-    query: &str,
-    tag_filter: &[String],
-) -> Result<Vec<SearchResult>> {
+pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<Vec<SearchResult>> {
     let mut candidates: Vec<SearchResult> = Vec::new();
 
     // Try to load the age identity once so we can best-effort extract the
@@ -229,6 +226,20 @@ pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
     } else {
         let use_color = io::stdout().is_terminal();
         print_table(&results, &args.query, use_color, Utc::now());
+    }
+
+    // "Did you mean ..." suggestion: only when the user typed a real query,
+    // got zero hits, and isn't filtering by tags (a tag-mismatch is a
+    // different kind of empty). The candidate corpus is every path returned
+    // by an unfiltered `search_core` so suggestions stay aligned with what
+    // the search actually traverses.
+    if !args.json && results.is_empty() && args.tags.is_empty() && !args.query.trim().is_empty() {
+        let all = search_core(ctx, "", &[])?;
+        let candidates: Vec<String> = all.into_iter().map(|r| r.path).collect();
+        let max_dist = suggest::default_max_distance(&args.query);
+        if let Some(hit) = suggest::suggest_closest(&args.query, &candidates, max_dist) {
+            eprintln!("did you mean {hit}?");
+        }
     }
 
     Ok(())

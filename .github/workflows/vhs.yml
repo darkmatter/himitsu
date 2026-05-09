@@ -20,6 +20,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  VHS_VERSION: 0.11.0
 
 jobs:
   vhs:
@@ -45,10 +46,14 @@ jobs:
       - name: Install VHS runtime deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg ttyd
+          sudo apt-get install -y ffmpeg protobuf-compiler ttyd
 
       - name: Install VHS
-        uses: charmbracelet/vhs-action@v2
+        run: |
+          curl -fsSL \
+            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_amd64.deb" \
+            -o /tmp/vhs.deb
+          sudo apt-get install -y /tmp/vhs.deb
 
       - name: Verify VHS install
         run: vhs --version

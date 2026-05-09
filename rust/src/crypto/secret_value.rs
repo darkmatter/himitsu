@@ -151,7 +151,6 @@ mod tests {
         assert!(!d.has_metadata());
     }
 
-
     #[test]
     fn annotations_round_trip() {
         let mut annotations = HashMap::new();

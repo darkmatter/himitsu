@@ -600,6 +600,25 @@ fn search_no_matches_returns_empty() {
         .stdout(predicate::str::is_empty());
 }
 
+#[test]
+fn search_typo_suggests_closest_match() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "prod/api/STRIPE_KEY", "sk_test"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "search", "prod/api/STRIPE_KYE"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("did you mean prod/api/STRIPE_KEY"));
+}
+
 // ============ version and help tests ============
 
 #[test]
