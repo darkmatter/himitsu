@@ -145,11 +145,7 @@
     )
     // {
       herculesCI = {
-        ciSystems = [ "x86_64-linux" ];
-        onPush.default.outputs = { ... }: {
-          himitsu = self.checks.x86_64-linux.himitsu;
-          smoke = self.checks.x86_64-linux.himitsu-smoke;
-        };
+        onPush = { };
       };
     };
 }
