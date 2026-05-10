@@ -359,7 +359,7 @@ pub enum Command {
     #[command(hide = true)]
     Inbox(inbox::InboxArgs),
 
-    /// Import secrets from external stores (1Password today; SOPS planned).
+    /// Import secrets from external stores (1Password or SOPS).
     Import(import::ImportArgs),
 }
 
@@ -439,7 +439,6 @@ impl Cli {
                 | Command::Export(_)
                 | Command::Codegen(_)
                 | Command::Exec(_)
-                | Command::Share(_)
                 | Command::Import(_)
                 | Command::Tag(_)
         );
@@ -633,8 +632,6 @@ fn mutation_message(cmd: &Command) -> Option<String> {
             schema::SchemaCommand::Refresh => Some("schema refresh".to_string()),
             _ => None,
         },
-        Command::Share(_) => Some("share".to_string()),
-        Command::Inbox(_) => Some("inbox".to_string()),
         Command::Tag(a) => match &a.action {
             tag::TagAction::Add { .. } => Some(format!("tag add {}", a.path)),
             tag::TagAction::Rm { .. } => Some(format!("tag rm {}", a.path)),
@@ -672,7 +669,6 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Export(_)
             | Command::Codegen(_)
             | Command::Exec(_)
-            | Command::Share(_)
             | Command::Import(_)
             | Command::Tag(_)
     )

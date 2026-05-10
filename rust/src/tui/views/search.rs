@@ -168,6 +168,9 @@ pub struct SearchView {
     /// once at view-construction time from the project + global configs.
     /// Used to render the ENVS column in the results table.
     env_index: std::collections::HashMap<String, Vec<String>>,
+    /// Active tag filters selected from result-row tag chips. AND semantics,
+    /// matching CLI `search --tag`.
+    tag_filters: Vec<String>,
     /// When true, multi-leaf top-level prefix groups collapse to a single
     /// `FoldedGroup` row. Toggled with Tab. Singleton paths render the same
     /// in both states. Default: unfolded.
@@ -208,6 +211,7 @@ impl SearchView {
             project_health,
             show_store_column: false,
             env_index,
+            tag_filters: Vec::new(),
             folded: false,
             autocomplete: SecretRefAutocomplete::new(Vec::new()),
         };
@@ -265,6 +269,9 @@ impl SearchView {
             self.autocomplete.set_open(want_open);
             return SearchAction::None;
         }
+        if matches!(key.code, KeyCode::Char('t')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.refine_to_selected_tag();
+        }
         // Esc closes the popup before falling through to the view's own
         // cancel/quit semantics.
         if key.code == KeyCode::Esc && self.autocomplete.is_open() {
@@ -315,7 +322,9 @@ impl SearchView {
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
-                if self.query.pop().is_some() {
+                let changed = self.query.pop().is_some()
+                    || (self.query.is_empty() && self.tag_filters.pop().is_some());
+                if changed {
                     self.refresh_results();
                 }
                 SearchAction::None
@@ -397,9 +406,7 @@ impl SearchView {
     }
 
     fn refresh_results(&mut self) {
-        // Pass an empty tag filter; the TUI handles tag chips/filtering in a
-        // separate worker so this view always asks for everything.
-        self.results = search_core(&self.ctx, &self.query, &[]).unwrap_or_default();
+        self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
         self.rows = build_rows(&self.results, self.folded);
         self.list_state.select(self.first_selectable());
         // Keep the autocomplete corpus aligned with what the user could
@@ -409,6 +416,22 @@ impl SearchView {
         let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
         self.autocomplete.set_corpus(corpus);
         self.autocomplete.update_query(&self.query);
+    }
+
+    fn refine_to_selected_tag(&mut self) -> SearchAction {
+        let Some(tag) = self
+            .selected_result()
+            .and_then(|r| r.tags.as_ref())
+            .and_then(|tags| tags.first())
+            .cloned()
+        else {
+            return SearchAction::CommandHint("selected result has no tag chip".into());
+        };
+        if !self.tag_filters.iter().any(|existing| existing == &tag) {
+            self.tag_filters.push(tag.clone());
+            self.refresh_results();
+        }
+        SearchAction::CommandHint(format!("filtering by tag:{tag}"))
     }
 
     fn toggle_fold(&mut self) {
@@ -736,10 +759,18 @@ impl SearchView {
                 ))
                 .right_aligned(),
             );
-        let text = Line::from(vec![
-            Span::raw(&self.query),
-            Span::styled("█", Style::default().fg(theme::accent())),
-        ]);
+        let mut spans = Vec::new();
+        for tag in &self.tag_filters {
+            spans.extend(theme::pill_with(
+                format!("tag:{tag}"),
+                theme::accent(),
+                theme::on_accent(),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(&self.query));
+        spans.push(Span::styled("█", Style::default().fg(theme::accent())));
+        let text = Line::from(spans);
         frame.render_widget(Paragraph::new(text).block(block), area);
     }
 
@@ -899,11 +930,13 @@ impl SearchView {
         }
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
+        let selected_row = self.list_state.selected();
         let items: Vec<ListItem> = self
             .rows
             .iter()
             .zip(row_data.iter())
-            .map(|(row, data)| match row {
+            .enumerate()
+            .map(|(idx, (row, data))| match row {
                 Row::Store { name, count } => {
                     let line = Line::from(vec![
                         Span::styled(
@@ -989,7 +1022,14 @@ impl SearchView {
                             Style::default().fg(theme::accent()),
                         ));
                     }
-                    ListItem::new(Line::from(spans))
+                    let mut lines = vec![Line::from(spans)];
+                    if selected_row == Some(idx) && !cells.desc.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(cells.desc.clone(), Style::default().fg(theme::muted())),
+                        ]));
+                    }
+                    ListItem::new(lines)
                 }
             })
             .collect();
@@ -1266,7 +1306,11 @@ fn render_health_pill(label: &str, health: Option<&StoreHealth>) -> Vec<Span<'st
             Span::styled(body, Style::default().fg(color)),
         ]
     } else {
-        theme::pill_with(format!("{} {body}", icons::health()), color, theme::on_accent())
+        theme::pill_with(
+            format!("{} {body}", icons::health()),
+            color,
+            theme::on_accent(),
+        )
     }
 }
 
@@ -1615,6 +1659,28 @@ mod tests {
             other => panic!("expected Secret at row 0, got {other:?}"),
         }
         assert_eq!(view.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_t_adds_first_selected_tag_filter() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        view.results = vec![SearchResult {
+            store: "local".into(),
+            store_path: ctx.store.clone(),
+            path: "prod/API_KEY".into(),
+            created_at: None,
+            updated_at: None,
+            description: None,
+            tags: Some(vec!["pci".into(), "prod".into()]),
+        }];
+        view.rows = build_rows(&view.results, false);
+        view.list_state.select(Some(0));
+
+        let action = view.on_key(ctrl('t'), &KeyMap::default());
+        assert_eq!(view.tag_filters, vec!["pci"]);
+        assert!(matches!(action, SearchAction::CommandHint(msg) if msg.contains("tag:pci")));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::remote::store;
 pub struct RekeyArgs {
     /// Path prefix to filter which secrets to re-encrypt. If omitted, re-encrypts all.
     pub path: Option<String>,
-    /// Always re-encrypt, even if nothing appears to have changed.
+    /// Reserved; rekey currently always re-encrypts matched secrets.
     #[arg(long)]
     pub force: bool,
 }

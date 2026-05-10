@@ -48,18 +48,12 @@ pub enum SchemaName {
     Config,
     /// Encrypted secret envelope (on-disk wrapper).
     SecretEnvelope,
-    /// Share envelope (transport payload).
-    ShareEnvelope,
 }
 
 impl SchemaName {
     /// All available schema names, in definition order.
     fn all() -> &'static [SchemaName] {
-        &[
-            SchemaName::Config,
-            SchemaName::SecretEnvelope,
-            SchemaName::ShareEnvelope,
-        ]
+        &[SchemaName::Config, SchemaName::SecretEnvelope]
     }
 
     /// The canonical file name for this schema (without directory).
@@ -67,7 +61,6 @@ impl SchemaName {
         match self {
             SchemaName::Config => "config.schema.json",
             SchemaName::SecretEnvelope => "secret-envelope.schema.json",
-            SchemaName::ShareEnvelope => "share-envelope.schema.json",
         }
     }
 
@@ -76,7 +69,6 @@ impl SchemaName {
         match self {
             SchemaName::Config => "Unified config (.himitsu.yaml)",
             SchemaName::SecretEnvelope => "Encrypted secret envelope (on-disk wrapper)",
-            SchemaName::ShareEnvelope => "Share envelope (transport-agnostic sharing payload)",
         }
     }
 
@@ -85,7 +77,6 @@ impl SchemaName {
         match self {
             SchemaName::Config => proto::config_json_schema(),
             SchemaName::SecretEnvelope => proto::secret_envelope_json_schema(),
-            SchemaName::ShareEnvelope => proto::share_envelope_json_schema(),
         }
     }
 }
@@ -95,7 +86,6 @@ impl std::fmt::Display for SchemaName {
         match self {
             SchemaName::Config => write!(f, "config"),
             SchemaName::SecretEnvelope => write!(f, "secret-envelope"),
-            SchemaName::ShareEnvelope => write!(f, "share-envelope"),
         }
     }
 }

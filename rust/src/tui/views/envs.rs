@@ -1572,7 +1572,7 @@ impl EnvsView {
         &[
             ("↑/↓ / j/k", "navigate labels"),
             ("n", "create a new env (form mode)"),
-            ("e", "edit selected env (form mode)"),
+            ("e", "edit single-entry env (DSL editor for multi/tag)"),
             ("y", "open YAML/DSL 2-pane editor"),
             ("d", "delete selected env (confirm y/N)"),
             ("ctrl-s", "save while editing"),

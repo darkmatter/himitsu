@@ -215,10 +215,7 @@ mod tests {
         // Disk provider never migrates regardless of disk state.
         std::fs::write(pubkey_path(dir.path()), "age1pub").unwrap();
         std::fs::write(disk_secret_path(dir.path()), "secret").unwrap();
-        assert_eq!(
-            needs_disk_to_keychain_migration(&ProviderChoice::Disk, dir.path()).unwrap(),
-            false
-        );
+        assert!(!needs_disk_to_keychain_migration(&ProviderChoice::Disk, dir.path()).unwrap());
     }
 
     #[test]
@@ -226,9 +223,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(pubkey_path(dir.path()), "age1pub").unwrap();
         // Keychain provider + no on-disk secret = nothing to migrate.
-        assert_eq!(
-            needs_disk_to_keychain_migration(&ProviderChoice::MacosKeychain, dir.path()).unwrap(),
-            false
+        assert!(
+            !needs_disk_to_keychain_migration(&ProviderChoice::MacosKeychain, dir.path()).unwrap()
         );
     }
 }

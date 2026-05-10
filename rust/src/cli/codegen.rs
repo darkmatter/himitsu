@@ -135,22 +135,21 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
     // loading any config. `resolve` will also validate — this is defensive.
     validate_env_label(label)?;
 
-    // Load project config — sops mode needs `cfg.envs` to resolve the label.
-    let (project_cfg, _cfg_path) = config::load_project_config().ok_or_else(|| {
-        HimitsuError::ProjectConfigRequired(
-            "no project config found (himitsu.yaml); codegen <env> needs an `envs:` map".into(),
-        )
-    })?;
+    let envs = config::load_effective_envs()?;
 
-    if !project_cfg.envs.contains_key(label) {
+    if !envs.contains_key(label) {
         return Err(HimitsuError::InvalidConfig(format!("unknown env: {label}")));
     }
 
     // Enumerate store secrets so the resolver can expand wildcards/globs.
     let secrets = crate::remote::store::list_secrets(&ctx.store, None)?;
+    let identity = ctx.load_identity()?;
+    let tag_lookup = |path: &str| {
+        crate::cli::get::get_decoded_with_identity(ctx, path, &identity).map(|decoded| decoded.tags)
+    };
 
     // Resolve into the nested EnvNode tree.
-    let tree = env_resolver::resolve(&project_cfg.envs, label, &secrets)?;
+    let tree = env_resolver::resolve_with_tags(&envs, label, &secrets, &tag_lookup)?;
 
     // Walk the tree and decrypt each Leaf into a plaintext YAML value.
     let yaml_tree = materialize_tree(&tree, ctx)?;
@@ -199,8 +198,9 @@ fn default_sops_output_name(label: &str) -> String {
 fn materialize_tree(node: &env_resolver::EnvNode, ctx: &Context) -> Result<serde_yaml::Value> {
     match node {
         env_resolver::EnvNode::Leaf { secret_path } => {
-            let bytes = crate::cli::get::get_plaintext(ctx, secret_path)?;
-            let s = String::from_utf8(bytes).map_err(|e| {
+            let decoded = crate::cli::get::get_decoded(ctx, secret_path)?;
+            crate::cli::get::warn_if_expired(secret_path, &decoded);
+            let s = String::from_utf8(decoded.data).map_err(|e| {
                 HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{secret_path}': {e}"))
             })?;
             Ok(serde_yaml::Value::String(s))

@@ -63,6 +63,7 @@ pub fn run_init_flow() -> Result<()> {
     let tui = Config::load(&config_path())?.tui;
     theme::set_theme(&tui.theme)?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
+    let keymap = tui.keys;
 
     let mut guard = Some(terminal::install()?);
     let mut terminal = Some(terminal::new()?);
@@ -94,7 +95,7 @@ pub fn run_init_flow() -> Result<()> {
                 recipients_path: None,
                 key_provider: crate::config::KeyProvider::default(),
             };
-            let result = init::run_init(args, &ctx);
+            let result = init::run(args, &ctx);
 
             // Resume TUI before reporting the result so the wizard can redraw.
             guard = Some(terminal::install()?);
@@ -106,7 +107,7 @@ pub fn run_init_flow() -> Result<()> {
         if crossterm::event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = crossterm::event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    wizard.on_key(key);
+                    wizard.on_key(key, &keymap);
                 }
             }
         }
@@ -155,7 +156,10 @@ fn has_any_registered_store(stores_dir: &std::path::Path) -> bool {
         let Ok(repos) = std::fs::read_dir(org.path()) else {
             continue;
         };
-        if repos.flatten().any(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        if repos
+            .flatten()
+            .any(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        {
             return true;
         }
     }

@@ -1,6 +1,6 @@
 //! 3-step init wizard: data directory → remote store → key provider.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 
@@ -14,6 +14,7 @@ use ratatui::Frame;
 use crate::cli::init::{self, InitArgs};
 use crate::config::{self, KeyProvider};
 use crate::error::Result;
+use crate::tui::keymap::{KeyAction, KeyMap};
 
 pub enum Outcome {
     Pending,
@@ -197,13 +198,17 @@ impl InitWizardView {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
-        if matches!(
-            (key.code, key.modifiers),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL)
-        ) {
-            self.outcome = Outcome::Aborted;
-            return;
+    pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) {
+        match keymap.action_for_key_in(&key, &[KeyAction::Quit, KeyAction::Cancel]) {
+            Some(KeyAction::Quit) => {
+                self.outcome = Outcome::Aborted;
+                return;
+            }
+            Some(KeyAction::Cancel) => {
+                self.cancel_current_step();
+                return;
+            }
+            _ => {}
         }
 
         // Reset transient error on any keystroke that could advance.
@@ -223,7 +228,6 @@ impl InitWizardView {
                         }
                     }
                 }
-                KeyCode::Esc => self.outcome = Outcome::Aborted,
                 KeyCode::Backspace => {
                     self.data_dir_input.pop();
                 }
@@ -244,7 +248,6 @@ impl InitWizardView {
                         self.begin_init();
                     }
                 }
-                KeyCode::Esc => self.step = Step::DataDir,
                 KeyCode::Backspace => {
                     self.global_remote_input.pop();
                 }
@@ -266,13 +269,6 @@ impl InitWizardView {
                         self.begin_init();
                     }
                 }
-                KeyCode::Esc => {
-                    self.step = if !self.has_existing_global {
-                        Step::RemoteGlobal
-                    } else {
-                        Step::DataDir
-                    };
-                }
                 KeyCode::Backspace => {
                     self.project_remote_input.pop();
                 }
@@ -289,47 +285,48 @@ impl InitWizardView {
                     self.provider_index += 1;
                 }
                 KeyCode::Enter => self.begin_init(),
-                KeyCode::Esc => {
-                    self.step = if self.git_root.is_some() {
-                        Step::RemoteProject
-                    } else if !self.has_existing_global {
-                        Step::RemoteGlobal
-                    } else {
-                        Step::DataDir
-                    };
-                }
                 _ => {}
             },
             Step::Running => {}
-            Step::Success => match key.code {
-                KeyCode::Enter => self.outcome = Outcome::Completed,
-                KeyCode::Esc => self.outcome = Outcome::Aborted,
-                _ => {}
-            },
+            Step::Success => {
+                if key.code == KeyCode::Enter {
+                    self.outcome = Outcome::Completed;
+                }
+            }
+        }
+    }
+
+    fn cancel_current_step(&mut self) {
+        match self.step {
+            Step::DataDir | Step::Success => self.outcome = Outcome::Aborted,
+            Step::RemoteGlobal => self.step = Step::DataDir,
+            Step::RemoteProject => {
+                self.step = if !self.has_existing_global {
+                    Step::RemoteGlobal
+                } else {
+                    Step::DataDir
+                };
+            }
+            Step::Provider => {
+                self.step = if self.git_root.is_some() {
+                    Step::RemoteProject
+                } else if !self.has_existing_global {
+                    Step::RemoteGlobal
+                } else {
+                    Step::DataDir
+                };
+            }
+            Step::Running => {}
         }
     }
 
     fn begin_init(&mut self) {
-        // Persist a custom data_dir override before re-deriving paths. Matches
-        // the `--home` branch of `init::run` so subsequent calls to
-        // `config::data_dir()` pick up the new location.
         let home = self.data_dir_input.trim().to_string();
-        if home != config::data_dir().to_string_lossy() {
-            let cfg_path = config::config_path();
-            match config::Config::load(&cfg_path) {
-                Ok(mut cfg) => {
-                    cfg.data_dir = Some(home);
-                    if let Err(e) = cfg.save(&cfg_path) {
-                        self.error = Some(format!("failed to save config: {e}"));
-                        return;
-                    }
-                }
-                Err(e) => {
-                    self.error = Some(format!("failed to load config: {e}"));
-                    return;
-                }
-            }
-        }
+        let home = if home != config::data_dir().to_string_lossy() {
+            Some(home)
+        } else {
+            None
+        };
 
         let provider = self
             .provider_options
@@ -367,7 +364,7 @@ impl InitWizardView {
             json: false,
             name,
             url: None,
-            home: None,
+            home,
             key_provider,
             no_tui: true,
             project,

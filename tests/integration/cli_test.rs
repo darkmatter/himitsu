@@ -222,6 +222,10 @@ fn set_get_with_metadata_roundtrip() {
             "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
             "--description",
             "Primary prod database",
+            "--tag",
+            "pci",
+            "--tag",
+            "prod",
             "--expires-at",
             "30d",
         ])
@@ -242,6 +246,7 @@ fn set_get_with_metadata_roundtrip() {
         .stderr(predicate::str::contains(
             "description: Primary prod database",
         ))
+        .stderr(predicate::str::contains("tags:        pci, prod"))
         .stderr(predicate::str::contains("expires"));
 }
 

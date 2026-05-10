@@ -104,7 +104,7 @@ pub fn run(args: CheckArgs, ctx: &Context) -> Result<()> {
 ///
 /// Priority:
 /// 1. Explicit `args.store` slug.
-/// 2. Slugs referenced in a project config found in the CWD ancestry.
+/// 2. Slugs referenced in global or project config.
 /// 3. All known stores (`list_remotes()`).
 fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
     // 1. Explicit store argument
@@ -113,16 +113,22 @@ fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
         return Ok(vec![slug.clone()]);
     }
 
-    // 2. Project config
+    // 2. Global + project config
+    let global = config::Config::load(&config::config_path()).unwrap_or_default();
+    let mut slugs = collect_stores_from_global_config(&global);
     if let Some((cfg, _path)) = config::load_project_config() {
-        let slugs = collect_stores_from_project_config(&cfg);
-        if !slugs.is_empty() {
-            return Ok(slugs.into_iter().collect());
-        }
+        slugs.extend(collect_stores_from_project_config(&cfg));
+    }
+    if !slugs.is_empty() {
+        return Ok(slugs.into_iter().collect());
     }
 
     // 3. All known stores
     crate::remote::list_remotes()
+}
+
+fn collect_stores_from_global_config(cfg: &config::Config) -> BTreeSet<String> {
+    collect_store_slugs(cfg.default_store.as_ref(), &cfg.envs)
 }
 
 /// Extract unique store slugs referenced in a project config.
@@ -132,15 +138,22 @@ fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
 /// - Paths inside `envs` entries that contain an `org/repo` prefix (e.g.
 ///   `"myorg/secrets/prod/DB_PASS"` → slug `"myorg/secrets"`).
 fn collect_stores_from_project_config(cfg: &config::ProjectConfig) -> BTreeSet<String> {
+    collect_store_slugs(cfg.default_store.as_ref(), &cfg.envs)
+}
+
+fn collect_store_slugs(
+    default_store: Option<&String>,
+    envs: &std::collections::BTreeMap<String, Vec<config::EnvEntry>>,
+) -> BTreeSet<String> {
     let mut slugs = BTreeSet::new();
 
-    if let Some(ref s) = cfg.default_store {
+    if let Some(s) = default_store {
         if config::validate_remote_slug(s).is_ok() {
             slugs.insert(s.clone());
         }
     }
 
-    for entries in cfg.envs.values() {
+    for entries in envs.values() {
         for entry in entries {
             // Tag selectors don't carry a path — they expand at resolve time
             // against whatever store the caller already chose. They cannot
