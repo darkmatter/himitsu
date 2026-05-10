@@ -119,6 +119,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 

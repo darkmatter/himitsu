@@ -956,6 +956,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
 
         let args = CodegenArgs {
@@ -983,6 +984,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
 
         let args = CodegenArgs {
@@ -1011,6 +1013,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
 
         let args = CodegenArgs {
@@ -1041,6 +1044,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
 
         let args = CodegenArgs {
@@ -1177,6 +1181,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store: project.clone(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         let result = run_sops("ghost", None, &ctx);
 

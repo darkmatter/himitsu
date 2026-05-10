@@ -257,6 +257,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             store: store.clone(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
 
         cmd_refresh(&ctx).unwrap();

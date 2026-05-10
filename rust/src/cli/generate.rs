@@ -43,7 +43,7 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
     }
 
     // Load age identity for decryption.
-    let identity = crypto::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
 
     // Determine which envs to generate.
     let env_names: Vec<String> = if let Some(ref env_name) = args.env {

@@ -185,6 +185,7 @@ impl SearchView {
             state_dir: ctx.state_dir.clone(),
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
+            key_provider: ctx.key_provider.clone(),
         };
         let store_health = check_store_health(&ctx_owned);
         let env_index = build_env_index();
@@ -1202,7 +1203,7 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
     let mut ctx_for_store = ctx.clone();
     ctx_for_store.store = result.store_path.clone();
     let ciphertext = store::read_secret(&result.store_path, &result.path)?;
-    let identity = age::read_identity(&ctx_for_store.key_path())?;
+    let identity = ctx_for_store.load_identity()?;
     let plain = age::decrypt(&ciphertext, &identity)?;
     let decoded = secret_value::decode(&plain);
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
@@ -1499,6 +1500,7 @@ mod tests {
             state_dir: store.parent().unwrap().to_path_buf(),
             store: store.to_path_buf(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
@@ -1817,6 +1819,7 @@ mod tests {
             state_dir: state.clone(),
             store: state.join("empty"),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
@@ -1919,6 +1922,7 @@ mod tests {
             state_dir,
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         (dir, ctx)
     }

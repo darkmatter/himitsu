@@ -36,7 +36,7 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
-    let identity = crypto::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
 
     // List all secrets in the store.
     let all_paths = store::list_secrets(&ctx.store, None)?;

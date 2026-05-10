@@ -39,7 +39,7 @@ pub fn get_plaintext(ctx: &Context, path: &str) -> Result<Vec<u8>> {
 
 /// Decrypt and return the full decoded SecretValue for a secret reference.
 fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
-    let identity = age::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
     get_decoded_with_identity(ctx, path, &identity)
 }
 

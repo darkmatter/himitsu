@@ -118,7 +118,8 @@ impl SecretViewerView {
         let decoded = store::read_secret(&store_path, &path)
             .ok()
             .and_then(|ct| {
-                age::read_identity(&ctx_owned.key_path())
+                ctx_owned
+                    .load_identity()
                     .and_then(|id| age::decrypt(&ct, &id))
                     .ok()
             })
@@ -423,7 +424,7 @@ impl SecretViewerView {
 
     fn read_decoded(&self) -> crate::error::Result<secret_value::Decoded> {
         let ciphertext = store::read_secret(&self.store_path, &self.path)?;
-        let identity = age::read_identity(&self.ctx.key_path())?;
+        let identity = self.ctx.load_identity()?;
         let plain = age::decrypt(&ciphertext, &identity)?;
         Ok(secret_value::decode(&plain))
     }
@@ -952,6 +953,7 @@ mod tests {
             state_dir,
             store: store.clone(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         (dir, ctx, "prod/API_KEY".to_string())
     }

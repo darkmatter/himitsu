@@ -92,6 +92,7 @@ pub fn run_init_flow() -> Result<()> {
                 state_dir: crate::config::state_dir(),
                 store: PathBuf::new(),
                 recipients_path: None,
+                key_provider: crate::config::KeyProvider::default(),
             };
             let result = init::run_init(args, &ctx);
 
@@ -120,11 +121,13 @@ pub fn run_init_flow() -> Result<()> {
     theme::set_theme(&tui.theme)?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
 
+    let cfg = Config::load(&config_path()).unwrap_or_default();
     let ctx = Context {
         data_dir: crate::config::data_dir(),
         state_dir: crate::config::state_dir(),
         store: crate::config::resolve_store(None).unwrap_or_default(),
         recipients_path: None,
+        key_provider: cfg.key_provider,
     };
     if !should_continue_to_dashboard_after_init(&ctx.store) {
         return Ok(());
@@ -133,7 +136,8 @@ pub fn run_init_flow() -> Result<()> {
 }
 
 fn should_launch_init_flow(ctx: &Context) -> bool {
-    !ctx.data_dir.join("key").exists() || ctx.store.as_os_str().is_empty()
+    !crate::crypto::keystore::is_initialized(&ctx.data_dir)
+        || ctx.store.as_os_str().is_empty()
 }
 
 fn should_continue_to_dashboard_after_init(store: &std::path::Path) -> bool {
@@ -152,13 +156,17 @@ mod tests {
             state_dir: PathBuf::new(),
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
     #[test]
     fn should_launch_init_flow_when_key_exists_but_store_is_missing() {
+        // The "is initialized" probe is the pubkey file, not the secret —
+        // both providers materialise the pubkey, but only the disk
+        // provider also drops the secret next to it.
         let data_dir = tempfile::tempdir().unwrap();
-        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
+        std::fs::write(data_dir.path().join("key.pub"), "age1pub").unwrap();
 
         let ctx = ctx_with(data_dir.path().to_path_buf(), PathBuf::new());
 
@@ -169,7 +177,7 @@ mod tests {
     fn should_not_launch_init_flow_when_key_and_store_exist() {
         let data_dir = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
-        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
+        std::fs::write(data_dir.path().join("key.pub"), "age1pub").unwrap();
 
         let ctx = ctx_with(data_dir.path().to_path_buf(), store.path().to_path_buf());
 

@@ -160,6 +160,7 @@ mod tests {
             state_dir: PathBuf::new(),
             store: PathBuf::new(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 

@@ -674,7 +674,9 @@ impl EnvsView {
             return EnvsAction::Quit;
         }
 
-        if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if (matches!(key.code, KeyCode::Char('s')) || matches!(key.code, KeyCode::Char('w')))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
             return self.perform_create();
         }
 
@@ -1559,6 +1561,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         state_dir: ctx.state_dir.clone(),
         store: ctx.store.clone(),
         recipients_path: ctx.recipients_path.clone(),
+        key_provider: ctx.key_provider.clone(),
     }
 }
 
@@ -1573,6 +1576,7 @@ impl EnvsView {
             ("y", "open YAML/DSL 2-pane editor"),
             ("d", "delete selected env (confirm y/N)"),
             ("ctrl-s", "save while editing"),
+            ("ctrl-w", "save while editing"),
             ("ctrl-space", "autocomplete in DSL editor"),
             ("?", "toggle this help"),
             ("esc / q", "back to search"),
@@ -1642,6 +1646,7 @@ mod tests {
             state_dir: PathBuf::new(),
             store: store.to_path_buf(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 

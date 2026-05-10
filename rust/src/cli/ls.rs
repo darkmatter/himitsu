@@ -76,7 +76,7 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
     let identity = if args.tag.is_empty() {
         None
     } else {
-        age::read_identity(&ctx.key_path()).ok()
+        ctx.load_identity().ok()
     };
 
     // ── Resolve qualified references ──────────────────────────────────────

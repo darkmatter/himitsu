@@ -20,7 +20,7 @@ use clap::Args;
 
 use super::Context;
 use crate::config::{self, env_resolver, validate_env_label};
-use crate::crypto::{age, secret_value, tags as tag_grammar};
+use crate::crypto::{secret_value, tags as tag_grammar};
 use crate::error::{HimitsuError, Result};
 use crate::reference::SecretRef;
 use crate::remote::store;
@@ -74,7 +74,7 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
     // Load the age identity once so we don't re-parse the key file per
     // resolved secret. `exec` is the first hot loop of decrypts and the
     // win is real.
-    let identity = age::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
     let decrypted = decrypt_resolved(ctx, &identity, resolved)?;
     let env_map = build_env_map(decrypted, &args.tags)?;
 

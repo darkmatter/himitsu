@@ -44,6 +44,7 @@ pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
             state_dir: ctx.state_dir.clone(),
             store: store_path.clone(),
             recipients_path: None,
+            key_provider: ctx.key_provider.clone(),
         };
 
         // Commit any pre-existing pending changes (e.g. from a prior sync that

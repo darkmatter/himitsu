@@ -490,7 +490,14 @@ that takes precedence over the file.
 # Default store when neither -s nor -r is given.
 default_store: myorg/secrets        # env: HIMITSU_DEFAULT_STORE
 
-# Where age private keys live: "disk" or "macos-keychain".
+# Where the age private key lives:
+#   "disk"           — `<data_dir>/key` (the default).
+#   "macos-keychain" — macOS Keychain entry under
+#                      `io.darkmatter.himitsu.agekey.byfp.v1`. Switching
+#                      to keychain on an already-initialized machine
+#                      auto-migrates the on-disk secret into the keychain
+#                      and removes `<data_dir>/key`. The pubkey file
+#                      always stays on disk for fingerprint discovery.
 key_provider: disk                  # env: HIMITSU_KEY_PROVIDER
 
 # When true, every store-touching command first runs `git fetch` and
