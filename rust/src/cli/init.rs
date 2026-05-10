@@ -328,14 +328,20 @@ fn detect_personal_github_username() -> Option<String> {
     None
 }
 
-/// Build a default project-store slug suggestion: `<repo-org>/secrets`,
-/// where `<repo-org>` is the GitHub org of the current repo's `origin`
-/// remote. Returns an empty string when not in a git repo or when the origin
-/// can't be parsed as a GitHub slug.
-pub(crate) fn suggested_project_slug() -> String {
-    detect_origin_github_org()
-        .map(|org| format!("{org}/secrets"))
-        .unwrap_or_default()
+/// Build a default project-store slug suggestion (`<repo-org>/secrets`)
+/// from a known git root. The TUI wizard captures the repo at
+/// construction time and passes it here so the suggestion is locked to
+/// that repo — important because `current_dir()` can drift during the
+/// auto-init bootstrap or be different from where the user expected
+/// the wizard to derive the slug.
+pub(crate) fn suggested_project_slug_for(git_root: &Path) -> String {
+    let Some(slug) = detect_origin_remote(&git_root.to_path_buf()) else {
+        return String::new();
+    };
+    let Some((org, _)) = slug.split_once('/') else {
+        return String::new();
+    };
+    format!("{org}/secrets")
 }
 
 fn detect_origin_github_org() -> Option<String> {

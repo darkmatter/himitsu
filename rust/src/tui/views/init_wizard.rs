@@ -71,11 +71,16 @@ impl InitWizardView {
             .ok()
             .and_then(|cwd| config::find_git_root(&cwd));
 
+        let project_remote_input = git_root
+            .as_deref()
+            .map(init::suggested_project_slug_for)
+            .unwrap_or_default();
+
         Self {
             step: Step::DataDir,
             data_dir_input: config::data_dir().to_string_lossy().into_owned(),
             global_remote_input: init::suggested_remote_slug(),
-            project_remote_input: init::suggested_project_slug(),
+            project_remote_input,
             has_existing_global,
             git_root,
             provider_options,
