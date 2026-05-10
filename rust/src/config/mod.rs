@@ -719,6 +719,30 @@ pub fn load_project_config() -> Option<(ProjectConfig, PathBuf)> {
     Some((cfg, path))
 }
 
+/// Merge global and project env definitions with project labels taking
+/// precedence. This is the env lookup surface used by CLI consumers; the TUI
+/// can still show scopes separately when scope matters for editing.
+pub fn merge_envs(
+    global: &BTreeMap<String, Vec<EnvEntry>>,
+    project: Option<&BTreeMap<String, Vec<EnvEntry>>>,
+) -> BTreeMap<String, Vec<EnvEntry>> {
+    let mut merged = global.clone();
+    if let Some(project) = project {
+        merged.extend(project.clone());
+    }
+    merged
+}
+
+/// Load global + project env definitions for command resolution.
+pub fn load_effective_envs() -> Result<BTreeMap<String, Vec<EnvEntry>>> {
+    let global = Config::load(&config_path())?;
+    let project = load_project_config().map(|(cfg, _)| cfg);
+    Ok(merge_envs(
+        &global.envs,
+        project.as_ref().map(|cfg| &cfg.envs),
+    ))
+}
+
 // ── Store resolution ────────────────────────────────────────────────────────
 
 /// Validate a remote slug (e.g., `"org/repo"`).
@@ -1044,6 +1068,32 @@ envs:
         assert_eq!(cfg2.envs.len(), 2);
         assert!(cfg2.envs.contains_key("dev"));
         assert!(cfg2.envs.contains_key("prod/*"));
+    }
+
+    #[test]
+    fn merge_envs_keeps_global_and_project_overrides_conflicts() {
+        let mut global = BTreeMap::new();
+        global.insert(
+            "shared".to_string(),
+            vec![EnvEntry::Single("global/SHARED".into())],
+        );
+        global.insert(
+            "global-only".to_string(),
+            vec![EnvEntry::Single("global/ONLY".into())],
+        );
+
+        let mut project = BTreeMap::new();
+        project.insert(
+            "shared".to_string(),
+            vec![EnvEntry::Single("project/SHARED".into())],
+        );
+
+        let merged = merge_envs(&global, Some(&project));
+        assert!(matches!(
+            &merged["shared"][0],
+            EnvEntry::Single(path) if path == "project/SHARED"
+        ));
+        assert!(merged.contains_key("global-only"));
     }
 
     #[test]

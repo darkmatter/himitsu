@@ -6,8 +6,8 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::{load_project_config, EnvEntry, ProjectConfig};
-use crate::crypto::age as crypto;
+use crate::config::{self, load_project_config, EnvEntry, ProjectConfig};
+use crate::crypto::{age as crypto, secret_value};
 use crate::error::{HimitsuError, Result};
 use crate::reference::SecretRef;
 use crate::remote::store;
@@ -29,36 +29,32 @@ pub struct GenerateArgs {
 }
 
 pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
-    // Load project config — required for generate.
-    let (project_cfg, _cfg_path) = load_project_config().ok_or_else(|| {
-        HimitsuError::ProjectConfigRequired(
-            "no project config found (himitsu.yaml); run generate from a project root".into(),
-        )
-    })?;
+    let project_cfg = load_project_config().map(|(cfg, _)| cfg);
+    let envs = config::load_effective_envs()?;
 
-    if project_cfg.envs.is_empty() {
+    if envs.is_empty() {
         return Err(HimitsuError::GenerateError(
-            "no `envs` defined in project config".into(),
+            "no `envs` defined in global or project config".into(),
         ));
     }
 
     // Load age identity for decryption.
-    let identity = crypto::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
 
     // Determine which envs to generate.
     let env_names: Vec<String> = if let Some(ref env_name) = args.env {
-        if !project_cfg.envs.contains_key(env_name.as_str()) {
+        if !envs.contains_key(env_name.as_str()) {
             return Err(HimitsuError::GenerateError(format!(
-                "env '{env_name}' not found in project config"
+                "env '{env_name}' not found in global or project config"
             )));
         }
         vec![env_name.clone()]
     } else {
-        project_cfg.envs.keys().cloned().collect()
+        envs.keys().cloned().collect()
     };
 
     for env_name in &env_names {
-        let entries = project_cfg.envs.get(env_name.as_str()).unwrap();
+        let entries = envs.get(env_name.as_str()).unwrap();
 
         // Resolve entries to (output_key, store_path, optional_store_override) tuples.
         let mappings = resolve_entries(entries, env_name, &ctx.store)?;
@@ -73,8 +69,9 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         for (key, path, store_override) in &mappings {
             let effective_store = store_override.as_deref().unwrap_or(&ctx.store);
             let ciphertext = store::read_secret(effective_store, path)?;
-            let plaintext_bytes = crypto::decrypt(&ciphertext, &identity)?;
-            let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
+            let decoded = secret_value::decode(&crypto::decrypt(&ciphertext, &identity)?);
+            super::get::warn_if_expired(path, &decoded);
+            let plaintext = String::from_utf8(decoded.data).map_err(|e| {
                 HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))
             })?;
             if output.contains_key(key) {
@@ -88,8 +85,13 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         if args.stdout {
             print!("{yaml}");
         } else {
-            let target_dir = resolve_target(&args, &project_cfg)?;
-            write_env_file(&target_dir, env_name, &yaml, &project_cfg)?;
+            let project_cfg = project_cfg.as_ref().ok_or_else(|| {
+                HimitsuError::ProjectConfigRequired(
+                    "no project config found (himitsu.yaml); use --stdout or --target".into(),
+                )
+            })?;
+            let target_dir = resolve_target(&args, project_cfg)?;
+            write_env_file(&target_dir, env_name, &yaml, project_cfg)?;
         }
     }
 

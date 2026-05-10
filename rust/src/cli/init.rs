@@ -70,6 +70,7 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
             state_dir: config::state_dir(),
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
+            key_provider: ctx.key_provider.clone(),
         };
         return run_init(args, &patched_ctx);
     }
@@ -83,41 +84,51 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
     let data_dir = &ctx.data_dir;
     let state_dir = &ctx.state_dir;
 
-    // ── 1. Ensure data_dir exists (keys, config) ──────────────────────────
-    let key_existed = data_dir.join("key").exists();
-
+    // ── 1. Ensure config exists, then resolve the active provider ────────
+    // The provider must be settled BEFORE we write any key material, since
+    // it decides whether the secret lands on disk or in the keychain. With
+    // the old order (write key → set provider), `--key-provider macos-keychain`
+    // produced a config that pointed at the keychain while the secret sat
+    // in `data_dir/key` — fingers-crossed that no one read it. (Bug fix.)
     std::fs::create_dir_all(data_dir)?;
-
-    let key_path = data_dir.join("key");
-    let pubkey_path = data_dir.join("key.pub");
-
-    let pubkey = if !key_path.exists() {
-        let (secret, public) = age::keygen();
-        std::fs::write(
-            &key_path,
-            format!(
-                "# created: {}\n# public key: {public}\n{secret}\n",
-                timestamp()
-            ),
-        )?;
-        std::fs::write(&pubkey_path, format!("{public}\n"))?;
-        public
-    } else {
-        read_public_key(data_dir)?
-    };
 
     let config_path = config::config_path();
     if !config_path.exists() {
         config::Config::write_default(&config_path)?;
     }
 
-    // ── 2. Handle --key-provider ──────────────────────────────────────────
     if let Some(ref provider_str) = args.key_provider {
         let provider: KeyProvider = provider_str.parse()?;
         let mut cfg = config::Config::load(&config_path)?;
         cfg.key_provider = provider;
         cfg.save(&config_path)?;
     }
+    let active_provider = config::Config::load(&config_path)?.key_provider;
+
+    // If the user just switched to keychain on an already-initialized
+    // machine, move the existing on-disk secret into the keychain. The
+    // pubkey file stays in place — it's the provider-agnostic "is
+    // initialized" probe.
+    if crate::crypto::keystore::needs_disk_to_keychain_migration(&active_provider, data_dir)? {
+        crate::crypto::keystore::migrate_disk_to_keychain(data_dir)?;
+        eprintln!("✓ Migrated age key from disk to macOS Keychain");
+    }
+
+    // ── 2. Generate a fresh keypair if none exists yet ───────────────────
+    let key_existed = crate::crypto::keystore::is_initialized(data_dir);
+    let pubkey = if !key_existed {
+        let (secret, public) = age::keygen();
+        crate::crypto::keystore::store_new_key(
+            &active_provider,
+            data_dir,
+            &secret,
+            &public,
+            &timestamp(),
+        )?;
+        public
+    } else {
+        read_public_key(data_dir)?
+    };
 
     // ── 3. Ensure state_dir exists (stores subdir) ────────────────────────
     std::fs::create_dir_all(state_dir.join("stores"))?;
@@ -317,14 +328,20 @@ fn detect_personal_github_username() -> Option<String> {
     None
 }
 
-/// Build a default project-store slug suggestion: `<repo-org>/secrets`,
-/// where `<repo-org>` is the GitHub org of the current repo's `origin`
-/// remote. Returns an empty string when not in a git repo or when the origin
-/// can't be parsed as a GitHub slug.
-pub(crate) fn suggested_project_slug() -> String {
-    detect_origin_github_org()
-        .map(|org| format!("{org}/secrets"))
-        .unwrap_or_default()
+/// Build a default project-store slug suggestion (`<repo-org>/secrets`)
+/// from a known git root. The TUI wizard captures the repo at
+/// construction time and passes it here so the suggestion is locked to
+/// that repo — important because `current_dir()` can drift during the
+/// auto-init bootstrap or be different from where the user expected
+/// the wizard to derive the slug.
+pub(crate) fn suggested_project_slug_for(git_root: &Path) -> String {
+    let Some(slug) = detect_origin_remote(&git_root.to_path_buf()) else {
+        return String::new();
+    };
+    let Some((org, _)) = slug.split_once('/') else {
+        return String::new();
+    };
+    format!("{org}/secrets")
 }
 
 fn detect_origin_github_org() -> Option<String> {

@@ -10,7 +10,7 @@ use crate::remote::store;
 pub struct RekeyArgs {
     /// Path prefix to filter which secrets to re-encrypt. If omitted, re-encrypts all.
     pub path: Option<String>,
-    /// Always re-encrypt, even if nothing appears to have changed.
+    /// Reserved; rekey currently always re-encrypts matched secrets.
     #[arg(long)]
     pub force: bool,
 }
@@ -23,7 +23,7 @@ pub struct RekeyArgs {
 /// Note: `args.force` is accepted for forward-compat (future no-op detection)
 /// but currently all matched secrets are always re-encrypted.
 pub fn rekey_store(ctx: &Context, path_prefix: Option<&str>) -> Result<usize> {
-    let identity = age::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
     let recipients = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref())?;
     if recipients.is_empty() {
         return Err(HimitsuError::Recipient("no recipients found".into()));

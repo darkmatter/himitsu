@@ -739,6 +739,7 @@ mod tests {
             state_dir: std::path::PathBuf::from("/tmp"),
             store: std::path::PathBuf::new(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -765,6 +766,7 @@ mod tests {
             state_dir: std::path::PathBuf::from("/tmp"),
             store: std::path::PathBuf::new(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -792,6 +794,7 @@ mod tests {
             state_dir: std::path::PathBuf::from("/tmp"),
             store: std::path::PathBuf::new(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(

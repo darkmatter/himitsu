@@ -169,6 +169,10 @@ impl Command {
             Command::Git => Some("himitsu git -- <args>"),
         }
     }
+
+    pub fn is_cli_only(&self) -> bool {
+        self.cli_hint().is_some()
+    }
 }
 
 /// Outcome of a key press while the palette is open.
@@ -223,6 +227,14 @@ const COMMANDS: &[Command] = &[
     Command::Help,
     Command::Quit,
 ];
+
+fn display_label(cmd: &Command) -> String {
+    if cmd.is_cli_only() {
+        format!("{} (CLI)", cmd.label())
+    } else {
+        cmd.label().to_string()
+    }
+}
 
 impl CommandPalette {
     pub fn new() -> Self {
@@ -366,7 +378,7 @@ impl CommandPalette {
             let label_w = self
                 .filtered
                 .iter()
-                .map(|c| c.label().len())
+                .map(|c| display_label(c).len())
                 .max()
                 .unwrap_or(0);
 
@@ -374,6 +386,14 @@ impl CommandPalette {
                 .filtered
                 .iter()
                 .map(|cmd| {
+                    let label = display_label(cmd);
+                    let label_style = if cmd.is_cli_only() {
+                        Style::default()
+                            .fg(theme::muted())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    };
                     let line = Line::from(vec![
                         Span::raw(" "),
                         Span::styled(
@@ -381,10 +401,7 @@ impl CommandPalette {
                             Style::default().fg(theme::accent()),
                         ),
                         Span::raw("  "),
-                        Span::styled(
-                            format!("{:<label_w$}", cmd.label()),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled(format!("{:<label_w$}", label), label_style),
                         Span::raw("  "),
                         Span::styled(cmd.description(), Style::default().fg(theme::muted())),
                     ]);
@@ -528,6 +545,12 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cli_only_commands_have_visible_label_suffix() {
+        assert_eq!(display_label(&Command::Export), "export to SOPS (CLI)");
+        assert_eq!(display_label(&Command::NewSecret), "new secret");
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub fn run_init_flow() -> Result<()> {
     let tui = Config::load(&config_path())?.tui;
     theme::set_theme(&tui.theme)?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
+    let keymap = tui.keys;
 
     let mut guard = Some(terminal::install()?);
     let mut terminal = Some(terminal::new()?);
@@ -92,8 +93,9 @@ pub fn run_init_flow() -> Result<()> {
                 state_dir: crate::config::state_dir(),
                 store: PathBuf::new(),
                 recipients_path: None,
+                key_provider: crate::config::KeyProvider::default(),
             };
-            let result = init::run_init(args, &ctx);
+            let result = init::run(args, &ctx);
 
             // Resume TUI before reporting the result so the wizard can redraw.
             guard = Some(terminal::install()?);
@@ -105,7 +107,7 @@ pub fn run_init_flow() -> Result<()> {
         if crossterm::event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = crossterm::event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    wizard.on_key(key);
+                    wizard.on_key(key, &keymap);
                 }
             }
         }
@@ -120,11 +122,13 @@ pub fn run_init_flow() -> Result<()> {
     theme::set_theme(&tui.theme)?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
 
+    let cfg = Config::load(&config_path()).unwrap_or_default();
     let ctx = Context {
         data_dir: crate::config::data_dir(),
         state_dir: crate::config::state_dir(),
         store: crate::config::resolve_store(None).unwrap_or_default(),
         recipients_path: None,
+        key_provider: cfg.key_provider,
     };
     if !should_continue_to_dashboard_after_init(&ctx.store) {
         return Ok(());
@@ -133,7 +137,33 @@ pub fn run_init_flow() -> Result<()> {
 }
 
 fn should_launch_init_flow(ctx: &Context) -> bool {
-    !ctx.data_dir.join("key").exists() || ctx.store.as_os_str().is_empty()
+    // Fire the wizard only when himitsu isn't initialized OR the user has
+    // zero stores registered globally. Running `himitsu` from a directory
+    // that doesn't have its own project store should land you on the
+    // dashboard with a "no project store" indicator — not bounce you into
+    // setup every time you cd into a new repo.
+    if !crate::crypto::keystore::is_initialized(&ctx.data_dir) {
+        return true;
+    }
+    !has_any_registered_store(&ctx.stores_dir())
+}
+
+fn has_any_registered_store(stores_dir: &std::path::Path) -> bool {
+    let Ok(orgs) = std::fs::read_dir(stores_dir) else {
+        return false;
+    };
+    for org in orgs.flatten() {
+        let Ok(repos) = std::fs::read_dir(org.path()) else {
+            continue;
+        };
+        if repos
+            .flatten()
+            .any(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn should_continue_to_dashboard_after_init(store: &std::path::Path) -> bool {
@@ -146,33 +176,61 @@ mod tests {
 
     use crate::cli::Context;
 
-    fn ctx_with(data_dir: PathBuf, store: PathBuf) -> Context {
+    fn ctx_with_state(data_dir: PathBuf, state_dir: PathBuf, store: PathBuf) -> Context {
         Context {
             data_dir,
-            state_dir: PathBuf::new(),
+            state_dir,
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
     #[test]
-    fn should_launch_init_flow_when_key_exists_but_store_is_missing() {
+    fn should_launch_init_flow_when_no_key() {
+        // No pubkey file → not initialized → wizard fires regardless of
+        // store state.
         let data_dir = tempfile::tempdir().unwrap();
-        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
-
-        let ctx = ctx_with(data_dir.path().to_path_buf(), PathBuf::new());
-
+        let state_dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_state(
+            data_dir.path().to_path_buf(),
+            state_dir.path().to_path_buf(),
+            PathBuf::new(),
+        );
         assert!(super::should_launch_init_flow(&ctx));
     }
 
     #[test]
-    fn should_not_launch_init_flow_when_key_and_store_exist() {
+    fn should_launch_init_flow_when_key_exists_but_no_stores_registered() {
+        // Initialized but `stores/` is empty (or missing) → wizard fires.
         let data_dir = tempfile::tempdir().unwrap();
-        let store = tempfile::tempdir().unwrap();
-        std::fs::write(data_dir.path().join("key"), "AGE-SECRET-KEY").unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        std::fs::write(data_dir.path().join("key.pub"), "age1pub").unwrap();
+        let ctx = ctx_with_state(
+            data_dir.path().to_path_buf(),
+            state_dir.path().to_path_buf(),
+            PathBuf::new(),
+        );
+        assert!(super::should_launch_init_flow(&ctx));
+    }
 
-        let ctx = ctx_with(data_dir.path().to_path_buf(), store.path().to_path_buf());
+    #[test]
+    fn should_not_launch_init_flow_when_any_store_is_registered() {
+        // Initialized + at least one registered store → dashboard, even if
+        // the resolved active store is empty (e.g. running from a project
+        // that hasn't been wired to a store yet — the project light just
+        // goes gray, no wizard).
+        let data_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        std::fs::write(data_dir.path().join("key.pub"), "age1pub").unwrap();
+        let stores = state_dir.path().join("stores");
+        std::fs::create_dir_all(stores.join("acme/secrets")).unwrap();
 
+        let ctx = ctx_with_state(
+            data_dir.path().to_path_buf(),
+            state_dir.path().to_path_buf(),
+            PathBuf::new(),
+        );
         assert!(!super::should_launch_init_flow(&ctx));
     }
 

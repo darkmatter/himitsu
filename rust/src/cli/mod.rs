@@ -51,18 +51,31 @@ pub struct Context {
     /// from the project-level `himitsu.yaml` `store.recipients_path` field.
     /// When `None`, the default `.himitsu/recipients/` layout is used.
     pub recipients_path: Option<String>,
+    /// Where the age private key lives. Resolved from `Config.key_provider`
+    /// at dispatcher boot so callers don't each re-read the config.
+    pub key_provider: crate::config::KeyProvider,
 }
 
 impl Context {
-    /// Path to the age private key file.
+    /// Path to the age private key file. Only valid for the
+    /// [`Disk`](crate::config::KeyProvider::Disk) provider — with the
+    /// keychain provider this path doesn't exist, so callers should
+    /// reach the secret through [`Self::load_identity`] instead of
+    /// reading the path directly.
     pub fn key_path(&self) -> PathBuf {
-        self.data_dir.join("key")
+        crate::crypto::keystore::disk_secret_path(&self.data_dir)
     }
 
-    /// Path to the age public key file.
+    /// Path to the age public key file. Always written (provider-agnostic).
     #[allow(dead_code)]
     pub fn pubkey_path(&self) -> PathBuf {
-        self.data_dir.join("key.pub")
+        crate::crypto::keystore::pubkey_path(&self.data_dir)
+    }
+
+    /// Load the user's age identity through the active provider. This is
+    /// the chokepoint: every command that decrypts goes through it.
+    pub fn load_identity(&self) -> Result<::age::x25519::Identity> {
+        crate::crypto::keystore::load_identity(&self.key_provider, &self.data_dir)
     }
 
     /// Directory containing managed store checkouts.
@@ -346,7 +359,7 @@ pub enum Command {
     #[command(hide = true)]
     Inbox(inbox::InboxArgs),
 
-    /// Import secrets from external stores (1Password today; SOPS planned).
+    /// Import secrets from external stores (1Password or SOPS).
     Import(import::ImportArgs),
 }
 
@@ -377,7 +390,7 @@ impl Cli {
             && !is_docs
             && !is_completions
             && !is_complete_paths
-            && !data_dir.join("key").exists()
+            && !crate::crypto::keystore::is_initialized(&data_dir)
         {
             eprintln!("First run — initializing himitsu...");
             let ctx = Context {
@@ -385,6 +398,7 @@ impl Cli {
                 state_dir: state_dir.clone(),
                 store: PathBuf::new(),
                 recipients_path: None,
+                key_provider: crate::config::KeyProvider::default(),
             };
             init::run(
                 init::InitArgs {
@@ -425,7 +439,6 @@ impl Cli {
                 | Command::Export(_)
                 | Command::Codegen(_)
                 | Command::Exec(_)
-                | Command::Share(_)
                 | Command::Import(_)
                 | Command::Tag(_)
         );
@@ -463,11 +476,15 @@ impl Cli {
         }
 
         let recipients_path = load_recipients_path_override(&store);
+        let key_provider = crate::config::Config::load(&crate::config::config_path())
+            .map(|c| c.key_provider)
+            .unwrap_or_default();
         let ctx = Context {
             data_dir,
             state_dir,
             store,
             recipients_path,
+            key_provider,
         };
 
         // Pre-dispatch: when `auto_pull` is on, fetch + fast-forward the
@@ -568,12 +585,16 @@ impl Cli {
         // than erroring out.
         let store = crate::config::resolve_store(None).unwrap_or_default();
         let recipients_path = load_recipients_path_override(&store);
+        let key_provider = crate::config::Config::load(&crate::config::config_path())
+            .map(|c| c.key_provider)
+            .unwrap_or_default();
 
         let ctx = Context {
             data_dir,
             state_dir,
             store,
             recipients_path,
+            key_provider,
         };
         crate::tui::run(&ctx)
     }
@@ -611,8 +632,6 @@ fn mutation_message(cmd: &Command) -> Option<String> {
             schema::SchemaCommand::Refresh => Some("schema refresh".to_string()),
             _ => None,
         },
-        Command::Share(_) => Some("share".to_string()),
-        Command::Inbox(_) => Some("inbox".to_string()),
         Command::Tag(a) => match &a.action {
             tag::TagAction::Add { .. } => Some(format!("tag add {}", a.path)),
             tag::TagAction::Rm { .. } => Some(format!("tag rm {}", a.path)),
@@ -650,7 +669,6 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Export(_)
             | Command::Codegen(_)
             | Command::Exec(_)
-            | Command::Share(_)
             | Command::Import(_)
             | Command::Tag(_)
     )
@@ -857,6 +875,7 @@ mod tests {
             state_dir: tmp,
             store: store.to_path_buf(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 

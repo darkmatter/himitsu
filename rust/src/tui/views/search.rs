@@ -148,8 +148,15 @@ pub struct SearchView {
     /// key just like the store picker. Mutually exclusive with `picker`
     /// because both are modal popups.
     palette: Option<CommandPalette>,
-    /// Health of the active store's git checkout, checked once at startup.
-    store_health: StoreHealth,
+    /// Health of the global store, computed once at startup.
+    global_health: StoreHealth,
+    /// Health of the project store (the store referenced by `default_store`
+    /// in the current repo's `himitsu.yaml`). `None` when there's no git
+    /// repo / no project config / the project's `default_store` doesn't
+    /// resolve to a registered checkout — rendered as a gray "no project
+    /// store" indicator so users see at a glance whether they need to wire
+    /// the current repo up.
+    project_health: Option<StoreHealth>,
     /// Whether to render the STORE column in the results table. Off by
     /// default — most users work in a single store at a time, so the
     /// column is dead weight. Toggled via the command palette
@@ -161,6 +168,9 @@ pub struct SearchView {
     /// once at view-construction time from the project + global configs.
     /// Used to render the ENVS column in the results table.
     env_index: std::collections::HashMap<String, Vec<String>>,
+    /// Active tag filters selected from result-row tag chips. AND semantics,
+    /// matching CLI `search --tag`.
+    tag_filters: Vec<String>,
     /// When true, multi-leaf top-level prefix groups collapse to a single
     /// `FoldedGroup` row. Toggled with Tab. Singleton paths render the same
     /// in both states. Default: unfolded.
@@ -185,8 +195,9 @@ impl SearchView {
             state_dir: ctx.state_dir.clone(),
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
+            key_provider: ctx.key_provider.clone(),
         };
-        let store_health = check_store_health(&ctx_owned);
+        let (global_health, project_health) = check_store_health_pair(&ctx_owned);
         let env_index = build_env_index();
         let mut view = Self {
             query: String::new(),
@@ -196,9 +207,11 @@ impl SearchView {
             ctx: ctx_owned,
             picker: None,
             palette: None,
-            store_health,
+            global_health,
+            project_health,
             show_store_column: false,
             env_index,
+            tag_filters: Vec::new(),
             folded: false,
             autocomplete: SecretRefAutocomplete::new(Vec::new()),
         };
@@ -256,6 +269,9 @@ impl SearchView {
             self.autocomplete.set_open(want_open);
             return SearchAction::None;
         }
+        if matches!(key.code, KeyCode::Char('t')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.refine_to_selected_tag();
+        }
         // Esc closes the popup before falling through to the view's own
         // cancel/quit semantics.
         if key.code == KeyCode::Esc && self.autocomplete.is_open() {
@@ -306,7 +322,9 @@ impl SearchView {
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
-                if self.query.pop().is_some() {
+                let changed = self.query.pop().is_some()
+                    || (self.query.is_empty() && self.tag_filters.pop().is_some());
+                if changed {
                     self.refresh_results();
                 }
                 SearchAction::None
@@ -388,9 +406,7 @@ impl SearchView {
     }
 
     fn refresh_results(&mut self) {
-        // Pass an empty tag filter; the TUI handles tag chips/filtering in a
-        // separate worker so this view always asks for everything.
-        self.results = search_core(&self.ctx, &self.query, &[]).unwrap_or_default();
+        self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
         self.rows = build_rows(&self.results, self.folded);
         self.list_state.select(self.first_selectable());
         // Keep the autocomplete corpus aligned with what the user could
@@ -400,6 +416,22 @@ impl SearchView {
         let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
         self.autocomplete.set_corpus(corpus);
         self.autocomplete.update_query(&self.query);
+    }
+
+    fn refine_to_selected_tag(&mut self) -> SearchAction {
+        let Some(tag) = self
+            .selected_result()
+            .and_then(|r| r.tags.as_ref())
+            .and_then(|tags| tags.first())
+            .cloned()
+        else {
+            return SearchAction::CommandHint("selected result has no tag chip".into());
+        };
+        if !self.tag_filters.iter().any(|existing| existing == &tag) {
+            self.tag_filters.push(tag.clone());
+            self.refresh_results();
+        }
+        SearchAction::CommandHint(format!("filtering by tag:{tag}"))
     }
 
     fn toggle_fold(&mut self) {
@@ -625,7 +657,9 @@ impl SearchView {
         match rekey::rekey_store(&self.ctx, None) {
             Ok(n) => {
                 self.refresh_results();
-                self.store_health = check_store_health(&self.ctx);
+                let (g, p) = check_store_health_pair(&self.ctx);
+                self.global_health = g;
+                self.project_health = p;
                 SearchAction::Synced(format!("pulled, {n} secret(s) rekeyed"))
             }
             Err(e) => SearchAction::CommandFailed(format!("sync rekey failed: {e}")),
@@ -666,7 +700,9 @@ impl SearchView {
         ) {
             Ok(()) => {
                 self.ctx.commit_and_push("himitsu: join");
-                self.store_health = check_store_health(&self.ctx);
+                let (g, p) = check_store_health_pair(&self.ctx);
+                self.global_health = g;
+                self.project_health = p;
                 SearchAction::Joined("joined as recipient".into())
             }
             Err(e) => SearchAction::CommandFailed(format!("join failed: {e}")),
@@ -674,33 +710,18 @@ impl SearchView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let (health_label, health_color) = match &self.store_health {
-            StoreHealth::Synced => ("synced".to_string(), theme::success()),
-            StoreHealth::Behind(n) => (format!("{n} behind remote"), theme::warning()),
-            StoreHealth::Dirty => ("uncommitted changes".to_string(), theme::danger()),
-            StoreHealth::BehindAndDirty(n) => (format!("{n} behind + dirty"), theme::danger()),
-            StoreHealth::NotGit => ("not a git repo".to_string(), theme::warning()),
-            StoreHealth::NoRemote => (
-                "no remote — run: himitsu remote add".to_string(),
-                theme::warning(),
-            ),
-            StoreHealth::NotPushed => (
-                "not pushed — run: himitsu git push -u origin main".to_string(),
-                theme::warning(),
-            ),
-            StoreHealth::NotRecipient => (
-                "not a recipient — run: himitsu join".to_string(),
-                theme::warning(),
-            ),
-            StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
-        };
+        let global_pill = render_health_pill("global", Some(&self.global_health));
+        let project_pill = render_health_pill("project", self.project_health.as_ref());
+
+        // Right column has to fit both pills side-by-side, separated by two
+        // spaces. Length comes from the rendered span widths so a long
+        // message like "not pushed — run: himitsu git push -u origin main"
+        // doesn't get truncated.
+        let right_width = (span_width(&global_pill) + 2 + span_width(&project_pill)) as u16;
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(20),
-                Constraint::Length((health_label.len() as u16).saturating_add(4)),
-            ])
+            .constraints([Constraint::Min(20), Constraint::Length(right_width)])
             .split(area);
 
         // Left: brand chip + active view name. The chip carries the project's
@@ -713,27 +734,12 @@ impl SearchView {
         ));
         frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
 
-        // Right: store health indicator, right-aligned within the second
-        // column. The healthy steady-state (`Synced`) renders as a quiet
-        // colored dot + label on the default background — we don't want a
-        // bright green pill screaming at the user when nothing is wrong.
-        // Every other state still uses the colored pill so problems remain
-        // visually loud.
-        let right_spans = if matches!(self.store_health, StoreHealth::Synced) {
-            vec![
-                Span::styled(icons::health(), Style::default().fg(health_color)),
-                Span::raw(" "),
-                Span::styled(health_label, Style::default().fg(health_color)),
-            ]
-        } else {
-            theme::pill_with(
-                format!("{} {health_label}", icons::health()),
-                health_color,
-                theme::on_accent(),
-            )
-        };
+        // Right: two health pills (global, project) right-aligned together.
+        let mut right = global_pill;
+        right.push(Span::raw("  "));
+        right.extend(project_pill);
         frame.render_widget(
-            Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
+            Paragraph::new(Line::from(right)).alignment(Alignment::Right),
             cols[1],
         );
     }
@@ -753,10 +759,18 @@ impl SearchView {
                 ))
                 .right_aligned(),
             );
-        let text = Line::from(vec![
-            Span::raw(&self.query),
-            Span::styled("█", Style::default().fg(theme::accent())),
-        ]);
+        let mut spans = Vec::new();
+        for tag in &self.tag_filters {
+            spans.extend(theme::pill_with(
+                format!("tag:{tag}"),
+                theme::accent(),
+                theme::on_accent(),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(&self.query));
+        spans.push(Span::styled("█", Style::default().fg(theme::accent())));
+        let text = Line::from(spans);
         frame.render_widget(Paragraph::new(text).block(block), area);
     }
 
@@ -916,11 +930,13 @@ impl SearchView {
         }
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
+        let selected_row = self.list_state.selected();
         let items: Vec<ListItem> = self
             .rows
             .iter()
             .zip(row_data.iter())
-            .map(|(row, data)| match row {
+            .enumerate()
+            .map(|(idx, (row, data))| match row {
                 Row::Store { name, count } => {
                     let line = Line::from(vec![
                         Span::styled(
@@ -1006,7 +1022,14 @@ impl SearchView {
                             Style::default().fg(theme::accent()),
                         ));
                     }
-                    ListItem::new(Line::from(spans))
+                    let mut lines = vec![Line::from(spans)];
+                    if selected_row == Some(idx) && !cells.desc.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(cells.desc.clone(), Style::default().fg(theme::muted())),
+                        ]));
+                    }
+                    ListItem::new(lines)
                 }
             })
             .collect();
@@ -1202,7 +1225,7 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
     let mut ctx_for_store = ctx.clone();
     ctx_for_store.store = result.store_path.clone();
     let ciphertext = store::read_secret(&result.store_path, &result.path)?;
-    let identity = age::read_identity(&ctx_for_store.key_path())?;
+    let identity = ctx_for_store.load_identity()?;
     let plain = age::decrypt(&ciphertext, &identity)?;
     let decoded = secret_value::decode(&plain);
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
@@ -1215,6 +1238,86 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
 /// whether the user's own age key is in the store's recipient list —
 /// [`StoreHealth::NotRecipient`] takes priority over git health because the
 /// store is unusable without it.
+/// Compute health for both the global default store and the active project
+/// store. The project store comes from the current repo's `himitsu.yaml`
+/// `default_store` slug, resolved against the global stores directory.
+/// `None` means "no project store is wired up" (no git repo, no project
+/// config, project's slug not registered) — rendered as a gray indicator.
+fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealth>) {
+    let global_health = check_store_health(ctx);
+
+    let project_health = match resolve_project_store(ctx) {
+        Some(project_store) => {
+            let mut project_ctx = ctx.clone();
+            project_ctx.store = project_store;
+            Some(check_store_health(&project_ctx))
+        }
+        None => None,
+    };
+    (global_health, project_health)
+}
+
+/// Find the project store referenced by the current repo's `himitsu.yaml`,
+/// if any. Returns `None` when there's no project config, no `default_store`
+/// in it, or the slug doesn't resolve to an existing checkout under
+/// `stores_dir`.
+fn resolve_project_store(ctx: &Context) -> Option<std::path::PathBuf> {
+    let (project_cfg, _) = crate::config::load_project_config()?;
+    let slug = project_cfg.default_store?;
+    let (org, repo) = crate::config::validate_remote_slug(&slug).ok()?;
+    let candidate = ctx.stores_dir().join(org).join(repo);
+    candidate.exists().then_some(candidate)
+}
+
+/// Render a labelled health pill: `<icon> <label>: <status>`. A `None`
+/// status renders as a muted gray "n/a" so the user sees an explicit
+/// "not configured" instead of a missing chip.
+fn render_health_pill(label: &str, health: Option<&StoreHealth>) -> Vec<Span<'static>> {
+    let label_owned = label.to_string();
+    let Some(health) = health else {
+        // No project store configured for this repo. Gray, low-contrast.
+        return vec![
+            Span::styled(icons::health(), Style::default().fg(theme::muted())),
+            Span::raw(" "),
+            Span::styled(
+                format!("{label_owned}: n/a"),
+                Style::default().fg(theme::muted()),
+            ),
+        ];
+    };
+    let (status, color) = match health {
+        StoreHealth::Synced => ("synced".to_string(), theme::success()),
+        StoreHealth::Behind(n) => (format!("{n} behind"), theme::warning()),
+        StoreHealth::Dirty => ("dirty".to_string(), theme::danger()),
+        StoreHealth::BehindAndDirty(n) => (format!("{n} behind + dirty"), theme::danger()),
+        StoreHealth::NotGit => ("not a git repo".to_string(), theme::warning()),
+        StoreHealth::NoRemote => ("no remote".to_string(), theme::warning()),
+        StoreHealth::NotPushed => ("not pushed".to_string(), theme::warning()),
+        StoreHealth::NotRecipient => ("not a recipient".to_string(), theme::warning()),
+        StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
+    };
+    let body = format!("{label_owned}: {status}");
+    if matches!(health, StoreHealth::Synced) {
+        // Quiet steady-state: dot + label on the default background. No
+        // bright pill for the happy path.
+        vec![
+            Span::styled(icons::health(), Style::default().fg(color)),
+            Span::raw(" "),
+            Span::styled(body, Style::default().fg(color)),
+        ]
+    } else {
+        theme::pill_with(
+            format!("{} {body}", icons::health()),
+            color,
+            theme::on_accent(),
+        )
+    }
+}
+
+fn span_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
 fn check_store_health(ctx: &Context) -> StoreHealth {
     use crate::git;
 
@@ -1499,6 +1602,7 @@ mod tests {
             state_dir: store.parent().unwrap().to_path_buf(),
             store: store.to_path_buf(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
@@ -1555,6 +1659,28 @@ mod tests {
             other => panic!("expected Secret at row 0, got {other:?}"),
         }
         assert_eq!(view.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_t_adds_first_selected_tag_filter() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        view.results = vec![SearchResult {
+            store: "local".into(),
+            store_path: ctx.store.clone(),
+            path: "prod/API_KEY".into(),
+            created_at: None,
+            updated_at: None,
+            description: None,
+            tags: Some(vec!["pci".into(), "prod".into()]),
+        }];
+        view.rows = build_rows(&view.results, false);
+        view.list_state.select(Some(0));
+
+        let action = view.on_key(ctrl('t'), &KeyMap::default());
+        assert_eq!(view.tag_filters, vec!["pci"]);
+        assert!(matches!(action, SearchAction::CommandHint(msg) if msg.contains("tag:pci")));
     }
 
     #[test]
@@ -1817,6 +1943,7 @@ mod tests {
             state_dir: state.clone(),
             store: state.join("empty"),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
@@ -1919,6 +2046,7 @@ mod tests {
             state_dir,
             store,
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         };
         (dir, ctx)
     }

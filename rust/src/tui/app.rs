@@ -572,6 +572,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         state_dir: ctx.state_dir.clone(),
         store: ctx.store.clone(),
         recipients_path: ctx.recipients_path.clone(),
+        key_provider: ctx.key_provider.clone(),
     }
 }
 

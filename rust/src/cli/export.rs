@@ -7,7 +7,7 @@ use clap::Args;
 
 use crate::cli::Context;
 use crate::config::{load_project_config, ProjectConfig};
-use crate::crypto::age as crypto;
+use crate::crypto::{age as crypto, secret_value};
 use crate::error::{HimitsuError, Result};
 use crate::remote::store;
 
@@ -36,7 +36,7 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
-    let identity = crypto::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
 
     // List all secrets in the store.
     let all_paths = store::list_secrets(&ctx.store, None)?;
@@ -64,8 +64,9 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
     for path in &matched {
         let ciphertext = store::read_secret(&ctx.store, path)?;
-        let plaintext_bytes = crypto::decrypt(&ciphertext, &identity)?;
-        let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
+        let decoded = secret_value::decode(&crypto::decrypt(&ciphertext, &identity)?);
+        super::get::warn_if_expired(path, &decoded);
+        let plaintext = String::from_utf8(decoded.data).map_err(|e| {
             HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))
         })?;
         secrets.insert((*path).clone(), plaintext);

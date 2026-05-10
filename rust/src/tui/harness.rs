@@ -237,6 +237,7 @@ mod tests {
                 state_dir,
                 store: alpha.clone(),
                 recipients_path: None,
+                key_provider: crate::config::KeyProvider::default(),
             };
 
             Self {

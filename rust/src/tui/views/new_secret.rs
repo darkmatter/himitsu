@@ -179,6 +179,7 @@ pub struct NewSecretView {
     env_key: String,
     expires_at: String,
     status: Option<String>,
+    path_corpus: Vec<String>,
     /// `Some(focused_button)` while the unsaved-changes modal is up.
     /// `None` means the modal is closed and the form behaves normally.
     confirm_exit: Option<ConfirmButton>,
@@ -187,6 +188,11 @@ pub struct NewSecretView {
 
 impl NewSecretView {
     pub fn new(ctx: &Context) -> Self {
+        let path_corpus = if ctx.store.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            store::list_secrets(&ctx.store, None).unwrap_or_default()
+        };
         Self {
             step: Step::Path,
             path: String::new(),
@@ -198,6 +204,7 @@ impl NewSecretView {
             env_key: String::new(),
             expires_at: String::new(),
             status: None,
+            path_corpus,
             confirm_exit: None,
             ctx: ctx.clone(),
         }
@@ -698,14 +705,7 @@ impl NewSecretView {
             .split(area);
 
         self.draw_header(frame, chunks[0]);
-        self.draw_single_line(
-            frame,
-            chunks[1],
-            Step::Path,
-            " path ",
-            &self.path,
-            "prod/api/STRIPE_KEY",
-        );
+        self.draw_path_field(frame, chunks[1]);
         self.draw_value_field(frame, chunks[2]);
         self.draw_single_line(
             frame,
@@ -791,6 +791,38 @@ impl NewSecretView {
             .border_style(Self::border_style(focused));
         let para = Self::field_paragraph(content, placeholder, focused).block(block);
         frame.render_widget(para, area);
+    }
+
+    fn draw_path_field(&self, frame: &mut Frame<'_>, area: Rect) {
+        let focused = self.step == Step::Path;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" path ")
+            .title_style(Style::default().fg(theme::border_label()))
+            .border_style(Self::border_style(focused));
+
+        let para = if focused && !self.path.is_empty() {
+            let mut spans = vec![Span::raw(self.path.clone())];
+            if let Some(suffix) = self.path_completion_suffix() {
+                spans.push(Span::styled(suffix, Style::default().fg(theme::muted())));
+            }
+            spans.push(Span::raw("_"));
+            Paragraph::new(Line::from(spans))
+        } else {
+            Self::field_paragraph(&self.path, "prod/api/STRIPE_KEY", focused)
+        }
+        .block(block);
+        frame.render_widget(para, area);
+    }
+
+    fn path_completion_suffix(&self) -> Option<String> {
+        if self.path.is_empty() {
+            return None;
+        }
+        self.path_corpus
+            .iter()
+            .find(|candidate| candidate.starts_with(&self.path) && candidate.as_str() != self.path)
+            .map(|candidate| candidate[self.path.len()..].to_string())
     }
 
     fn draw_value_field(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -1008,6 +1040,7 @@ mod tests {
             state_dir: PathBuf::new(),
             store: PathBuf::new(),
             recipients_path: None,
+            key_provider: crate::config::KeyProvider::default(),
         }
     }
 
@@ -1046,6 +1079,18 @@ mod tests {
         view.on_key(press(KeyCode::Enter), &km);
         assert_eq!(view.step(), Step::Value);
         assert_eq!(view.path(), "prod/API_KEY");
+    }
+
+    #[test]
+    fn path_completion_suffix_uses_first_existing_prefix_match() {
+        let mut view = NewSecretView::new(&empty_ctx());
+        view.path_corpus = vec![
+            "foo/bar/baz".to_string(),
+            "foo/qux".to_string(),
+            "prod/API_KEY".to_string(),
+        ];
+        typ(&mut view, "fo");
+        assert_eq!(view.path_completion_suffix(), Some("o/bar/baz".to_string()));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use clap::Args;
 
 use super::Context;
 use crate::config::{self, env_resolver, validate_env_label};
-use crate::crypto::{age, secret_value, tags as tag_grammar};
+use crate::crypto::{secret_value, tags as tag_grammar};
 use crate::error::{HimitsuError, Result};
 use crate::reference::SecretRef;
 use crate::remote::store;
@@ -74,7 +74,7 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
     // Load the age identity once so we don't re-parse the key file per
     // resolved secret. `exec` is the first hot loop of decrypts and the
     // win is real.
-    let identity = age::read_identity(&ctx.key_path())?;
+    let identity = ctx.load_identity()?;
     let decrypted = decrypt_resolved(ctx, &identity, resolved)?;
     let env_map = build_env_map(decrypted, &args.tags)?;
 
@@ -93,26 +93,29 @@ struct ResolvedRef {
 fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
     // Env labels live in their own namespace and always win when they match
     // exactly: project authoring intent beats path coincidence.
-    if let Some((cfg, _)) = config::load_project_config() {
-        if cfg.envs.contains_key(ref_str) {
-            if config::is_wildcard_label(ref_str) {
-                return Err(HimitsuError::NotSupported(format!(
-                    "exec does not support wildcard env labels ({ref_str:?}); \
+    let envs = config::load_effective_envs()?;
+    if envs.contains_key(ref_str) {
+        if config::is_wildcard_label(ref_str) {
+            return Err(HimitsuError::NotSupported(format!(
+                "exec does not support wildcard env labels ({ref_str:?}); \
                      pass a concrete env or use `himitsu codegen` for templated output"
-                )));
-            }
-            validate_env_label(ref_str)?;
-            let available = store::list_secrets(&ctx.store, None)?;
-            let tree = env_resolver::resolve(&cfg.envs, ref_str, &available)?;
-            let leaves = collect_env_leaves(&tree);
-            return Ok(leaves
-                .into_iter()
-                .map(|(key, secret_path)| ResolvedRef {
-                    secret_path,
-                    explicit_key: Some(key),
-                })
-                .collect());
+            )));
         }
+        validate_env_label(ref_str)?;
+        let available = store::list_secrets(&ctx.store, None)?;
+        let identity = ctx.load_identity()?;
+        let tag_lookup = |path: &str| {
+            super::get::get_decoded_with_identity(ctx, path, &identity).map(|decoded| decoded.tags)
+        };
+        let tree = env_resolver::resolve_with_tags(&envs, ref_str, &available, &tag_lookup)?;
+        let leaves = collect_env_leaves(&tree);
+        return Ok(leaves
+            .into_iter()
+            .map(|(key, secret_path)| ResolvedRef {
+                secret_path,
+                explicit_key: Some(key),
+            })
+            .collect());
     }
 
     if let Some(prefix) = ref_str.strip_suffix("/*") {
@@ -179,6 +182,7 @@ fn decrypt_resolved(
     refs.into_iter()
         .map(|r| {
             let decoded = super::get::get_decoded_with_identity(ctx, &r.secret_path, identity)?;
+            super::get::warn_if_expired(&r.secret_path, &decoded);
             Ok((r, decoded))
         })
         .collect()

@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use crate::error::{HimitsuError, Result};
-use crate::keyring::{KeyProvider, KEY_SERVICE, SCOPE_SERVICE};
+use crate::keyring::{KeyProvider, KEY_SERVICE};
 
 /// macOS Keychain adapter using the `security` CLI.
 pub struct MacOSKeychain;
@@ -68,13 +68,5 @@ impl KeyProvider for MacOSKeychain {
 
     fn load_key(&self, fingerprint: &str) -> Result<Option<String>> {
         Self::security_find(KEY_SERVICE, fingerprint)
-    }
-
-    fn store_scope(&self, scope: &str, fingerprint: &str) -> Result<()> {
-        Self::security_add(SCOPE_SERVICE, scope, fingerprint)
-    }
-
-    fn load_scope(&self, scope: &str) -> Result<Option<String>> {
-        Self::security_find(SCOPE_SERVICE, scope)
     }
 }

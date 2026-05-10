@@ -157,11 +157,7 @@ impl SecretRefAutocomplete {
         if self.selected >= self.suggestions.len() {
             self.selected = 0;
         }
-        // Empty-query / empty-corpus drive the popup closed; otherwise the
-        // host decides whether to show it (gated behind Tab/Ctrl-Space).
-        if self.suggestions.is_empty() || self.query.is_empty() {
-            self.open = false;
-        }
+        self.open = !self.suggestions.is_empty() && !self.query.is_empty();
     }
 }
 
@@ -237,8 +233,16 @@ mod tests {
     fn closed_popup_returns_no_acceptance() {
         let mut ac = SecretRefAutocomplete::new(corpus());
         ac.update_query("prod");
-        // Default state (open=false) means accepted() is silent.
+        ac.set_open(false);
         assert!(ac.accepted().is_none());
+    }
+
+    #[test]
+    fn update_query_auto_opens_when_suggestions_exist() {
+        let mut ac = SecretRefAutocomplete::new(corpus());
+        ac.update_query("prod/api/STRIPE_KYE");
+        assert!(ac.is_open());
+        assert_eq!(ac.accepted(), Some("prod/api/STRIPE_KEY"));
     }
 
     #[test]

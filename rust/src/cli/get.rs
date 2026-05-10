@@ -38,8 +38,8 @@ pub fn get_plaintext(ctx: &Context, path: &str) -> Result<Vec<u8>> {
 }
 
 /// Decrypt and return the full decoded SecretValue for a secret reference.
-fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
-    let identity = age::read_identity(&ctx.key_path())?;
+pub(crate) fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
+    let identity = ctx.load_identity()?;
     get_decoded_with_identity(ctx, path, &identity)
 }
 
@@ -88,6 +88,9 @@ fn emit_metadata_block(decoded: &secret_value::Decoded) {
     if !decoded.env_key.is_empty() {
         let _ = writeln!(out, "env_key:     {}", decoded.env_key);
     }
+    if !decoded.tags.is_empty() {
+        let _ = writeln!(out, "tags:        {}", decoded.tags.join(", "));
+    }
 
     if let Some(ref ts) = decoded.expires_at {
         if !duration::is_unset(ts) {
@@ -99,6 +102,21 @@ fn emit_metadata_block(decoded: &secret_value::Decoded) {
                 let _ = writeln!(out, "{}", colorize(&line, sev, is_tty));
             }
         }
+    }
+}
+
+pub(crate) fn warn_if_expired(path: &str, decoded: &secret_value::Decoded) {
+    let Some(ts) = decoded.expires_at.as_ref() else {
+        return;
+    };
+    if duration::is_unset(ts) {
+        return;
+    }
+    let Some(dt) = duration::from_proto_timestamp(ts) else {
+        return;
+    };
+    if dt <= chrono::Utc::now() {
+        eprintln!("warning: secret '{path}' expired at {}", dt.to_rfc3339());
     }
 }
 

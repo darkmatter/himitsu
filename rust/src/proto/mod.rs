@@ -35,10 +35,7 @@ pub mod commands {
 
 pub use config::{CodegenLang, Config as ProtoConfig, Identity, Policy as ProtoPolicy, Remote};
 
-pub use secrets::{
-    RecipientInfo, SecretEntry, SecretEnvelope, SecretValue, ShareEnvelope, ShareTransport,
-    SharedSecret, StoreManifest, SyncDisposition, SyncEntryState, SyncState,
-};
+pub use secrets::{RecipientInfo, SecretEntry, SecretEnvelope, SecretValue, StoreManifest};
 
 // -----------------------------------------------------------------------
 // Enum ↔ string helpers
@@ -198,43 +195,6 @@ pub fn secret_envelope_json_schema() -> serde_json::Value {
     })
 }
 
-/// Share envelope schema.
-pub fn share_envelope_json_schema() -> serde_json::Value {
-    serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://himitsu.dev/schemas/share-envelope.schema.json",
-        "title": "Himitsu Share Envelope",
-        "description": "Transport-agnostic payload for sharing secrets with external recipients.",
-        "type": "object",
-        "required": ["version", "sender_public_key", "recipient_public_key", "secrets"],
-        "properties": {
-            "version": { "type": "integer", "minimum": 1 },
-            "sender_public_key": { "type": "string" },
-            "recipient_public_key": { "type": "string" },
-            "secrets": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["key_name", "environment", "ciphertext"],
-                    "properties": {
-                        "key_name": { "type": "string" },
-                        "environment": { "type": "string" },
-                        "ciphertext": { "type": "string", "description": "Base64-encoded age ciphertext." },
-                        "plaintext_hash": { "type": "string" }
-                    },
-                    "additionalProperties": false
-                }
-            },
-            "created_at": { "type": "string", "format": "date-time" },
-            "message": { "type": "string" },
-            "transport": { "type": "string" },
-            "nonce": { "type": "string" },
-            "ttl_seconds": { "type": "integer", "minimum": 0 }
-        },
-        "additionalProperties": false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,12 +233,5 @@ mod tests {
         let schema = secret_envelope_json_schema();
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("ciphertext")));
-    }
-
-    #[test]
-    fn share_envelope_schema_has_secrets() {
-        let schema = share_envelope_json_schema();
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("secrets")));
     }
 }

@@ -79,7 +79,7 @@ pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<
     // description from each secret's encrypted payload. If the identity
     // isn't available (fresh install, CI test fixture, missing key file)
     // we still return search results — just without descriptions.
-    let identity = age::read_identity(&ctx.key_path()).ok();
+    let identity = ctx.load_identity().ok();
 
     for (slug, store_path) in collect_stores(ctx)? {
         let paths = store::list_secrets(&store_path, None).unwrap_or_default();
