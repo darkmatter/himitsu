@@ -1,8 +1,10 @@
-<center>
-  <h1>himitsu<sup>秘密</sup></h1>
-</center>
+<div align="center">
+  <h1>himitsu<sup>秘密</sup></h1><br/>
+  <strong>Age-based secrets manager with support for sharing via Git</strong><br/><br>
+  <sub>One-file-per-secret • Simple path-based organization • Tag-based recipient control • Self-serve rekeys • Typed codegen</sub>
+</div>
 
-Age-based secrets manager that supports cross-repo sharing. Secrets stored one-file-per-key in a git-backed `.himitsu/` store, with path-based recipient control and typed codegen.
+<br/><br/>
 
 ![himitsu demo](demo/demo-vhs.gif)
 
