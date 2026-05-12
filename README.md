@@ -1,12 +1,92 @@
 <div align="center">
   <h1>himitsu<sup>秘密</sup></h1><br/>
-  <strong>Age-based secrets manager with support for sharing via Git</strong><br/><br>
-  <sub>One-file-per-secret • Simple path-based organization • Tag-based recipient control • Self-serve rekeys • Typed codegen</sub>
+  <strong>Git-native secret sharing for teams that use Age, SOPS, Nix, and the terminal.</strong><br/><br/>
+  <sub>One secret per file • Path-based access control • Self-serve rekeys • TUI-first workflow • Typed env generation</sub>
 </div>
 
 <br/><br/>
 
 ![himitsu demo](demo/demo-vhs.gif)
+
+---
+
+## What is himitsu?
+
+himitsu is an Age-based secrets manager built around a simple idea:
+
+> Your secret store should be a Git repo you can review, share, branch, sync, and recover.
+
+Instead of hiding secrets behind a service, database, or cloud control plane, himitsu stores each secret as its own `.age` file inside a plain directory tree. Access is controlled by recipient files, organized by path. Team members can add recipients, rekey subtrees, review secret changes in Git, and run local commands with decrypted values injected into the environment.
+
+It is designed for small teams, infrastructure repos, Nix/devShell workflows, and open-source projects that need something stronger than scattered `.env` files but lighter than Vault.
+
+```bash
+himitsu set prod/API_KEY "sk_live_..."
+himitsu recipient add ops/alice --age-key age1...
+himitsu rekey prod
+himitsu exec prod/* -- node app.js
+```
+
+## Why himitsu?
+
+Most secret workflows become painful in one of two ways:
+
+- `.env` files and chat-based sharing are easy until they become impossible to audit, rotate, or trust.
+- Vault-style systems are powerful, but often too much machinery for small teams, local development, or Git-centered infrastructure.
+
+himitsu sits in the middle. It keeps the operational model boring: encrypted files, Git history, Age recipients, and regular directories.
+
+Use himitsu when you want:
+
+- **Reviewable secret changes**<br/>
+  One encrypted file per secret keeps diffs, renames, deletes, and reviews understandable.
+
+- **Git-based collaboration**<br/>
+  A store is just a Git repo. Pull, push, branch, recover, and audit with tools your team already uses.
+- **Path-based recipient control**<br/>
+  Organize recipients and secrets by directory, then rekey only the subtree that changed.
+- **Fast local workflows**<br/>
+  Use the TUI for browsing and editing, or the CLI for scripts, CI, and shell automation.
+- **Typed environment generation**<br/>
+  Generate TypeScript, Go, Python, or Rust stubs from your secret definitions so apps know what they expect.
+- **Nix-friendly secret injection**<br/>
+  Wrap devShells, packages, and entrypoints without introducing a long-running secrets service.
+
+## Quick Start
+
+Run himitsu with no arguments to open the TUI. On a fresh machine, the init wizard creates your Age key, scaffolds a store, adds you as the first recipient, and drops you into search.
+
+```bash
+himitsu
+```
+
+From the dashboard you can search secrets, create new entries, edit values, copy references, switch stores, and check sync health.
+
+For scripts and CI, use the CLI directly:
+
+```bash
+# Initialize a store
+himitsu init --name you/secrets
+
+# Store secrets
+himitsu set prod/API_KEY "sk_live_abc123" --tag stripe --tag pci
+himitsu set prod/DB_PASSWORD "correct-horse-battery-staple"
+
+# Share access
+himitsu recipient add ops/alice --age-key age1...
+himitsu rekey prod
+
+# Search and read
+himitsu search stripe
+himitsu get prod/API_KEY
+
+# Run a command with prod secrets in the environment
+himitsu exec prod/* -- node app.js
+Stores can be local paths or remote Git repos:
+
+himitsu remote add org/secrets
+himitsu -r org/secrets set staging/API_KEY "sk_test_..."
+```
 
 ---
 
