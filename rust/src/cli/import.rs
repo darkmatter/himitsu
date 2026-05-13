@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::process::Command;
 
 use clap::Args;
@@ -100,8 +101,6 @@ struct OpItemSummary {
 
 /// A single planned import action.
 struct ImportAction {
-    /// The op:// reference this value comes from.
-    source: String,
     /// The original key name from the source (used for filter matching).
     source_key: String,
     /// The himitsu path where the secret will be stored.
@@ -113,6 +112,19 @@ struct ImportAction {
 pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     if let Some(ref sops_file) = args.sops {
         return run_sops(sops_file, &args, ctx);
+    }
+
+    // Plain YAML file import: positional path is a file on disk (no --op/--sops).
+    if args.op.is_none() && args.sops.is_none() {
+        if let Some(ref file_path) = args.path {
+            if std::path::Path::new(file_path).exists() {
+                return run_yaml_file(file_path, &args, ctx);
+            }
+        }
+        // Fall through to "missing source" error.
+        return Err(HimitsuError::InvalidReference(
+            "missing source: pass --op <op://vault/item/field> or --sops <file>".into(),
+        ));
     }
 
     let op_ref = args.op.as_deref().ok_or_else(|| {
@@ -156,7 +168,6 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
             }
             let plaintext = op_read("op", op_ref)?;
             vec![ImportAction {
-                source: op_ref.to_string(),
                 source_key: field_name.to_string(),
                 target,
                 value: plaintext,
@@ -196,36 +207,173 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
+    // Build the staging YAML content.
+    let mut staging = format!(
+        "# Imported from {op_ref} — edit paths and values, then save and close\n\
+         # Remove lines you don't want to import\n"
+    );
+    for action in &actions {
+        // Escape special YAML characters in the value using serde_yaml.
+        let yaml_val = serde_yaml::to_string(&action.value)
+            .unwrap_or_else(|_| format!("{:?}", action.value));
+        let yaml_val = yaml_val.trim_end();
+        staging.push_str(&format!("{}: {yaml_val}\n", action.target));
+    }
+
+    // If dry-run: show staging content and exit without opening editor or importing.
     if args.dry_run {
-        for action in &actions {
-            println!(
-                "[dry-run] would import {} \u{2192} {}",
-                action.source, action.target
-            );
-        }
-        println!("\n{} secret(s) would be imported", actions.len());
+        println!("# [dry-run] Staging file that would be opened for editing:\n");
+        println!("{staging}");
+        println!("# {} secret(s) would be imported", actions.len());
         return Ok(());
     }
 
-    // Check for existing secrets (bulk imports).
-    if !args.overwrite && segments.len() < 3 {
-        for action in &actions {
-            if secret_exists_at(&ctx.store, &action.target) {
-                return Err(HimitsuError::InvalidReference(format!(
-                    "secret already exists at {}: pass --overwrite to replace it",
-                    action.target,
-                )));
-            }
-        }
+    // Write staging file to a temp location.
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".yaml")
+        .tempfile()
+        .map_err(|e| HimitsuError::External(format!("failed to create staging file: {e}")))?;
+    tmp.write_all(staging.as_bytes())
+        .map_err(|e| HimitsuError::External(format!("failed to write staging file: {e}")))?;
+    tmp.flush()
+        .map_err(|e| HimitsuError::External(format!("failed to flush staging file: {e}")))?;
+
+    // Keep the file alive after NamedTempFile is persisted.
+    let (_, tmp_path) = tmp
+        .keep()
+        .map_err(|e| HimitsuError::External(format!("failed to persist staging file: {e}")))?;
+
+    // Open editor.
+    open_editor(&tmp_path)?;
+
+    // Read edited file back.
+    let edited = std::fs::read_to_string(&tmp_path)
+        .map_err(|e| HimitsuError::External(format!("failed to read staging file after edit: {e}")))?;
+
+    // Clean up temp file (best effort).
+    let _ = std::fs::remove_file(&tmp_path);
+
+    // Parse edited YAML.
+    let entries = parse_staging_yaml(&edited)?;
+
+    if entries.is_empty() {
+        println!("No secrets to import.");
+        return Ok(());
     }
 
+    // Check for existing secrets and import.
     let mut count = 0;
-    for action in &actions {
-        let stored = set_plaintext(ctx, &action.target, action.value.as_bytes(), Vec::new())?;
-        println!("Imported {stored} from {}", action.source);
+    for (path, value) in &entries {
+        if !args.overwrite && secret_exists_at(&ctx.store, path) {
+            eprintln!("skipping {path}: already exists (use --overwrite to replace)");
+            continue;
+        }
+        let stored = set_plaintext(ctx, path, value.as_bytes(), Vec::new())?;
+        println!("Imported {stored}");
         count += 1;
     }
     println!("\n{count} secret(s) imported");
+    Ok(())
+}
+
+// ── Editor workflow helpers ──────────────────────────────────────────────────
+
+/// Open `$EDITOR` (or `vi`) with the given file path and wait for it to exit.
+fn open_editor(path: &std::path::Path) -> Result<()> {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let status = std::process::Command::new(&editor)
+        .arg(path)
+        .status()
+        .map_err(|e| {
+            HimitsuError::External(format!("failed to launch editor '{editor}': {e}"))
+        })?;
+    if !status.success() {
+        return Err(HimitsuError::External(format!(
+            "editor '{editor}' exited with non-zero status"
+        )));
+    }
+    Ok(())
+}
+
+/// Parse a staging YAML file into `(path, value)` pairs.
+///
+/// The file is a flat YAML mapping of `String → String`. Non-string values
+/// are skipped (including empty values that result from comment-only files).
+fn parse_staging_yaml(content: &str) -> Result<Vec<(String, String)>> {
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let value: serde_yaml::Value = serde_yaml::from_str(content).map_err(|e| {
+        HimitsuError::External(format!("failed to parse edited staging YAML: {e}"))
+    })?;
+
+    let mapping = match value {
+        serde_yaml::Value::Mapping(m) => m,
+        serde_yaml::Value::Null => return Ok(Vec::new()),
+        other => {
+            return Err(HimitsuError::External(format!(
+                "staging YAML must be a flat mapping, got: {other:?}"
+            )));
+        }
+    };
+
+    let mut entries = Vec::new();
+    for (k, v) in &mapping {
+        let key = match k {
+            serde_yaml::Value::String(s) => s.clone(),
+            other => {
+                eprintln!("skipping non-string key: {other:?}");
+                continue;
+            }
+        };
+        let val = match v {
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Null => continue,
+            other => yaml_value_to_string(other),
+        };
+        if val.is_empty() {
+            continue;
+        }
+        entries.push((key, val));
+    }
+    Ok(entries)
+}
+
+// ── Plain YAML file import ───────────────────────────────────────────────────
+
+/// Import secrets from a plain YAML file on disk (same format as the staging file).
+fn run_yaml_file(file: &str, args: &ImportArgs, ctx: &Context) -> Result<()> {
+    let content = std::fs::read_to_string(file)
+        .map_err(|e| HimitsuError::External(format!("failed to read {file}: {e}")))?;
+
+    let entries = parse_staging_yaml(&content)?;
+
+    if entries.is_empty() {
+        println!("No secrets to import from {file}");
+        return Ok(());
+    }
+
+    let mut count = 0;
+    for (path, value) in &entries {
+        if args.dry_run {
+            println!("[dry-run] would import {path}");
+            continue;
+        }
+        if !args.overwrite && secret_exists_at(&ctx.store, path) {
+            eprintln!("skipping {path}: already exists (use --overwrite to replace)");
+            continue;
+        }
+        set_plaintext(ctx, path, value.as_bytes(), Vec::new())?;
+        println!("Imported {path}");
+        count += 1;
+    }
+
+    if args.dry_run {
+        println!("[dry-run] {} secret(s) would be imported", entries.len());
+    } else {
+        println!("{count} secret(s) imported from {file}");
+    }
     Ok(())
 }
 
@@ -423,10 +571,8 @@ fn build_item_actions(
         };
         let unique_label = deduplicate_label(&label, &mut seen_labels);
         let target = format!("{prefix}/{unique_label}");
-        let source = format!("op://{vault}/{item}/{}", field.label);
 
         actions.push(ImportAction {
-            source,
             source_key: sanitized,
             target,
             value,

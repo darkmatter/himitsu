@@ -15,6 +15,7 @@ pub mod import;
 pub mod inbox;
 pub mod init;
 pub mod join;
+pub mod keys;
 pub mod ls;
 pub mod read;
 pub mod recipient;
@@ -361,6 +362,9 @@ pub enum Command {
 
     /// Import secrets from external stores (1Password or SOPS).
     Import(import::ImportArgs),
+
+    /// Print age keys for self or a named recipient.
+    Keys(keys::KeysArgs),
 }
 
 impl Cli {
@@ -549,6 +553,7 @@ impl Cli {
             Command::Inbox(args) => inbox::run(args, &ctx),
             Command::Import(args) => import::run(args, &ctx),
             Command::Tag(args) => tag::run(args, &ctx),
+            Command::Keys(args) => keys::run(args, &ctx),
         };
 
         // Post-dispatch: enforce the append-only invariant for mutating

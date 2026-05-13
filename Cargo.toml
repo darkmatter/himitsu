@@ -71,6 +71,7 @@ owo-colors = "4"
 termimad = "0.30"
 rusqlite = { version = "0.31", features = ["bundled"] }
 sha2 = "0.10"
+tempfile = "3"
 
 [build-dependencies]
 prost-build = "0.13"
