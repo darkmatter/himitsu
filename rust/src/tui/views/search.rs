@@ -132,6 +132,64 @@ enum StoreHealth {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchColumn {
+    Path,
+    Updated,
+    Envs,
+    Description,
+    Store,
+}
+
+impl SearchColumn {
+    fn label(self) -> &'static str {
+        match self {
+            SearchColumn::Path => "PATH",
+            SearchColumn::Updated => "UPDATED",
+            SearchColumn::Envs => "ENVS",
+            SearchColumn::Description => "DESCRIPTION",
+            SearchColumn::Store => "STORE",
+        }
+    }
+
+    fn base_columns() -> &'static [SearchColumn] {
+        &[
+            SearchColumn::Path,
+            SearchColumn::Updated,
+            SearchColumn::Envs,
+            SearchColumn::Description,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDirection {
+    Asc,
+    Desc,
+}
+
+impl SortDirection {
+    fn toggled(self) -> Self {
+        match self {
+            SortDirection::Asc => SortDirection::Desc,
+            SortDirection::Desc => SortDirection::Asc,
+        }
+    }
+
+    fn marker(self) -> char {
+        match self {
+            SortDirection::Asc => '^',
+            SortDirection::Desc => 'v',
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SortState {
+    column: SearchColumn,
+    direction: SortDirection,
+}
+
 pub struct SearchView {
     query: String,
     results: Vec<SearchResult>,
@@ -171,9 +229,15 @@ pub struct SearchView {
     /// Active tag filters selected from result-row tag chips. AND semantics,
     /// matching CLI `search --tag`.
     tag_filters: Vec<String>,
+    /// Column currently selected by the table-header cursor. Tab and
+    /// Shift+Tab move this focus without touching the row selection.
+    selected_column: SearchColumn,
+    /// Current result ordering. Ctrl+O sorts by the selected column and
+    /// repeats on the same column toggle ascending/descending direction.
+    sort_state: SortState,
     /// When true, multi-leaf top-level prefix groups collapse to a single
-    /// `FoldedGroup` row. Toggled with Tab. Singleton paths render the same
-    /// in both states. Default: unfolded.
+    /// `FoldedGroup` row. Ctrl+- collapses and Ctrl++ expands. Singleton
+    /// paths render the same in both states. Default: unfolded.
     folded: bool,
     /// Levenshtein-backed autocomplete popup over the search query.
     ///
@@ -183,8 +247,8 @@ pub struct SearchView {
     /// opens the TUI lands on this view first. The popup is non-modal — the
     /// query input keeps consuming every printable key — and only intercepts
     /// Up/Down/Enter while the user has explicitly opened it via Ctrl+Space.
-    /// Tab is already bound to fold-toggle so we picked Ctrl+Space; that
-    /// chord is broadly available on macOS/iTerm + Linux terminals.
+    /// Tab moves table-column focus, so Ctrl+Space keeps autocomplete separate
+    /// from table navigation.
     autocomplete: SecretRefAutocomplete,
 }
 
@@ -212,6 +276,11 @@ impl SearchView {
             show_store_column: false,
             env_index,
             tag_filters: Vec::new(),
+            selected_column: SearchColumn::Path,
+            sort_state: SortState {
+                column: SearchColumn::Path,
+                direction: SortDirection::Asc,
+            },
             folded: false,
             autocomplete: SecretRefAutocomplete::new(Vec::new()),
         };
@@ -272,6 +341,20 @@ impl SearchView {
         if matches!(key.code, KeyCode::Char('t')) && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.refine_to_selected_tag();
         }
+        if matches!(key.code, KeyCode::Char('o')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.sort_by_selected_column();
+            return SearchAction::None;
+        }
+        if matches!(key.code, KeyCode::Char('-')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.set_folded(true);
+            return SearchAction::None;
+        }
+        if matches!(key.code, KeyCode::Char('+') | KeyCode::Char('='))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.set_folded(false);
+            return SearchAction::None;
+        }
         // Esc closes the popup before falling through to the view's own
         // cancel/quit semantics.
         if key.code == KeyCode::Esc && self.autocomplete.is_open() {
@@ -280,8 +363,16 @@ impl SearchView {
         }
 
         match (key.code, key.modifiers) {
+            (KeyCode::BackTab, _) => {
+                self.select_prev_column();
+                SearchAction::None
+            }
+            (KeyCode::Tab, m) if m.contains(KeyModifiers::SHIFT) => {
+                self.select_prev_column();
+                SearchAction::None
+            }
             (KeyCode::Tab, _) => {
-                self.toggle_fold();
+                self.select_next_column();
                 SearchAction::None
             }
             (KeyCode::Enter, _) => {
@@ -407,7 +498,8 @@ impl SearchView {
 
     fn refresh_results(&mut self) {
         self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
-        self.rows = build_rows(&self.results, self.folded);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.normalize_selected_column();
         self.list_state.select(self.first_selectable());
         // Keep the autocomplete corpus aligned with what the user could
         // possibly land on: every secret path search_core just returned for
@@ -434,12 +526,23 @@ impl SearchView {
         SearchAction::CommandHint(format!("filtering by tag:{tag}"))
     }
 
-    fn toggle_fold(&mut self) {
+    fn set_folded(&mut self, folded: bool) {
+        if self.folded == folded {
+            return;
+        }
+
         // Remember the prefix or path under the cursor so we can re-anchor
         // the selection after rebuilding rows. Otherwise the cursor would
         // jump to the first selectable line on every toggle.
-        let anchor = self
-            .list_state
+        let anchor = self.selected_anchor();
+
+        self.folded = folded;
+        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.list_state.select(self.reanchor(anchor));
+    }
+
+    fn selected_anchor(&self) -> Option<SelectionAnchor> {
+        self.list_state
             .selected()
             .and_then(|i| self.rows.get(i))
             .map(|row| match row {
@@ -448,11 +551,62 @@ impl SearchView {
                 }
                 Row::FoldedGroup { prefix, .. } => SelectionAnchor::Prefix(prefix.clone()),
                 Row::Store { name, .. } => SelectionAnchor::Store(name.clone()),
-            });
+            })
+    }
 
-        self.folded = !self.folded;
-        self.rows = build_rows(&self.results, self.folded);
+    fn sort_by_selected_column(&mut self) {
+        self.normalize_selected_column();
+        self.sort_state = if self.sort_state.column == self.selected_column {
+            SortState {
+                column: self.selected_column,
+                direction: self.sort_state.direction.toggled(),
+            }
+        } else {
+            SortState {
+                column: self.selected_column,
+                direction: SortDirection::Asc,
+            }
+        };
+        let anchor = self.selected_anchor();
+        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
         self.list_state.select(self.reanchor(anchor));
+    }
+
+    fn select_next_column(&mut self) {
+        self.move_selected_column(1);
+    }
+
+    fn select_prev_column(&mut self) {
+        self.move_selected_column(-1);
+    }
+
+    fn move_selected_column(&mut self, delta: isize) {
+        let columns = self.visible_columns();
+        let Some(current) = columns.iter().position(|c| *c == self.selected_column) else {
+            self.selected_column = SearchColumn::Path;
+            return;
+        };
+        let len = columns.len() as isize;
+        let next = (current as isize + delta).rem_euclid(len) as usize;
+        self.selected_column = columns[next];
+    }
+
+    fn visible_columns(&self) -> Vec<SearchColumn> {
+        let mut columns = SearchColumn::base_columns().to_vec();
+        if self.store_column_visible() {
+            columns.push(SearchColumn::Store);
+        }
+        columns
+    }
+
+    fn store_column_visible(&self) -> bool {
+        self.show_store_column && !self.rows.iter().any(|r| matches!(r, Row::Store { .. }))
+    }
+
+    fn normalize_selected_column(&mut self) {
+        if !self.visible_columns().contains(&self.selected_column) {
+            self.selected_column = SearchColumn::Path;
+        }
     }
 
     /// Expand the view if currently folded and place the cursor on the first
@@ -462,7 +616,7 @@ impl SearchView {
             return;
         }
         self.folded = false;
-        self.rows = build_rows(&self.results, self.folded);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
         let target = self.rows.iter().position(|row| match row {
             Row::Secret {
                 result,
@@ -634,6 +788,7 @@ impl SearchView {
             }
             Command::ToggleStoreColumn => {
                 self.show_store_column = !self.show_store_column;
+                self.normalize_selected_column();
                 return SearchAction::None;
             }
             Command::Envs => return SearchAction::OpenEnvs,
@@ -774,6 +929,26 @@ impl SearchView {
         frame.render_widget(Paragraph::new(text).block(block), area);
     }
 
+    fn header_label(&self, column: SearchColumn) -> String {
+        let mut label = column.label().to_string();
+        if self.sort_state.column == column {
+            label.push(self.sort_state.direction.marker());
+        }
+        if self.selected_column == column {
+            format!("[{label}]")
+        } else {
+            label
+        }
+    }
+
+    fn header_style(&self, column: SearchColumn, base: Style) -> Style {
+        if self.selected_column == column {
+            base.fg(theme::accent()).add_modifier(Modifier::UNDERLINED)
+        } else {
+            base
+        }
+    }
+
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let outer = Block::default()
             .borders(Borders::ALL)
@@ -804,6 +979,11 @@ impl SearchView {
         let show_store = self.show_store_column && !has_store_headers;
 
         let now = Utc::now();
+        let path_label = self.header_label(SearchColumn::Path);
+        let updated_label = self.header_label(SearchColumn::Updated);
+        let envs_label = self.header_label(SearchColumn::Envs);
+        let desc_label = self.header_label(SearchColumn::Description);
+        let store_label = self.header_label(SearchColumn::Store);
 
         // Pre-compute the rendered cells for each secret row so column
         // widths account for the rendered text, not raw data.
@@ -860,19 +1040,19 @@ impl SearchView {
             })
             .max()
             .unwrap_or(0)
-            .max("PATH".len());
+            .max(path_label.len());
         let updated_w = row_data
             .iter()
             .filter_map(|d| d.as_ref().map(|c| c.updated.len()))
             .max()
             .unwrap_or(0)
-            .max("UPDATED".len());
+            .max(updated_label.len());
         let envs_w = row_data
             .iter()
             .filter_map(|d| d.as_ref().map(|c| c.envs.len()))
             .max()
             .unwrap_or(0)
-            .max("ENVS".len());
+            .max(envs_label.len());
         let desc_w = row_data
             .iter()
             .filter_map(|d| {
@@ -881,7 +1061,7 @@ impl SearchView {
             })
             .max()
             .unwrap_or(0)
-            .max("DESCRIPTION".len());
+            .max(desc_label.len());
         let store_w = if show_store {
             self.rows
                 .iter()
@@ -891,7 +1071,7 @@ impl SearchView {
                 })
                 .max()
                 .unwrap_or(0)
-                .max("STORE".len())
+                .max(store_label.len())
         } else {
             0
         };
@@ -906,26 +1086,26 @@ impl SearchView {
             .add_modifier(Modifier::BOLD);
         let mut header_spans = vec![
             Span::styled(
-                format!("{:<path_w$}  ", "PATH", path_w = path_w),
-                header_style,
+                format!("{:<path_w$}  ", path_label, path_w = path_w),
+                self.header_style(SearchColumn::Path, header_style),
             ),
             Span::styled(
-                format!("{:<updated_w$}  ", "UPDATED", updated_w = updated_w),
-                header_style,
+                format!("{:<updated_w$}  ", updated_label, updated_w = updated_w),
+                self.header_style(SearchColumn::Updated, header_style),
             ),
             Span::styled(
-                format!("{:<envs_w$}  ", "ENVS", envs_w = envs_w),
-                header_style,
+                format!("{:<envs_w$}  ", envs_label, envs_w = envs_w),
+                self.header_style(SearchColumn::Envs, header_style),
             ),
             Span::styled(
-                format!("{:<desc_w$}  ", "DESCRIPTION", desc_w = desc_w),
-                header_style,
+                format!("{:<desc_w$}  ", desc_label, desc_w = desc_w),
+                self.header_style(SearchColumn::Description, header_style),
             ),
         ];
         if show_store {
             header_spans.push(Span::styled(
-                format!("{:<store_w$}", "STORE", store_w = store_w),
-                header_style,
+                format!("{:<store_w$}", store_label, store_w = store_w),
+                self.header_style(SearchColumn::Store, header_style),
             ));
         }
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
@@ -1060,6 +1240,14 @@ impl SearchView {
                 Line::from(vec![
                     Span::styled("enter", Style::default().fg(theme::accent())),
                     Span::styled(" open", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("tab", Style::default().fg(theme::accent())),
+                    Span::styled(" column", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("^o", Style::default().fg(theme::accent())),
+                    Span::styled(" sort", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("^n", Style::default().fg(theme::accent())),
@@ -1428,9 +1616,14 @@ fn prefix_of(path: &str) -> &str {
 /// folded mode each such group collapses to a single `FoldedGroup` row; in
 /// unfolded mode the leaves render inline with their shared prefix tagged so
 /// the renderer can paint it in a subtle accent. Singletons render the same
-/// in both modes. Within each section entries sort alphabetically so layout
-/// is stable regardless of input order.
-fn build_rows(results: &[SearchResult], folded: bool) -> Vec<Row> {
+/// in both modes. The active sort column controls ordering inside each store;
+/// store headers stay grouped for readability.
+fn build_rows(
+    results: &[SearchResult],
+    folded: bool,
+    sort_state: SortState,
+    env_index: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<Row> {
     use std::collections::BTreeMap;
 
     let mut by_store: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
@@ -1440,14 +1633,26 @@ fn build_rows(results: &[SearchResult], folded: bool) -> Vec<Row> {
 
     let multi_store = by_store.len() > 1;
     let mut rows = Vec::new();
-    for (store_name, bucket) in by_store {
+    let mut store_names: Vec<String> = by_store.keys().cloned().collect();
+    if sort_state.column == SearchColumn::Store && sort_state.direction == SortDirection::Desc {
+        store_names.reverse();
+    }
+    for store_name in store_names {
+        let bucket = by_store.remove(&store_name).unwrap_or_default();
         if multi_store {
             rows.push(Row::Store {
-                name: store_name,
+                name: store_name.clone(),
                 count: bucket.len(),
             });
         }
-        append_prefix_grouped_rows(&mut rows, bucket, multi_store, folded);
+        append_prefix_grouped_rows(
+            &mut rows,
+            bucket,
+            multi_store,
+            folded,
+            sort_state,
+            env_index,
+        );
     }
     rows
 }
@@ -1458,13 +1663,24 @@ fn build_rows(results: &[SearchResult], folded: bool) -> Vec<Row> {
 /// visually nest. `folded` collapses ≥ 2-leaf groups into `FoldedGroup` rows.
 fn append_prefix_grouped_rows(
     rows: &mut Vec<Row>,
-    bucket: Vec<SearchResult>,
+    mut bucket: Vec<SearchResult>,
     under_store_header: bool,
     folded: bool,
+    sort_state: SortState,
+    env_index: &std::collections::HashMap<String, Vec<String>>,
 ) {
     use std::collections::HashMap;
 
     let store_indent: usize = if under_store_header { 1 } else { 0 };
+    let bucket_sort = if sort_state.column == SearchColumn::Store {
+        SortState {
+            column: SearchColumn::Path,
+            direction: SortDirection::Asc,
+        }
+    } else {
+        sort_state
+    };
+    sort_results(&mut bucket, bucket_sort, env_index);
 
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -1486,10 +1702,12 @@ fn append_prefix_grouped_rows(
             singles.push((name, items));
         }
     }
-    folders.sort_by(|a, b| a.0.cmp(&b.0));
-    singles.sort_by(|a, b| a.0.cmp(&b.0));
+    if bucket_sort.column == SearchColumn::Path {
+        folders.sort_by(|a, b| compare_strings(&a.0, &b.0, bucket_sort.direction));
+        singles.sort_by(|a, b| compare_strings(&a.0, &b.0, bucket_sort.direction));
+    }
 
-    for (prefix, mut items) in folders {
+    for (prefix, items) in folders {
         if folded {
             rows.push(Row::FoldedGroup {
                 prefix,
@@ -1498,7 +1716,6 @@ fn append_prefix_grouped_rows(
             });
             continue;
         }
-        items.sort_by(|a, b| a.path.cmp(&b.path));
         let shared = Some(prefix);
         for result in items {
             rows.push(Row::Secret {
@@ -1517,6 +1734,66 @@ fn append_prefix_grouped_rows(
             });
         }
     }
+}
+
+fn sort_results(
+    results: &mut [SearchResult],
+    sort_state: SortState,
+    env_index: &std::collections::HashMap<String, Vec<String>>,
+) {
+    results.sort_by(|a, b| compare_results(a, b, sort_state, env_index));
+}
+
+fn compare_results(
+    a: &SearchResult,
+    b: &SearchResult,
+    sort_state: SortState,
+    env_index: &std::collections::HashMap<String, Vec<String>>,
+) -> std::cmp::Ordering {
+    let primary = match sort_state.column {
+        SearchColumn::Path => a.path.cmp(&b.path),
+        SearchColumn::Updated => result_timestamp(a).cmp(&result_timestamp(b)),
+        SearchColumn::Envs => result_envs(a, env_index).cmp(&result_envs(b, env_index)),
+        SearchColumn::Description => a
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .cmp(b.description.as_deref().unwrap_or("")),
+        SearchColumn::Store => a.store.cmp(&b.store),
+    };
+    let primary = match sort_state.direction {
+        SortDirection::Asc => primary,
+        SortDirection::Desc => primary.reverse(),
+    };
+    primary
+        .then_with(|| a.store.cmp(&b.store))
+        .then_with(|| a.path.cmp(&b.path))
+}
+
+fn compare_strings(a: &str, b: &str, direction: SortDirection) -> std::cmp::Ordering {
+    match direction {
+        SortDirection::Asc => a.cmp(b),
+        SortDirection::Desc => b.cmp(a),
+    }
+}
+
+fn result_timestamp(result: &SearchResult) -> &str {
+    result
+        .updated_at
+        .as_deref()
+        .or(result.created_at.as_deref())
+        .unwrap_or("")
+}
+
+fn result_envs<'a>(
+    result: &SearchResult,
+    env_index: &'a std::collections::HashMap<String, Vec<String>>,
+) -> &'a str {
+    env_index
+        .get(&result.path)
+        .and_then(|labels| labels.first())
+        .map(String::as_str)
+        .unwrap_or("")
 }
 
 /// Split `parent` (the slash-terminated path prefix in front of a secret's
@@ -1545,8 +1822,10 @@ impl SearchView {
         &[
             ("type", "filter results"),
             ("↑/↓", "navigate"),
+            ("tab / shift-tab", "select column"),
+            ("ctrl-o", "sort selected column"),
             ("enter", "open selection"),
-            ("tab", "fold / unfold groups"),
+            ("ctrl-- / ctrl-+", "collapse / expand groups"),
             ("backspace", "delete char"),
             ("ctrl-p", "open command palette"),
             ("ctrl-n", "new secret"),
@@ -1639,6 +1918,29 @@ mod tests {
         dir
     }
 
+    fn seeded_sort_store() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("store");
+        for prefix in ["alpha", "beta", "gamma"] {
+            std::fs::create_dir_all(store.join(format!(".himitsu/secrets/{prefix}"))).unwrap();
+        }
+
+        let write_secret = |path: &str, created_at: &str| {
+            std::fs::write(
+                store.join(format!(".himitsu/secrets/{path}.yaml")),
+                format!(
+                    "value: ENC[age,placeholder]\nhimitsu:\n  created_at: '{created_at}'\n  lastmodified: '{created_at}T00:00:00Z'\n  age: []\n  history: []\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_secret("alpha/KEY", "2026-01-03");
+        write_secret("beta/KEY", "2026-01-01");
+        write_secret("gamma/KEY", "2026-01-02");
+
+        dir
+    }
+
     #[test]
     fn empty_query_returns_all_results() {
         let dir = seeded_store();
@@ -1675,7 +1977,7 @@ mod tests {
             description: None,
             tags: Some(vec!["pci".into(), "prod".into()]),
         }];
-        view.rows = build_rows(&view.results, false);
+        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
         view.list_state.select(Some(0));
 
         let action = view.on_key(ctrl('t'), &KeyMap::default());
@@ -1706,7 +2008,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_folds_groups_into_single_row() {
+    fn ctrl_minus_collapses_and_ctrl_plus_expands_groups() {
         let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
@@ -1714,7 +2016,7 @@ mod tests {
         // Unfolded baseline: 3 leaves (2 grouped + 1 single).
         assert_eq!(view.rows.len(), 3);
 
-        view.on_key(key(KeyCode::Tab), &km);
+        view.on_key(ctrl('-'), &km);
         // Folded: prod group collapses to a single FoldedGroup row + the
         // staging singleton stays as a Secret. 2 rows total.
         assert_eq!(view.rows.len(), 2);
@@ -1730,8 +2032,99 @@ mod tests {
             other => panic!("expected Secret at row 1, got {other:?}"),
         }
 
-        view.on_key(key(KeyCode::Tab), &km);
+        view.on_key(ctrl('+'), &km);
         assert_eq!(view.rows.len(), 3);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_move_the_selected_column_without_folding() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let km = KeyMap::default();
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+
+        let render = |view: &mut SearchView| -> String {
+            let backend = TestBackend::new(120, 20);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| view.draw(f)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let mut rendered = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    rendered.push_str(buf[(x, y)].symbol());
+                }
+                rendered.push('\n');
+            }
+            rendered
+        };
+
+        let rendered = render(&mut view);
+        assert!(
+            rendered.contains("[PATH^]"),
+            "PATH should start selected and sorted: {rendered}"
+        );
+        assert_eq!(view.rows.len(), 3);
+
+        view.on_key(key(KeyCode::Tab), &km);
+        assert_eq!(
+            view.rows.len(),
+            3,
+            "Tab should move columns, not fold groups"
+        );
+        let rendered = render(&mut view);
+        assert!(
+            rendered.contains("[UPDATED]"),
+            "Tab should select the UPDATED column: {rendered}"
+        );
+
+        view.on_key(key(KeyCode::BackTab), &km);
+        let rendered = render(&mut view);
+        assert!(
+            rendered.contains("[PATH^]"),
+            "Shift+Tab should move back to PATH: {rendered}"
+        );
+    }
+
+    #[test]
+    fn ctrl_o_sorts_by_the_selected_column_and_toggles_direction() {
+        let km = KeyMap::default();
+        let dir = seeded_sort_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        for result in &mut view.results {
+            result.updated_at = Some(
+                match result.path.as_str() {
+                    "alpha/KEY" => "2026-01-03T00:00:00Z",
+                    "beta/KEY" => "2026-01-01T00:00:00Z",
+                    "gamma/KEY" => "2026-01-02T00:00:00Z",
+                    other => panic!("unexpected path in sort fixture: {other}"),
+                }
+                .to_string(),
+            );
+        }
+        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
+
+        let paths = |view: &SearchView| -> Vec<String> {
+            view.rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Secret { result, .. } => Some(result.path.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        assert_eq!(paths(&view), vec!["alpha/KEY", "beta/KEY", "gamma/KEY"]);
+
+        view.on_key(key(KeyCode::Tab), &km);
+        view.on_key(ctrl('o'), &km);
+        assert_eq!(paths(&view), vec!["beta/KEY", "gamma/KEY", "alpha/KEY"]);
+
+        view.on_key(ctrl('o'), &km);
+        assert_eq!(paths(&view), vec!["alpha/KEY", "gamma/KEY", "beta/KEY"]);
     }
 
     #[test]
@@ -1741,7 +2134,7 @@ mod tests {
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
 
-        view.on_key(key(KeyCode::Tab), &km);
+        view.on_key(ctrl('-'), &km);
         assert_eq!(view.list_state.selected(), Some(0));
         assert!(view.selected_folded_prefix().is_some());
 
