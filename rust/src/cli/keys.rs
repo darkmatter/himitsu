@@ -62,10 +62,7 @@ fn print_own_public_key(ctx: &Context) -> Result<()> {
     let contents = std::fs::read_to_string(&path).map_err(|e| {
         HimitsuError::Io(std::io::Error::new(
             e.kind(),
-            format!(
-                "could not read public key at {}: {e}",
-                path.display()
-            ),
+            format!("could not read public key at {}: {e}", path.display()),
         ))
     })?;
     println!("{}", contents.trim());
@@ -93,11 +90,9 @@ fn print_recipient_public_key(ctx: &Context, name: &str) -> Result<()> {
         ctx.store.clone()
     };
 
-    let pub_path = crate::remote::store::recipients_dir_with_override(
-        &store,
-        ctx.recipients_path.as_deref(),
-    )
-    .join(format!("{name}.pub"));
+    let pub_path =
+        crate::remote::store::recipients_dir_with_override(&store, ctx.recipients_path.as_deref())
+            .join(format!("{name}.pub"));
 
     if !pub_path.exists() {
         return Err(HimitsuError::SecretNotFound(format!(

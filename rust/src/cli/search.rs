@@ -75,11 +75,11 @@ pub struct SearchResult {
 pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<Vec<SearchResult>> {
     let mut candidates: Vec<SearchResult> = Vec::new();
 
-    // Try to load the age identity once so we can best-effort extract the
-    // description from each secret's encrypted payload. If the identity
-    // isn't available (fresh install, CI test fixture, missing key file)
-    // we still return search results — just without descriptions.
-    let identity = ctx.load_identity().ok();
+    // Try to load age identities once so we can best-effort extract the
+    // description from each secret's encrypted payload. If identities aren't
+    // available (fresh install, CI test fixture, missing key file) we still
+    // return search results — just without descriptions.
+    let identities = ctx.load_identities().ok();
 
     for (slug, store_path) in collect_stores(ctx)? {
         let paths = store::list_secrets(&store_path, None).unwrap_or_default();
@@ -89,9 +89,9 @@ pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<
                 Some(m) => (m.created_at, m.lastmodified),
                 None => (None, None),
             };
-            let (description, tags) = match identity
-                .as_ref()
-                .and_then(|id| read_metadata(&store_path, &path, id))
+            let (description, tags) = match identities
+                .as_deref()
+                .and_then(|ids| read_metadata(&store_path, &path, ids))
             {
                 Some((desc, tags)) => (desc, Some(tags)),
                 None => (None, None),
@@ -198,10 +198,10 @@ fn fuzzy_filter(candidates: &[SearchResult], query: &str) -> Vec<SearchResult> {
 fn read_metadata(
     store_path: &std::path::Path,
     secret_path: &str,
-    identity: &::age::x25519::Identity,
+    identities: &[::age::x25519::Identity],
 ) -> Option<(Option<String>, Vec<String>)> {
     let ciphertext = store::read_secret(store_path, secret_path).ok()?;
-    let plain = age::decrypt(&ciphertext, identity).ok()?;
+    let plain = age::decrypt_with_identities(&ciphertext, identities).ok()?;
     let decoded = secret_value::decode(&plain);
     let description = if decoded.description.is_empty() {
         None

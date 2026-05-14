@@ -23,7 +23,7 @@ pub struct RekeyArgs {
 /// Note: `args.force` is accepted for forward-compat (future no-op detection)
 /// but currently all matched secrets are always re-encrypted.
 pub fn rekey_store(ctx: &Context, path_prefix: Option<&str>) -> Result<usize> {
-    let identity = ctx.load_identity()?;
+    let identities = ctx.load_identities()?;
     let recipients = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref())?;
     if recipients.is_empty() {
         return Err(HimitsuError::Recipient("no recipients found".into()));
@@ -44,7 +44,7 @@ pub fn rekey_store(ctx: &Context, path_prefix: Option<&str>) -> Result<usize> {
     let mut count = 0;
     for path in &paths_to_process {
         let ciphertext = store::read_secret(&ctx.store, path)?;
-        let plaintext = age::decrypt(&ciphertext, &identity)?;
+        let plaintext = age::decrypt_with_identities(&ciphertext, &identities)?;
         let new_ciphertext = age::encrypt(&plaintext, &recipients)?;
         store::write_secret(&ctx.store, path, &new_ciphertext)?;
         count += 1;

@@ -17,15 +17,43 @@ const SECRET_PATH_SUBCOMMANDS: &[&str] = &["get", "read", "set", "write", "ls", 
 #[derive(Debug, Args)]
 pub struct CompletionsArgs {
     /// Target shell for completion output.
-    pub shell: Shell,
+    pub shell: Option<Shell>,
+
+    /// Rebuild the SQLite completions cache for all known stores.
+    ///
+    /// Run this after manually editing the store or after adding new stores.
+    /// Mutations (set, write, import, etc.) automatically refresh the cache,
+    /// so this flag is mainly useful for recovery or initial population.
+    #[arg(long)]
+    pub refresh_cache: bool,
 }
 
-pub fn run(args: CompletionsArgs) -> Result<()> {
+pub fn run(args: CompletionsArgs, ctx: &super::Context) -> Result<()> {
+    if args.refresh_cache {
+        let stores_dir = ctx.stores_dir();
+        match crate::completions_cache::refresh_all(&ctx.state_dir, &stores_dir) {
+            Ok(n) => println!("Completions cache refreshed: {n} secret path(s) indexed"),
+            Err(e) => eprintln!("warning: cache refresh failed: {e}"),
+        }
+        if !ctx.store.as_os_str().is_empty() {
+            let _ = crate::completions_cache::refresh_store(&ctx.state_dir, &ctx.store);
+        }
+        return Ok(());
+    }
+
+    let shell = args.shell.ok_or_else(|| {
+        crate::error::HimitsuError::NotSupported(
+            "shell argument required (e.g. `himitsu completions bash`), \
+             or pass --refresh-cache to rebuild the completions cache"
+                .into(),
+        )
+    })?;
+
     let mut cmd = super::Cli::command();
     let mut buf: Vec<u8> = Vec::new();
-    generate(args.shell, &mut cmd, "himitsu", &mut buf);
+    generate(shell, &mut cmd, "himitsu", &mut buf);
     let script = String::from_utf8(buf).expect("clap_complete emits valid UTF-8");
-    let patched = patch_script(args.shell, &script);
+    let patched = patch_script(shell, &script);
     io::stdout().write_all(patched.as_bytes())?;
     Ok(())
 }
@@ -46,6 +74,21 @@ pub struct CompletePathsArgs {
 
 pub fn run_complete_paths(args: CompletePathsArgs, ctx: &super::Context) -> Result<()> {
     let stores = resolve_completion_stores(ctx);
+
+    // Fast path: serve from the SQLite cache when warm.
+    if crate::completions_cache::is_warm(&ctx.state_dir, &stores) {
+        if let Ok(paths) =
+            crate::completions_cache::lookup(&ctx.state_dir, &stores, &args.prefix)
+        {
+            let mut out = io::stdout().lock();
+            for p in paths {
+                let _ = writeln!(out, "{p}");
+            }
+            return Ok(());
+        }
+    }
+
+    // Slow path fallback: live filesystem scan (cache absent, empty, or corrupt).
     let mut out = io::stdout().lock();
     for store_path in stores {
         let Ok(paths) = store::list_secrets(&store_path, None) else {

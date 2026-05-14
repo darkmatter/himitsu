@@ -119,8 +119,8 @@ impl SecretViewerView {
             .ok()
             .and_then(|ct| {
                 ctx_owned
-                    .load_identity()
-                    .and_then(|id| age::decrypt(&ct, &id))
+                    .load_identities()
+                    .and_then(|ids| age::decrypt_with_identities(&ct, &ids))
                     .ok()
             })
             .map(|plain| secret_value::decode(&plain));
@@ -424,8 +424,8 @@ impl SecretViewerView {
 
     fn read_decoded(&self) -> crate::error::Result<secret_value::Decoded> {
         let ciphertext = store::read_secret(&self.store_path, &self.path)?;
-        let identity = self.ctx.load_identity()?;
-        let plain = age::decrypt(&ciphertext, &identity)?;
+        let identities = self.ctx.load_identities()?;
+        let plain = age::decrypt_with_identities(&ciphertext, &identities)?;
         Ok(secret_value::decode(&plain))
     }
 

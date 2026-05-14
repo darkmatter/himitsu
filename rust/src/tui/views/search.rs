@@ -1413,8 +1413,8 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
     let mut ctx_for_store = ctx.clone();
     ctx_for_store.store = result.store_path.clone();
     let ciphertext = store::read_secret(&result.store_path, &result.path)?;
-    let identity = ctx_for_store.load_identity()?;
-    let plain = age::decrypt(&ciphertext, &identity)?;
+    let identities = ctx_for_store.load_identities()?;
+    let plain = age::decrypt_with_identities(&ciphertext, &identities)?;
     let decoded = secret_value::decode(&plain);
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
 }

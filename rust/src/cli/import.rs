@@ -214,8 +214,8 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     );
     for action in &actions {
         // Escape special YAML characters in the value using serde_yaml.
-        let yaml_val = serde_yaml::to_string(&action.value)
-            .unwrap_or_else(|_| format!("{:?}", action.value));
+        let yaml_val =
+            serde_yaml::to_string(&action.value).unwrap_or_else(|_| format!("{:?}", action.value));
         let yaml_val = yaml_val.trim_end();
         staging.push_str(&format!("{}: {yaml_val}\n", action.target));
     }
@@ -247,8 +247,9 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
     open_editor(&tmp_path)?;
 
     // Read edited file back.
-    let edited = std::fs::read_to_string(&tmp_path)
-        .map_err(|e| HimitsuError::External(format!("failed to read staging file after edit: {e}")))?;
+    let edited = std::fs::read_to_string(&tmp_path).map_err(|e| {
+        HimitsuError::External(format!("failed to read staging file after edit: {e}"))
+    })?;
 
     // Clean up temp file (best effort).
     let _ = std::fs::remove_file(&tmp_path);
@@ -284,9 +285,7 @@ fn open_editor(path: &std::path::Path) -> Result<()> {
     let status = std::process::Command::new(&editor)
         .arg(path)
         .status()
-        .map_err(|e| {
-            HimitsuError::External(format!("failed to launch editor '{editor}': {e}"))
-        })?;
+        .map_err(|e| HimitsuError::External(format!("failed to launch editor '{editor}': {e}")))?;
     if !status.success() {
         return Err(HimitsuError::External(format!(
             "editor '{editor}' exited with non-zero status"
@@ -304,9 +303,8 @@ fn parse_staging_yaml(content: &str) -> Result<Vec<(String, String)>> {
         return Ok(Vec::new());
     }
 
-    let value: serde_yaml::Value = serde_yaml::from_str(content).map_err(|e| {
-        HimitsuError::External(format!("failed to parse edited staging YAML: {e}"))
-    })?;
+    let value: serde_yaml::Value = serde_yaml::from_str(content)
+        .map_err(|e| HimitsuError::External(format!("failed to parse edited staging YAML: {e}")))?;
 
     let mapping = match value {
         serde_yaml::Value::Mapping(m) => m,

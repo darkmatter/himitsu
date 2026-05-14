@@ -73,10 +73,16 @@ impl Context {
         crate::crypto::keystore::pubkey_path(&self.data_dir)
     }
 
-    /// Load the user's age identity through the active provider. This is
-    /// the chokepoint: every command that decrypts goes through it.
+    /// Load the user's primary age identity through the active provider.
     pub fn load_identity(&self) -> Result<::age::x25519::Identity> {
         crate::crypto::keystore::load_identity(&self.key_provider, &self.data_dir)
+    }
+
+    /// Load every available age identity through the active provider.
+    /// Decryption paths should use this so himitsu and SOPS age key files are
+    /// all tried before reporting a decrypt failure.
+    pub fn load_identities(&self) -> Result<Vec<::age::x25519::Identity>> {
+        crate::crypto::keystore::load_identities(&self.key_provider, &self.data_dir)
     }
 
     /// Directory containing managed store checkouts.
@@ -547,7 +553,7 @@ impl Cli {
                 println!("{}", crate::build_info::VERSION_LINE);
                 Ok(())
             }
-            Command::Completions(args) => completions::run(args),
+            Command::Completions(args) => completions::run(args, &ctx),
             Command::CompletePaths(args) => completions::run_complete_paths(args, &ctx),
             Command::Share(args) => share::run(args, &ctx),
             Command::Inbox(args) => inbox::run(args, &ctx),
@@ -569,6 +575,11 @@ impl Cli {
             let committed = ctx.commit(&final_msg);
             if result.is_ok() && committed && !no_push {
                 ctx.push();
+            }
+            // Keep the completions cache in sync after every successful mutation
+            // so the next tab-press sees the updated path list immediately.
+            if result.is_ok() && !ctx.store.as_os_str().is_empty() {
+                let _ = crate::completions_cache::refresh_store(&ctx.state_dir, &ctx.store);
             }
         }
 

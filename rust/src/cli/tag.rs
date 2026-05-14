@@ -60,8 +60,8 @@ pub fn run(args: TagArgs, ctx: &Context) -> Result<()> {
     };
 
     let ciphertext = store::read_secret(&effective_store, &secret_path)?;
-    let identity = ctx.load_identity()?;
-    let plaintext = age::decrypt(&ciphertext, &identity)?;
+    let identities = ctx.load_identities()?;
+    let plaintext = age::decrypt_with_identities(&ciphertext, &identities)?;
     let mut decoded = secret_value::decode(&plaintext);
 
     match validated {

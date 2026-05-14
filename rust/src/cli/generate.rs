@@ -38,8 +38,8 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    // Load age identity for decryption.
-    let identity = ctx.load_identity()?;
+    // Load age identities for decryption.
+    let identities = ctx.load_identities()?;
 
     // Determine which envs to generate.
     let env_names: Vec<String> = if let Some(ref env_name) = args.env {
@@ -69,7 +69,8 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         for (key, path, store_override) in &mappings {
             let effective_store = store_override.as_deref().unwrap_or(&ctx.store);
             let ciphertext = store::read_secret(effective_store, path)?;
-            let decoded = secret_value::decode(&crypto::decrypt(&ciphertext, &identity)?);
+            let decoded =
+                secret_value::decode(&crypto::decrypt_with_identities(&ciphertext, &identities)?);
             super::get::warn_if_expired(path, &decoded);
             let plaintext = String::from_utf8(decoded.data).map_err(|e| {
                 HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))
@@ -190,7 +191,7 @@ fn resolve_entries(
     Ok(result)
 }
 
-/// Extract the last path component as a key name  
+/// Extract the last path component as a key name
 /// (`"dev/API_KEY"` → `"API_KEY"`).
 fn last_component(path: &str) -> String {
     path.split('/').next_back().unwrap_or(path).to_string()

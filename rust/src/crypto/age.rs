@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use ::age::x25519::{Identity, Recipient};
+use age::x25519::{Identity, Recipient};
+use age::{Identity as AgeIdentityTrait, Recipient as AgeRecipientTrait};
 use secrecy::ExposeSecret;
 
 use crate::error::{HimitsuError, Result};
@@ -24,9 +25,9 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Recipient]) -> Result<Vec<u8>> {
         ));
     }
 
-    let recipients_boxed: Vec<Box<dyn ::age::Recipient>> = recipients
+    let recipients_boxed: Vec<Box<dyn AgeRecipientTrait>> = recipients
         .iter()
-        .map(|r| Box::new(r.clone()) as Box<dyn ::age::Recipient>)
+        .map(|r| Box::new(r.clone()) as Box<dyn AgeRecipientTrait>)
         .collect();
 
     let encryptor = ::age::Encryptor::with_recipients(recipients_boxed.iter().map(|r| r.as_ref()))
@@ -48,12 +49,28 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Recipient]) -> Result<Vec<u8>> {
 
 /// Decrypt ciphertext using the given identity (private key).
 pub fn decrypt(ciphertext: &[u8], identity: &Identity) -> Result<Vec<u8>> {
+    decrypt_with_identities(ciphertext, std::slice::from_ref(identity))
+}
+
+/// Decrypt ciphertext using any of the given identities.
+pub fn decrypt_with_identities(ciphertext: &[u8], identities: &[Identity]) -> Result<Vec<u8>> {
+    if identities.is_empty() {
+        return Err(HimitsuError::DecryptionFailed(
+            "no age identities available".into(),
+        ));
+    }
+
     let decryptor = ::age::Decryptor::new(ciphertext)
         .map_err(|e| HimitsuError::DecryptionFailed(e.to_string()))?;
 
+    let identity_refs: Vec<&dyn AgeIdentityTrait> = identities
+        .iter()
+        .map(|identity| identity as &dyn AgeIdentityTrait)
+        .collect();
+
     let mut plaintext = vec![];
     let mut reader = decryptor
-        .decrypt(std::iter::once(identity as &dyn ::age::Identity))
+        .decrypt(identity_refs.into_iter())
         .map_err(|e| HimitsuError::DecryptionFailed(e.to_string()))?;
     reader
         .read_to_end(&mut plaintext)
@@ -74,22 +91,33 @@ pub fn parse_identity(s: &str) -> Result<Identity> {
         .map_err(|e| HimitsuError::DecryptionFailed(format!("invalid age secret key: {e}")))
 }
 
-/// Read an age identity from a key file.
+/// Read the first age identity from a key file.
 /// The file may contain comments (lines starting with #) and blank lines.
-/// The first non-comment, non-blank line is parsed as the secret key.
 pub fn read_identity(path: &Path) -> Result<Identity> {
+    read_identities(path)?.into_iter().next().ok_or_else(|| {
+        HimitsuError::DecryptionFailed(format!("no secret key found in {}", path.display()))
+    })
+}
+
+/// Read every age identity from a key file.
+/// The file may contain comments (lines starting with #) and blank lines.
+pub fn read_identities(path: &Path) -> Result<Vec<Identity>> {
     let contents = std::fs::read_to_string(path)?;
+    let mut identities = Vec::new();
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        return parse_identity(trimmed);
+        identities.push(parse_identity(trimmed)?);
     }
-    Err(HimitsuError::DecryptionFailed(format!(
-        "no secret key found in {}",
-        path.display()
-    )))
+    if identities.is_empty() {
+        return Err(HimitsuError::DecryptionFailed(format!(
+            "no secret key found in {}",
+            path.display()
+        )));
+    }
+    Ok(identities)
 }
 
 /// Read recipient public keys from a directory.

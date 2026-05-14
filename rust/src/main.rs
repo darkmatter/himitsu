@@ -1,5 +1,6 @@
 mod build_info;
 mod cli;
+pub mod completions_cache;
 pub mod config;
 pub mod crypto;
 pub mod error;

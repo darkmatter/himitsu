@@ -143,9 +143,10 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
 
     // Enumerate store secrets so the resolver can expand wildcards/globs.
     let secrets = crate::remote::store::list_secrets(&ctx.store, None)?;
-    let identity = ctx.load_identity()?;
+    let identities = ctx.load_identities()?;
     let tag_lookup = |path: &str| {
-        crate::cli::get::get_decoded_with_identity(ctx, path, &identity).map(|decoded| decoded.tags)
+        crate::cli::get::get_decoded_with_identities(ctx, path, &identities)
+            .map(|decoded| decoded.tags)
     };
 
     // Resolve into the nested EnvNode tree.

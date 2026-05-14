@@ -2,7 +2,10 @@
 //!
 //! The private key can live in two places, picked by `Config.key_provider`:
 //!
-//! - [`Disk`](config::KeyProvider::Disk) — a file at `data_dir/key`.
+//! - [`Disk`](config::KeyProvider::Disk) — a file at `data_dir/key`, with
+//!   read-only fallback discovery for standard SOPS age key files such as
+//!   `~/.config/sops/age/keys.txt` and
+//!   `~/Library/Application Support/sops/age/keys.txt`.
 //! - [`MacosKeychain`](config::KeyProvider::MacosKeychain) — the macOS
 //!   Keychain (a `generic-password` entry under
 //!   `io.darkmatter.himitsu.agekey.byfp.v1`).
@@ -15,12 +18,12 @@
 //! [`Context::load_identity`](crate::cli::Context::load_identity), which
 //! is the chokepoint that resolves the active provider once.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use ::age::x25519::Identity;
+use age::x25519::Identity;
 
 use crate::config::KeyProvider as ProviderChoice;
-use crate::crypto::age;
+use crate::crypto::age as crypto_age;
 use crate::error::{HimitsuError, Result};
 use crate::keyring::macos::MacOSKeychain;
 use crate::keyring::{fingerprint, KeyProvider};
@@ -79,11 +82,22 @@ pub fn store_new_key(
 
 /// Load the active identity for the configured provider.
 ///
-/// Disk: parses `data_dir/key`.  Keychain: looks up the secret indexed
-/// by the disk pubkey's fingerprint, then parses it.
+/// Disk: parses the first identity from the available disk key files. Keychain:
+/// looks up the secret indexed by the disk pubkey's fingerprint, then parses it.
 pub fn load_identity(provider: &ProviderChoice, data_dir: &Path) -> Result<Identity> {
-    match provider {
-        ProviderChoice::Disk => age::read_identity(&disk_secret_path(data_dir)),
+    load_identities(provider, data_dir)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| HimitsuError::DecryptionFailed("no age identities available".into()))
+}
+
+/// Load every available identity for the configured provider.
+///
+/// Decryption should use this rather than [`load_identity`] so any key in the
+/// himitsu key file or the conventional SOPS age key files can unlock a secret.
+pub fn load_identities(provider: &ProviderChoice, data_dir: &Path) -> Result<Vec<Identity>> {
+    let mut identities = match provider {
+        ProviderChoice::Disk => load_disk_identities(data_dir)?,
         ProviderChoice::MacosKeychain => {
             ensure_keychain_available()?;
             let pubkey = std::fs::read_to_string(pubkey_path(data_dir))
@@ -104,8 +118,88 @@ pub fn load_identity(provider: &ProviderChoice, data_dir: &Path) -> Result<Ident
                      io.darkmatter.himitsu.agekey.byfp.v1 / {fp} hasn't been deleted"
                 ))
             })?;
-            age::parse_identity(&secret)
+            let mut identities = vec![crypto_age::parse_identity(&secret)?];
+            identities.extend(load_disk_identities(data_dir).unwrap_or_default());
+            identities
         }
+    };
+
+    dedupe_identities(&mut identities);
+    if identities.is_empty() {
+        return Err(HimitsuError::DecryptionFailed(
+            "no age identities available".into(),
+        ));
+    }
+    Ok(identities)
+}
+
+/// Load disk-backed age identities from himitsu and standard SOPS locations.
+fn load_disk_identities(data_dir: &Path) -> Result<Vec<Identity>> {
+    let mut identities = Vec::new();
+    let mut found_key_file = false;
+
+    for path in disk_identity_paths(data_dir) {
+        if path.exists() {
+            found_key_file = true;
+            identities.extend(crypto_age::read_identities(&path)?);
+        }
+    }
+
+    if found_key_file {
+        Ok(identities)
+    } else {
+        crypto_age::read_identities(&disk_secret_path(data_dir))
+    }
+}
+
+fn disk_identity_paths(data_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![disk_secret_path(data_dir)];
+    paths.extend(disk_identity_fallback_paths());
+    paths
+}
+
+/// Standard read-only fallback locations for SOPS age key files.
+fn disk_identity_fallback_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(config_dir) = dirs::config_dir() {
+        push_unique(
+            &mut paths,
+            config_dir.join("sops").join("age").join("keys.txt"),
+        );
+    }
+
+    if let Some(home_dir) = dirs::home_dir() {
+        push_unique(
+            &mut paths,
+            home_dir
+                .join(".config")
+                .join("sops")
+                .join("age")
+                .join("keys.txt"),
+        );
+        push_unique(
+            &mut paths,
+            home_dir
+                .join("Library")
+                .join("Application Support")
+                .join("sops")
+                .join("age")
+                .join("keys.txt"),
+        );
+    }
+
+    paths
+}
+
+fn dedupe_identities(identities: &mut Vec<Identity>) {
+    let mut seen = std::collections::HashSet::new();
+    identities.retain(|identity: &Identity| seen.insert(identity.to_public().to_string()));
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
     }
 }
 
@@ -152,7 +246,7 @@ pub fn migrate_disk_to_keychain(data_dir: &Path) -> Result<()> {
         .trim()
         .to_string();
     let fp = fingerprint(&pubkey);
-    let identity = age::read_identity(&secret_path)?;
+    let identity = crypto_age::read_identity(&secret_path)?;
     let secret_str = secrecy::ExposeSecret::expose_secret(&identity.to_string()).to_string();
     MacOSKeychain.store_key(&fp, &secret_str)?;
     // Only remove the disk file once the keychain write succeeded.
@@ -207,6 +301,143 @@ mod tests {
         assert!(secret_contents.contains("AGE-SECRET-KEY-1ABCDEF"));
         assert!(secret_contents.contains("# created: 2026-05-09T12:00:00Z"));
         assert!(secret_contents.contains("# public key: age1publicfake"));
+    }
+
+    #[test]
+    fn fallback_paths_include_common_sops_age_locations() {
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _env = EnvRestore::capture();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        let paths = disk_identity_fallback_paths();
+
+        assert!(paths.contains(
+            &home
+                .path()
+                .join(".config")
+                .join("sops")
+                .join("age")
+                .join("keys.txt")
+        ));
+        assert!(paths.contains(
+            &home
+                .path()
+                .join("Library")
+                .join("Application Support")
+                .join("sops")
+                .join("age")
+                .join("keys.txt")
+        ));
+    }
+
+    #[test]
+    fn load_identities_falls_back_to_all_sops_age_keys() {
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _env = EnvRestore::capture();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let (secret1, public1) = crate::crypto::age::keygen();
+        let (secret2, public2) = crate::crypto::age::keygen();
+        let sops_key_path = home
+            .path()
+            .join(".config")
+            .join("sops")
+            .join("age")
+            .join("keys.txt");
+        std::fs::create_dir_all(sops_key_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sops_key_path,
+            format!("# sops age keys\n{secret1}\n{secret2}\n"),
+        )
+        .unwrap();
+
+        let identities = load_identities(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let recipients = vec![crate::crypto::age::parse_recipient(&public2).unwrap()];
+        let ciphertext = crate::crypto::age::encrypt(b"secret", &recipients).unwrap();
+        let plaintext =
+            crate::crypto::age::decrypt_with_identities(&ciphertext, &identities).unwrap();
+
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].to_public().to_string(), public1);
+        assert_eq!(plaintext, b"secret");
+    }
+
+    #[test]
+    fn himitsu_disk_key_takes_precedence_over_sops_fallback() {
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _env = EnvRestore::capture();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let (himitsu_secret, himitsu_public) = crate::crypto::age::keygen();
+        let (sops_secret, _sops_public) = crate::crypto::age::keygen();
+        std::fs::write(
+            disk_secret_path(data_dir.path()),
+            format!("{himitsu_secret}\n"),
+        )
+        .unwrap();
+
+        let sops_key_path = home
+            .path()
+            .join(".config")
+            .join("sops")
+            .join("age")
+            .join("keys.txt");
+        std::fs::create_dir_all(sops_key_path.parent().unwrap()).unwrap();
+        std::fs::write(&sops_key_path, format!("{sops_secret}\n")).unwrap();
+
+        let identity = load_identity(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let identities = load_identities(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let recipients = vec![crate::crypto::age::parse_recipient(&_sops_public).unwrap()];
+        let ciphertext = crate::crypto::age::encrypt(b"sops-only", &recipients).unwrap();
+        let plaintext =
+            crate::crypto::age::decrypt_with_identities(&ciphertext, &identities).unwrap();
+
+        assert_eq!(identity.to_public().to_string(), himitsu_public);
+        assert_eq!(plaintext, b"sops-only");
+    }
+
+    struct EnvRestore {
+        home: Option<std::ffi::OsString>,
+        xdg_config_home: Option<std::ffi::OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture() -> Self {
+            Self {
+                home: std::env::var_os("HOME"),
+                xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            if let Some(home) = &self.home {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+
+            if let Some(xdg_config_home) = &self.xdg_config_home {
+                std::env::set_var("XDG_CONFIG_HOME", xdg_config_home);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
     }
 
     #[test]

@@ -70,13 +70,13 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
         })?;
     }
 
-    // Only load the ambient identity when we actually need it for tag
+    // Only load ambient identities when we actually need them for tag
     // filtering. Plain `ls` (no `--tag`) must keep working without a key —
     // CI fixtures and fresh installs don't have one yet.
-    let identity = if args.tag.is_empty() {
+    let identities = if args.tag.is_empty() {
         None
     } else {
-        ctx.load_identity().ok()
+        ctx.load_identities().ok()
     };
 
     // ── Resolve qualified references ──────────────────────────────────────
@@ -93,7 +93,7 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
                 args.limit,
                 args.offset,
                 &args.tag,
-                identity.as_ref(),
+                identities.as_deref(),
             );
         }
     }
@@ -115,7 +115,7 @@ pub fn run(args: LsArgs, ctx: &Context) -> Result<()> {
         args.limit,
         args.offset,
         &args.tag,
-        identity.as_ref(),
+        identities.as_deref(),
     )
 }
 
@@ -128,7 +128,7 @@ fn show_items(
     limit: usize,
     offset: usize,
     want_tags: &[String],
-    identity: Option<&::age::x25519::Identity>,
+    identities: Option<&[::age::x25519::Identity]>,
 ) -> Result<()> {
     // prefix_components is the number of '/' segments in the prefix itself;
     // the effective display depth is relative to the prefix.
@@ -148,8 +148,8 @@ fn show_items(
             // dropped leaf can still surface as its parent when a sibling
             // matches.
             if !want_tags.is_empty() {
-                let Some(id) = identity else { continue };
-                if !secret_has_all_tags(store_path, &path, id, want_tags) {
+                let Some(ids) = identities else { continue };
+                if !secret_has_all_tags(store_path, &path, ids, want_tags) {
                     continue;
                 }
             }
@@ -295,13 +295,13 @@ fn store_label(store: &std::path::Path, ctx: &Context) -> String {
 fn secret_has_all_tags(
     store_path: &std::path::Path,
     secret_path: &str,
-    identity: &::age::x25519::Identity,
+    identities: &[::age::x25519::Identity],
     want: &[String],
 ) -> bool {
     let Ok(ciphertext) = store::read_secret(store_path, secret_path) else {
         return false;
     };
-    let Ok(plain) = age::decrypt(&ciphertext, identity) else {
+    let Ok(plain) = age::decrypt_with_identities(&ciphertext, identities) else {
         return false;
     };
     let decoded = secret_value::decode(&plain);

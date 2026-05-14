@@ -36,7 +36,7 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
-    let identity = ctx.load_identity()?;
+    let identities = ctx.load_identities()?;
 
     // List all secrets in the store.
     let all_paths = store::list_secrets(&ctx.store, None)?;
@@ -64,7 +64,8 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
     for path in &matched {
         let ciphertext = store::read_secret(&ctx.store, path)?;
-        let decoded = secret_value::decode(&crypto::decrypt(&ciphertext, &identity)?);
+        let decoded =
+            secret_value::decode(&crypto::decrypt_with_identities(&ciphertext, &identities)?);
         super::get::warn_if_expired(path, &decoded);
         let plaintext = String::from_utf8(decoded.data).map_err(|e| {
             HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))

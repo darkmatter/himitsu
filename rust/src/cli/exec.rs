@@ -71,11 +71,10 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         )));
     }
 
-    // Load the age identity once so we don't re-parse the key file per
-    // resolved secret. `exec` is the first hot loop of decrypts and the
-    // win is real.
-    let identity = ctx.load_identity()?;
-    let decrypted = decrypt_resolved(ctx, &identity, resolved)?;
+    // Load age identities once so we don't re-parse key files per resolved
+    // secret. `exec` is the first hot loop of decrypts and the win is real.
+    let identities = ctx.load_identities()?;
+    let decrypted = decrypt_resolved(ctx, &identities, resolved)?;
     let env_map = build_env_map(decrypted, &args.tags)?;
 
     spawn_and_wait(cmd, cmd_args, env_map, args.clean)
@@ -103,9 +102,10 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
         }
         validate_env_label(ref_str)?;
         let available = store::list_secrets(&ctx.store, None)?;
-        let identity = ctx.load_identity()?;
+        let identities = ctx.load_identities()?;
         let tag_lookup = |path: &str| {
-            super::get::get_decoded_with_identity(ctx, path, &identity).map(|decoded| decoded.tags)
+            super::get::get_decoded_with_identities(ctx, path, &identities)
+                .map(|decoded| decoded.tags)
         };
         let tree = env_resolver::resolve_with_tags(&envs, ref_str, &available, &tag_lookup)?;
         let leaves = collect_env_leaves(&tree);
@@ -172,16 +172,16 @@ fn walk(node: &env_resolver::EnvNode, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Decrypt every resolved ref into `(ResolvedRef, Decoded)` pairs using a
-/// shared identity. Pure I/O — no filtering.
+/// Decrypt every resolved ref into `(ResolvedRef, Decoded)` pairs using
+/// shared identities. Pure I/O — no filtering.
 fn decrypt_resolved(
     ctx: &Context,
-    identity: &::age::x25519::Identity,
+    identities: &[::age::x25519::Identity],
     refs: Vec<ResolvedRef>,
 ) -> Result<Vec<(ResolvedRef, secret_value::Decoded)>> {
     refs.into_iter()
         .map(|r| {
-            let decoded = super::get::get_decoded_with_identity(ctx, &r.secret_path, identity)?;
+            let decoded = super::get::get_decoded_with_identities(ctx, &r.secret_path, identities)?;
             super::get::warn_if_expired(&r.secret_path, &decoded);
             Ok((r, decoded))
         })
