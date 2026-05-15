@@ -673,6 +673,7 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("git"))
         .stdout(predicate::str::contains("generate"))
         .stdout(predicate::str::contains("remote"))
+        .stdout(predicate::str::contains("ci"))
         .stdout(predicate::str::contains("ls"))
         .stdout(predicate::str::contains("version"));
 }
@@ -2396,4 +2397,70 @@ fn completions_bash_outputs_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("himitsu"));
+}
+
+// ============ ci tests ============
+
+#[test]
+fn ci_status_reports_missing_workflow_without_initializing() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project.path())
+        .args(["ci", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not installed"));
+
+    assert!(!home.path().join("share/key").exists());
+}
+
+#[test]
+fn ci_install_writes_github_actions_workflow() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project.path())
+        .args(["ci", "install", "--default-remote", "acme/secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed"));
+
+    let workflow = project.path().join(".github/workflows/himitsu.yml");
+    let contents = std::fs::read_to_string(workflow).unwrap();
+    assert!(contents.contains("Himitsu Self-Serve Rekey"));
+    assert!(contents.contains("darkmatter/himitsu"));
+    assert!(contents.contains("default: acme/secrets"));
+}
+
+#[test]
+fn ci_run_dry_run_prints_workflow_command() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project.path())
+        .args([
+            "ci",
+            "run",
+            "--dry-run",
+            "--operation",
+            "add-recipient",
+            "--target-remote",
+            "acme/secrets",
+            "--recipient-name",
+            "alice",
+            "--recipient-key",
+            "age1example",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gh workflow run"))
+        .stdout(predicate::str::contains("operation=add-recipient"))
+        .stdout(predicate::str::contains("remote=acme/secrets"));
 }

@@ -1,4 +1,5 @@
 pub mod check;
+pub mod ci;
 pub mod codegen;
 pub mod completions;
 pub mod context;
@@ -343,6 +344,9 @@ pub enum Command {
     /// Verify store checkouts are up to date with their remotes.
     Check(check::CheckArgs),
 
+    /// Manage GitHub Actions workflows for self-serve rekeys.
+    Ci(ci::CiArgs),
+
     /// Show the himitsu documentation (renders README).
     Docs,
 
@@ -393,6 +397,7 @@ impl Cli {
         let is_docs = matches!(&command, Command::Docs);
         let is_completions = matches!(&command, Command::Completions(_));
         let is_complete_paths = matches!(&command, Command::CompletePaths(_));
+        let is_ci = matches!(&command, Command::Ci(_));
 
         if !is_init
             && !is_git
@@ -400,6 +405,7 @@ impl Cli {
             && !is_docs
             && !is_completions
             && !is_complete_paths
+            && !is_ci
             && !crate::crypto::keystore::is_initialized(&data_dir)
         {
             eprintln!("First run — initializing himitsu...");
@@ -548,6 +554,7 @@ impl Cli {
             Command::Exec(args) => exec::run(args, &ctx),
             Command::Git(args) => git::run(args, &ctx),
             Command::Check(args) => check::run(args, &ctx),
+            Command::Ci(args) => ci::run(args),
             Command::Docs => docs::run(),
             Command::Version => {
                 println!("{}", crate::build_info::VERSION_LINE);

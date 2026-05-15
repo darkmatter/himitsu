@@ -77,9 +77,7 @@ pub fn run_complete_paths(args: CompletePathsArgs, ctx: &super::Context) -> Resu
 
     // Fast path: serve from the SQLite cache when warm.
     if crate::completions_cache::is_warm(&ctx.state_dir, &stores) {
-        if let Ok(paths) =
-            crate::completions_cache::lookup(&ctx.state_dir, &stores, &args.prefix)
-        {
+        if let Ok(paths) = crate::completions_cache::lookup(&ctx.state_dir, &stores, &args.prefix) {
             let mut out = io::stdout().lock();
             for p in paths {
                 let _ = writeln!(out, "{p}");

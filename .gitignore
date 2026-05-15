@@ -16,6 +16,7 @@ node_modules
 .meta/
 
 # Local demo and scratch files
+key.txt
 amp
 .cursor
 .mux
