@@ -1,6 +1,7 @@
 pub mod check;
 pub mod ci;
 pub mod codegen;
+pub mod doctor;
 pub mod completions;
 pub mod context;
 pub mod decrypt;
@@ -83,7 +84,16 @@ impl Context {
     /// Decryption paths should use this so himitsu and SOPS age key files are
     /// all tried before reporting a decrypt failure.
     pub fn load_identities(&self) -> Result<Vec<::age::x25519::Identity>> {
-        crate::crypto::keystore::load_identities(&self.key_provider, &self.data_dir)
+        let rdir = crate::remote::store::recipients_dir_with_override(
+            &self.store,
+            self.recipients_path.as_deref(),
+        );
+        let recipients_dir = if rdir.exists() { Some(rdir) } else { None };
+        crate::crypto::keystore::load_identities(
+            &self.key_provider,
+            &self.data_dir,
+            recipients_dir.as_deref(),
+        )
     }
 
     /// Directory containing managed store checkouts.
@@ -375,6 +385,9 @@ pub enum Command {
 
     /// Print age keys for self or a named recipient.
     Keys(keys::KeysArgs),
+
+    /// Audit keys, recipients, secrets, and keychain consistency.
+    Doctor(doctor::DoctorArgs),
 }
 
 impl Cli {
@@ -567,6 +580,7 @@ impl Cli {
             Command::Import(args) => import::run(args, &ctx),
             Command::Tag(args) => tag::run(args, &ctx),
             Command::Keys(args) => keys::run(args, &ctx),
+            Command::Doctor(args) => doctor::run(args, &ctx),
         };
 
         // Post-dispatch: enforce the append-only invariant for mutating

@@ -85,7 +85,7 @@ pub fn store_new_key(
 /// Disk: parses the first identity from the available disk key files. Keychain:
 /// looks up the secret indexed by the disk pubkey's fingerprint, then parses it.
 pub fn load_identity(provider: &ProviderChoice, data_dir: &Path) -> Result<Identity> {
-    load_identities(provider, data_dir)?
+    load_identities(provider, data_dir, None)?
         .into_iter()
         .next()
         .ok_or_else(|| HimitsuError::DecryptionFailed("no age identities available".into()))
@@ -95,7 +95,16 @@ pub fn load_identity(provider: &ProviderChoice, data_dir: &Path) -> Result<Ident
 ///
 /// Decryption should use this rather than [`load_identity`] so any key in the
 /// himitsu key file or the conventional SOPS age key files can unlock a secret.
-pub fn load_identities(provider: &ProviderChoice, data_dir: &Path) -> Result<Vec<Identity>> {
+///
+/// When `recipients_dir` is `Some`, the keychain branch also probes every
+/// `*.pub` file found recursively in that directory.  This lets historical or
+/// rotated keys (which are still listed as store recipients) be loaded from the
+/// keychain even though they are no longer the active `key.pub`.
+pub fn load_identities(
+    provider: &ProviderChoice,
+    data_dir: &Path,
+    recipients_dir: Option<&Path>,
+) -> Result<Vec<Identity>> {
     let mut identities = match provider {
         ProviderChoice::Disk => load_disk_identities(data_dir)?,
         ProviderChoice::MacosKeychain => {
@@ -103,8 +112,9 @@ pub fn load_identities(provider: &ProviderChoice, data_dir: &Path) -> Result<Vec
             let mut identities = Vec::new();
 
             // Try the current key.pub under the stable SHA-256 fingerprint.
-            if let Ok(pubkey_str) = std::fs::read_to_string(pubkey_path(data_dir)) {
-                let pubkey = pubkey_str.trim().to_string();
+            let pubkey_str = std::fs::read_to_string(pubkey_path(data_dir)).ok();
+            if let Some(ref ps) = pubkey_str {
+                let pubkey = ps.trim().to_string();
                 let fp = fingerprint(&pubkey);
 
                 // Try the new SHA-256 fingerprint first.
@@ -130,6 +140,12 @@ pub fn load_identities(provider: &ProviderChoice, data_dir: &Path) -> Result<Vec
                 }
             }
 
+            // Also probe all recipient pub files so historical/rotated keys
+            // can decrypt old secrets that were encrypted for them.
+            if let Some(rdir) = recipients_dir {
+                probe_recipient_pubkeys(rdir, rdir, pubkey_str.as_deref(), &mut identities);
+            }
+
             // Always extend with disk identities (SOPS keys.txt, himitsu disk
             // key, etc.) — a keychain miss is non-fatal.
             identities.extend(load_disk_identities(data_dir).unwrap_or_default());
@@ -144,6 +160,54 @@ pub fn load_identities(provider: &ProviderChoice, data_dir: &Path) -> Result<Vec
         ));
     }
     Ok(identities)
+}
+
+/// Recursively probe `*.pub` files in `dir` and load any matching keychain
+/// entries into `identities`.  Files whose public key matches `primary_pubkey`
+/// are skipped (already loaded by the primary key path above).
+fn probe_recipient_pubkeys(
+    base: &Path,
+    dir: &Path,
+    primary_pubkey: Option<&str>,
+    identities: &mut Vec<Identity>,
+) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            probe_recipient_pubkeys(base, &path, primary_pubkey, identities);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("pub") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let pubkey = contents.trim().to_string();
+        // Skip if it's the same as the primary key (already tried).
+        if primary_pubkey.map(|s| s.trim()) == Some(pubkey.as_str()) {
+            continue;
+        }
+        // Try the stable SHA-256 fingerprint.
+        let fp = fingerprint(&pubkey);
+        if let Ok(Some(secret)) = MacOSKeychain.load_key(&fp) {
+            if let Ok(id) = crypto_age::parse_identity(&secret) {
+                identities.push(id);
+            }
+        }
+        // Also try legacy fingerprint for migrated entries.
+        let fp_legacy = fingerprint_v1_legacy(&pubkey);
+        if fp_legacy != fp {
+            if let Ok(Some(secret)) = MacOSKeychain.load_key(&fp_legacy) {
+                if let Ok(id) = crypto_age::parse_identity(&secret) {
+                    identities.push(id);
+                }
+            }
+        }
+    }
 }
 
 /// Load disk-backed age identities from himitsu and standard SOPS locations.
@@ -373,7 +437,7 @@ mod tests {
         )
         .unwrap();
 
-        let identities = load_identities(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let identities = load_identities(&ProviderChoice::Disk, data_dir.path(), None).unwrap();
         let recipients = vec![crate::crypto::age::parse_recipient(&public2).unwrap()];
         let ciphertext = crate::crypto::age::encrypt(b"secret", &recipients).unwrap();
         let plaintext =
@@ -413,7 +477,7 @@ mod tests {
         std::fs::write(&sops_key_path, format!("{sops_secret}\n")).unwrap();
 
         let identity = load_identity(&ProviderChoice::Disk, data_dir.path()).unwrap();
-        let identities = load_identities(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let identities = load_identities(&ProviderChoice::Disk, data_dir.path(), None).unwrap();
         let recipients = vec![crate::crypto::age::parse_recipient(&_sops_public).unwrap()];
         let ciphertext = crate::crypto::age::encrypt(b"sops-only", &recipients).unwrap();
         let plaintext =
@@ -480,7 +544,7 @@ mod tests {
         std::fs::write(&sops_key_path, format!("{sops_secret}\n")).unwrap();
 
         // No himitsu disk key written — only SOPS fallback available.
-        let identities = load_identities(&ProviderChoice::Disk, data_dir.path()).unwrap();
+        let identities = load_identities(&ProviderChoice::Disk, data_dir.path(), None).unwrap();
         assert!(!identities.is_empty());
         assert_eq!(identities[0].to_public().to_string(), sops_public);
     }

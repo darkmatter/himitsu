@@ -155,6 +155,14 @@ fn add(
     }
 
     println!("Added recipient '{name}'");
+
+    let missing = count_secrets_missing_key(&ctx.store, &pubkey);
+    if missing > 0 {
+        println!(
+            "note: {missing} secrets in this store do not yet include '{name}'. Run: himitsu rekey"
+        );
+    }
+
     Ok(())
 }
 
@@ -189,6 +197,10 @@ fn rm(ctx: &Context, name: &str) -> Result<()> {
     }
 
     println!("Removed recipient '{name}'");
+    println!(
+        "note: previously-encrypted secrets remain accessible to '{name}' via git history. \
+         To revoke access, rotate any sensitive values."
+    );
     Ok(())
 }
 
@@ -396,6 +408,47 @@ fn extract_public_key(contents: &str) -> Option<String> {
     None
 }
 
+fn count_secrets_missing_key(store: &Path, pubkey: &str) -> usize {
+    let secrets_dir = rstore::secrets_dir(store);
+    if !secrets_dir.exists() {
+        return 0;
+    }
+    let mut missing = 0usize;
+    fn walk(dir: &Path, pubkey: &str, missing: &mut usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, pubkey, missing);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&contents) else {
+                continue;
+            };
+            let has_key = val["himitsu"]["age"]
+                .as_sequence()
+                .map(|seq| {
+                    seq.iter()
+                        .any(|e| e["recipient"].as_str() == Some(pubkey))
+                })
+                .unwrap_or(false);
+            if !has_key {
+                *missing += 1;
+            }
+        }
+    }
+    walk(&secrets_dir, pubkey, &mut missing);
+    missing
+}
+
 fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -516,6 +569,47 @@ mod tests {
         assert!(validate_name(".hidden").is_err());
         assert!(validate_name("a/..").is_err());
         assert!(validate_name("a\\.pub").is_err());
+    }
+
+    #[test]
+    fn add_warns_about_missing_secrets() {
+        let (_tmp, ctx) = mk_ctx();
+
+        // Write a secret encrypted only for AGE_KEY_1.
+        let secrets_dir = rstore::secrets_dir(&ctx.store);
+        let secret_yaml = format!(
+            "value: ENC[age,...]\nhimitsu:\n  created_at: '2024-01-01T00:00:00Z'\n  lastmodified: '2024-01-01T00:00:00Z'\n  age:\n    - recipient: {}\n",
+            AGE_KEY_1
+        );
+        std::fs::write(secrets_dir.join("mysecret.yaml"), &secret_yaml).unwrap();
+
+        // AGE_KEY_2 is NOT in the secret, so count should be 1.
+        assert_eq!(count_secrets_missing_key(&ctx.store, AGE_KEY_2), 1);
+        // AGE_KEY_1 IS in the secret, so count should be 0.
+        assert_eq!(count_secrets_missing_key(&ctx.store, AGE_KEY_1), 0);
+    }
+
+    #[test]
+    fn count_secrets_missing_key_returns_zero_when_no_secrets_dir() {
+        let tmp = TempDir::new().unwrap();
+        // No secrets dir created — should return 0 silently.
+        assert_eq!(
+            count_secrets_missing_key(tmp.path(), AGE_KEY_1),
+            0
+        );
+    }
+
+    #[test]
+    fn rm_prints_history_warning() {
+        let (_tmp, ctx) = mk_ctx();
+        add(&ctx, "bob", false, Some(AGE_KEY_1), None).unwrap();
+
+        // rm should succeed without error; the warning note is printed to stdout.
+        rm(&ctx, "bob").unwrap();
+
+        // Verify the .pub file is gone.
+        let rdir = rstore::recipients_dir(&ctx.store);
+        assert!(!rdir.join("bob.pub").exists());
     }
 
     #[test]
