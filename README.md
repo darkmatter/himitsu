@@ -112,8 +112,11 @@ himitsu -r org/secrets set staging/API_KEY "sk_test_..."
   - [import](#himitsu-import)
   - [export](#himitsu-export)
   - [generate](#himitsu-generate)
+  - [join](#himitsu-join)
+  - [ci](#himitsu-ci)
   - [git](#himitsu-git-args)
   - [docs](#himitsu-docs)
+- [Self-Serve Rekeys](#self-serve-rekeys)
 - [Global Options](#global-options)
 - [Configuration](#configuration)
 - [Sync & Store Health](#sync--store-health)
@@ -536,6 +539,26 @@ himitsu generate           # all envs defined in himitsu.yaml
 himitsu generate --env prod
 ```
 
+### `himitsu join`
+
+Join a store by adding your own age public key to its recipient list.
+If your key is not already a recipient, this adds it, commits, and pushes the change so other members can rekey the store for you.
+
+```bash
+himitsu join
+himitsu join --name my-laptop
+```
+
+### `himitsu ci`
+
+Manage the GitHub Actions workflow for self-serve rekeys.
+
+```bash
+himitsu ci install --default-remote org/repo
+himitsu ci status
+himitsu ci run --operation add-recipient --recipient-name ops/alice
+```
+
 ### `himitsu git [args...]`
 
 Run any git command inside the store directory.
@@ -553,6 +576,40 @@ Render this README in the terminal.
 ```bash
 himitsu docs
 ```
+
+## Self-Serve Rekeys
+
+himitsu allows teams to manage secret access via GitHub Actions. When a new team member needs access to a store, they don't have to wait for an operator to manually rekey secrets for them. Instead, they can request access, and GitHub Actions handles the rekeying automatically.
+
+To configure self-serve rekeys:
+
+1. Install the workflow into your repository:
+   ```bash
+   himitsu ci install --default-remote org/repo
+   ```
+   This creates a `.github/workflows/himitsu.yml` file.
+
+2. Ensure your GitHub repository has a `HIMITSU_AGE_KEY` secret configured with an age private key that has read/write access to the store.
+
+3. Edit the generated `.github/workflows/himitsu.yml` to write the key to disk before the `darkmatter/himitsu` action runs:
+   ```yaml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup age key
+        run: |
+          mkdir -p ~/.local/share/himitsu
+          echo "${{ secrets.HIMITSU_AGE_KEY }}" > ~/.local/share/himitsu/key
+      - uses: darkmatter/himitsu@main
+   ```
+
+4. Commit and push the workflow:
+   ```bash
+   himitsu git add .github/workflows/himitsu.yml
+   himitsu git commit -m "chore: add himitsu self-serve rekey workflow"
+   himitsu git push
+   ```
+
+When a user wants to request access, they can run `himitsu join` to add their public key to the repository. Once their key is merged, the GitHub Action can be triggered manually via `gh workflow run himitsu.yml --field operation=sync` or automatically via your own triggers to pull the new recipient and rekey the secrets.
 
 ## Global Options
 
