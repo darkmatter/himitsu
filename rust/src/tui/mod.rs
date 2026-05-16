@@ -14,6 +14,7 @@ mod harness;
 mod hint;
 mod icons;
 pub mod keymap;
+pub mod layout;
 mod terminal;
 mod theme;
 mod toast;

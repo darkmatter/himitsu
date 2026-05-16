@@ -17,6 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::layout::{PALETTE_HEIGHT_PCT, PALETTE_WIDTH_PCT};
 use crate::tui::theme;
 
 /// One command exposed in the palette. Mirrors the visible top-level
@@ -323,7 +324,7 @@ impl CommandPalette {
     }
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = centered_rect(60, 50, frame.area());
+        let area = centered_rect(PALETTE_WIDTH_PCT, PALETTE_HEIGHT_PCT, frame.area());
         frame.render_widget(Clear, area);
 
         let block = Block::default()

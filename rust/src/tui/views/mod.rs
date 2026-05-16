@@ -5,6 +5,8 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::tui::layout::{CANVAS_MARGIN, CANVAS_MAX_HEIGHT, CANVAS_MAX_WIDTH};
+
 pub mod command_palette;
 pub mod envs;
 pub mod envs_dsl_editor;
@@ -18,12 +20,8 @@ pub mod secret_viewer;
 pub mod store_picker;
 
 fn standard_canvas(area: Rect) -> Rect {
-    const MARGIN: u16 = 4;
-    const MAX_WIDTH: u16 = 80;
-    const MAX_HEIGHT: u16 = 30;
-
-    let width = constrained_axis(area.width, MARGIN, MAX_WIDTH);
-    let height = constrained_axis(area.height, MARGIN, MAX_HEIGHT);
+    let width = constrained_axis(area.width, CANVAS_MARGIN, CANVAS_MAX_WIDTH);
+    let height = constrained_axis(area.height, CANVAS_MARGIN, CANVAS_MAX_HEIGHT);
 
     Rect {
         x: area.x + (area.width.saturating_sub(width) / 2),

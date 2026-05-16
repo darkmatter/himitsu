@@ -159,8 +159,8 @@ fn default_tui_theme() -> String {
 
 /// Per-project config discovered by walking up from the current directory.
 ///
-/// Searched at (in order): `himitsu.yaml`, `.config/himitsu.yaml`,
-/// `.himitsu/config.yaml` in the current directory and each parent up to the
+/// Searched at (in order): `.himitsu/config.yaml`, `.config/himitsu.yaml`,
+/// `himitsu.yaml` in the current directory and each parent up to the
 /// home directory (max 20 levels).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
@@ -670,21 +670,21 @@ pub fn auto_pull_enabled() -> bool {
 /// file. Returns the first path found, or `None`.
 ///
 /// Candidate names per directory (checked in order):
-/// 1. `himitsu.yaml` / `himitsu.yml`
+/// 1. `.himitsu/config.yaml` / `.himitsu/config.yml` (preferred)
 /// 2. `.config/himitsu.yaml` / `.config/himitsu.yml`
-/// 3. `.himitsu/config.yaml` / `.himitsu/config.yml`
+/// 3. `himitsu.yaml` / `himitsu.yml` (legacy fallback)
 ///
 /// The walk stops at the user's home directory or after 20 levels.
 pub fn find_project_config() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let home_dir = dirs::home_dir();
     let candidates = [
-        "himitsu.yaml",
-        "himitsu.yml",
-        ".config/himitsu.yaml",
-        ".config/himitsu.yml",
         ".himitsu/config.yaml",
         ".himitsu/config.yml",
+        ".config/himitsu.yaml",
+        ".config/himitsu.yml",
+        "himitsu.yaml",
+        "himitsu.yml",
     ];
 
     let mut dir = cwd.clone();

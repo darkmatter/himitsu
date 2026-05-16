@@ -15,6 +15,9 @@ use ratatui::style::{Modifier, Style};
 
 use super::{render_distributed_footer, standard_canvas};
 
+use crate::tui::layout::{
+    FOOTER_HEIGHT, HEADER_HEIGHT, HEADER_LEFT_MIN_WIDTH, SEARCH_INPUT_HEIGHT, SPACER_HEIGHT,
+};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -735,12 +738,12 @@ impl SearchView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // header (brand + view name + health)
-                Constraint::Length(1), // -- spacer --
-                Constraint::Length(3), // search-input
-                Constraint::Min(1),    // results
-                Constraint::Length(0), // -- spacer --
-                Constraint::Length(1), // footer
+                Constraint::Length(HEADER_HEIGHT),       // header (brand + view name + health)
+                Constraint::Length(1),                   // -- spacer --
+                Constraint::Length(SEARCH_INPUT_HEIGHT), // search-input
+                Constraint::Min(1),                      // results
+                Constraint::Length(SPACER_HEIGHT),       // -- spacer --
+                Constraint::Length(FOOTER_HEIGHT),       // footer
             ])
             .split(area);
 
@@ -876,7 +879,7 @@ impl SearchView {
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(20), Constraint::Length(right_width)])
+            .constraints([Constraint::Min(HEADER_LEFT_MIN_WIDTH), Constraint::Length(right_width)])
             .split(area);
 
         // Left: brand chip + active view name. The chip carries the project's
@@ -1078,7 +1081,7 @@ impl SearchView {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .constraints([Constraint::Length(HEADER_HEIGHT), Constraint::Min(1)])
             .split(inner);
 
         let header_style = Style::default()

@@ -27,6 +27,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
+use crate::tui::layout::{FORM_FIELD_HEIGHT, PICKER_FOOTER_HEIGHT};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
@@ -245,9 +246,9 @@ impl StorePicker {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(3),    // list
-                Constraint::Length(3), // input
-                Constraint::Length(2), // status/footer
+                Constraint::Min(FORM_FIELD_HEIGHT),       // list
+                Constraint::Length(FORM_FIELD_HEIGHT),    // input
+                Constraint::Length(PICKER_FOOTER_HEIGHT), // status/footer
             ])
             .split(inner);
 

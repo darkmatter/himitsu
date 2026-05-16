@@ -26,6 +26,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
+use crate::tui::layout::{FOOTER_HEIGHT, HEADER_HEIGHT};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -436,9 +437,9 @@ impl SecretViewerView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
+                Constraint::Length(HEADER_HEIGHT),
                 Constraint::Min(1),
-                Constraint::Length(1),
+                Constraint::Length(FOOTER_HEIGHT),
             ])
             .split(area);
 

@@ -6,6 +6,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
+use crate::tui::layout::{FOOTER_HEIGHT, WIZARD_HEADER_HEIGHT};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -384,9 +385,9 @@ impl InitWizardView {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(WIZARD_HEADER_HEIGHT),
                 Constraint::Min(5),
-                Constraint::Length(1),
+                Constraint::Length(FOOTER_HEIGHT),
             ])
             .split(area);
 

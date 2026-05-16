@@ -176,10 +176,15 @@ pub(crate) fn run_init(args: InitArgs, ctx: &Context) -> Result<()> {
             })?;
             let restored =
                 restore_or_create_named_store(slug, args.url.as_deref(), &pubkey, state_dir)?;
-            let pc_path = root.join("himitsu.yaml");
-            let mut pc = config::ProjectConfig::load_or_default(&pc_path)?;
+            let pc_path = root.join(".himitsu").join("config.yaml");
+            let is_new = !pc_path.exists() && !root.join("himitsu.yaml").exists();
+            // Load from existing config (whichever location was found), or default.
+            let existing_path = config::find_project_config()
+                .filter(|p| p.starts_with(&root))
+                .unwrap_or_else(|| pc_path.clone());
+            let mut pc = config::ProjectConfig::load_or_default(&existing_path)?;
             pc.default_store = Some(slug.clone());
-            pc.save(&pc_path)?;
+            save_project_config_with_schema(&pc, &pc_path, is_new)?;
             (true, restored, Some(pc_path))
         } else {
             (false, false, None)
@@ -355,6 +360,37 @@ fn detect_origin_github_org() -> Option<String> {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// The JSON Schema URL for project config files.
+const PROJECT_CONFIG_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/darkmatter/himitsu/main/openspec/himitsu.schema.json";
+
+/// Save a [`config::ProjectConfig`] to `path`, prepending a `$schema` header
+/// when `is_new` is true so editors can provide validation and autocomplete.
+///
+/// The `$schema` field is written only on initial creation: round-tripping an
+/// existing config through serde will not strip the field because we don't
+/// overwrite existing files with this function.
+fn save_project_config_with_schema(
+    pc: &config::ProjectConfig,
+    path: &Path,
+    is_new: bool,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml::to_string(pc)?;
+    let content = if is_new {
+        format!(
+            "# yaml-language-server: $schema={url}\n$schema: \"{url}\"\n{yaml}",
+            url = PROJECT_CONFIG_SCHEMA_URL,
+        )
+    } else {
+        yaml
+    };
+    std::fs::write(path, content)?;
+    Ok(())
+}
 
 pub(crate) fn read_public_key(data_dir: &Path) -> Result<String> {
     let pubkey_path = data_dir.join("key.pub");

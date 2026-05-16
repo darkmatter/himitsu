@@ -32,6 +32,9 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
+use crate::tui::layout::{
+    CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, FOOTER_HEIGHT, FORM_FIELD_HEIGHT, HEADER_HEIGHT,
+};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -690,17 +693,17 @@ impl NewSecretView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // header
-                Constraint::Length(3), // path
-                Constraint::Min(3),    // value
-                Constraint::Length(3), // description
-                Constraint::Length(3), // tags
-                Constraint::Length(3), // url
-                Constraint::Length(3), // totp
-                Constraint::Length(3), // env_key
-                Constraint::Length(3), // expires_at
-                Constraint::Length(3), // submit button
-                Constraint::Length(1), // footer
+                Constraint::Length(HEADER_HEIGHT),      // header
+                Constraint::Length(FORM_FIELD_HEIGHT),  // path
+                Constraint::Min(FORM_FIELD_HEIGHT),     // value
+                Constraint::Length(FORM_FIELD_HEIGHT),  // description
+                Constraint::Length(FORM_FIELD_HEIGHT),  // tags
+                Constraint::Length(FORM_FIELD_HEIGHT),  // url
+                Constraint::Length(FORM_FIELD_HEIGHT),  // totp
+                Constraint::Length(FORM_FIELD_HEIGHT),  // env_key
+                Constraint::Length(FORM_FIELD_HEIGHT),  // expires_at
+                Constraint::Length(FORM_FIELD_HEIGHT),  // submit button
+                Constraint::Length(FOOTER_HEIGHT),      // footer
             ])
             .split(area);
 
@@ -995,10 +998,8 @@ impl NewSecretView {
 /// Centered rect for the unsaved-changes popup. ~50 columns × 7 rows keeps
 /// the dialog readable on small terminals while staying compact.
 fn confirm_popup_rect(area: Rect) -> Rect {
-    const W: u16 = 50;
-    const H: u16 = 7;
-    let width = W.min(area.width);
-    let height = H.min(area.height);
+    let width = CONFIRM_POPUP_WIDTH.min(area.width);
+    let height = CONFIRM_POPUP_HEIGHT.min(area.height);
     Rect {
         x: area.x + (area.width.saturating_sub(width) / 2),
         y: area.y + (area.height.saturating_sub(height) / 2),
