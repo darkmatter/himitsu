@@ -482,68 +482,55 @@
       }
 
       .chooser {
-        width: min(760px, 100%);
+        width: min(560px, 100%);
         border: 1px solid var(--line-strong);
         border-radius: var(--radius);
         background: var(--surface);
-        padding: 18px;
+        padding: 16px 18px;
         display: grid;
-        gap: 16px;
+        gap: 14px;
       }
 
       .chooser h3 {
         margin: 0;
-        font: 800 16px/1.35 var(--mono);
-      }
-
-      .chooser-sub {
-        margin: 0;
-        color: var(--muted);
-        font: 13px/1.45 var(--mono);
+        font: 800 15px/1.35 var(--mono);
       }
 
       .choice-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px;
+        display: flex;
+        align-items: start;
+        gap: 18px;
+        flex-wrap: wrap;
       }
 
       .choice {
-        min-height: 144px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        background: var(--surface-2);
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
+        min-width: 118px;
+        color: var(--text);
       }
 
       .choice.project-choice {
-        border-color: var(--project);
-        background: rgba(var(--project-rgb), 0.1);
-        box-shadow: inset 3px 0 0 var(--project);
+        color: var(--project);
       }
 
-      .choice h4 {
-        margin: 0;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        font-size: 14px;
+      .choice .hotkey {
+        color: var(--text);
+        background: rgba(var(--project-rgb), 0.14);
+        border-bottom: 2px solid var(--project);
+        padding: 0 1px;
       }
 
-      .choice p {
-        margin: 0;
+      .choice .ref {
+        display: block;
+        margin-top: 5px;
         color: var(--muted);
         font-size: 12px;
-        line-height: 1.45;
+        line-height: 1.35;
+        white-space: nowrap;
       }
 
-      .choice code {
-        color: var(--text);
-        font-size: 12px;
+      .choice-separator {
+        color: var(--dim);
+        font-weight: 700;
       }
 
       .settings-grid {
@@ -664,8 +651,7 @@
           display: none;
         }
 
-        .settings-grid,
-        .choice-grid {
+        .settings-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -910,25 +896,20 @@
           })}
           <div class="chooser-wrap">
             <section class="chooser" aria-label="Choose context">
-              <div>
-                <h3>Choose context for this session</h3>
-                <p class="chooser-sub">~/git/darkmatter/web is a git repository with a Himitsu project config.</p>
-              </div>
+              <h3>Select context:</h3>
               <div class="choice-grid">
-                <article class="choice">
-                  <h4><span>Global</span><span class="chip global">default</span></h4>
-                  <p>Use the personal/global password-manager context.</p>
-                  <code>~/.local/state/himitsu/stores/cm/secrets</code>
-                </article>
-                <article class="choice project-choice">
-                  <h4><span>Project</span><span class="chip project">repo</span></h4>
-                  <p>Use this repository's configured project store.</p>
-                  <code>darkmatter/secrets via .himitsu/config.yaml</code>
-                </article>
+                <div class="choice project-choice">
+                  <span><span class="hotkey">p</span>roject</span>
+                  <span class="ref">darkmatter/web</span>
+                </div>
+                <span class="choice-separator">|</span>
+                <div class="choice">
+                  <span><span class="hotkey">g</span>lobal</span>
+                </div>
               </div>
             </section>
           </div>
-          ${footer("enter selects highlighted context")}
+          ${footer("press p or g")}
         `;
       }
 
