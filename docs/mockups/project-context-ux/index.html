@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Himitsu Project Context UX Mockup</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111419;
+        --surface: #171b22;
+        --surface-2: #1f2530;
+        --surface-3: #252c38;
+        --line: #3a4251;
+        --line-strong: #596274;
+        --text: #edf2f7;
+        --muted: #9ba6b5;
+        --dim: #667286;
+        --global: #57c7d4;
+        --project: #f08a36;
+        --project-rgb: 240, 138, 54;
+        --green: #72c07d;
+        --pink: #e47aa8;
+        --purple: #a88bf0;
+        --danger: #f05f6b;
+        --shadow: rgba(0, 0, 0, 0.38);
+        --radius: 8px;
+        --mono: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Consolas,
+          monospace;
+        --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        letter-spacing: 0;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .shell {
+        min-height: 100dvh;
+        display: grid;
+        grid-template-columns: minmax(250px, 320px) 1fr;
+        gap: 20px;
+        padding: 20px;
+      }
+
+      .control-panel {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        min-width: 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+
+      .brand code {
+        color: var(--muted);
+        font: 12px/1.2 var(--mono);
+      }
+
+      .section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .section-title {
+        color: var(--muted);
+        font: 700 11px/1.2 var(--mono);
+        text-transform: uppercase;
+      }
+
+      .scenario-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .scenario-button {
+        min-height: 44px;
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: 7px;
+        padding: 10px 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .scenario-button[aria-pressed="true"] {
+        border-color: var(--project);
+        box-shadow: inset 3px 0 0 var(--project);
+        background: rgba(var(--project-rgb), 0.12);
+      }
+
+      .scenario-button strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .scenario-button span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+        margin-top: 3px;
+      }
+
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(36px, 1fr));
+        gap: 8px;
+      }
+
+      .swatch {
+        min-height: 44px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface-2);
+        cursor: pointer;
+        position: relative;
+      }
+
+      .swatch::before {
+        content: "";
+        position: absolute;
+        inset: 9px;
+        border-radius: 5px;
+        background: var(--swatch);
+      }
+
+      .swatch[aria-pressed="true"] {
+        border-color: var(--swatch);
+        box-shadow: 0 0 0 2px rgba(var(--project-rgb), 0.18);
+      }
+
+      .notes {
+        margin-top: auto;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .notes code {
+        color: var(--text);
+        font-family: var(--mono);
+      }
+
+      .stage {
+        min-width: 0;
+        display: grid;
+        align-content: start;
+        gap: 14px;
+      }
+
+      .mock-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 12px;
+      }
+
+      .mock-title h2 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.25;
+      }
+
+      .mock-title p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+        max-width: 76ch;
+      }
+
+      .terminal {
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: #0d1015;
+        box-shadow: 0 20px 52px var(--shadow);
+        overflow: hidden;
+        min-height: min(680px, calc(100dvh - 108px));
+        display: flex;
+        flex-direction: column;
+      }
+
+      .term-top {
+        height: 34px;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        gap: 8px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--line-strong);
+      }
+
+      .dot.red {
+        background: #df6a73;
+      }
+
+      .dot.yellow {
+        background: #d7a94b;
+      }
+
+      .dot.green {
+        background: #70bb73;
+      }
+
+      .term-title {
+        margin-left: 8px;
+        color: var(--muted);
+        font: 12px/1 var(--mono);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .screen {
+        flex: 1;
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        font-family: var(--mono);
+        min-width: 0;
+      }
+
+      .tui-header {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 7px;
+        min-height: 54px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+      }
+
+      .title-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .app-name {
+        font-weight: 800;
+        color: var(--text);
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 0 8px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--muted);
+        font: 700 11px/1 var(--mono);
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .chip.global {
+        color: #061115;
+        background: var(--global);
+        border-color: var(--global);
+      }
+
+      .chip.project {
+        color: #160a02;
+        background: var(--project);
+        border-color: var(--project);
+      }
+
+      .chip.soft-project {
+        color: var(--project);
+        background: rgba(var(--project-rgb), 0.13);
+        border-color: rgba(var(--project-rgb), 0.55);
+      }
+
+      .context-path {
+        color: var(--muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .health {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .health::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .search-bar {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        color: var(--text);
+      }
+
+      .search-prompt {
+        color: var(--project);
+      }
+
+      .search-text {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .table {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: minmax(190px, 1.35fr) minmax(78px, 0.42fr) minmax(90px, 0.46fr) minmax(130px, 0.75fr) minmax(130px, 0.74fr);
+        min-height: 42px;
+        align-items: center;
+        border-top: 1px solid rgba(58, 66, 81, 0.72);
+      }
+
+      .row:first-child {
+        border-top: 0;
+      }
+
+      .row.header-row {
+        min-height: 34px;
+        color: var(--dim);
+        background: #131820;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .row.selected {
+        background: rgba(var(--project-rgb), 0.16);
+        box-shadow: inset 3px 0 0 var(--project);
+      }
+
+      .row.group {
+        color: var(--project);
+        background: rgba(var(--project-rgb), 0.1);
+        font-weight: 700;
+      }
+
+      .cell {
+        min-width: 0;
+        padding: 0 10px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .path {
+        color: var(--text);
+        font-weight: 700;
+      }
+
+      .prefix {
+        color: var(--dim);
+        font-weight: 500;
+      }
+
+      .accent-marker {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        margin-right: 8px;
+        background: currentColor;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .dim {
+        color: var(--dim);
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 0 7px;
+        margin-right: 4px;
+        border: 1px solid rgba(var(--project-rgb), 0.55);
+        color: var(--project);
+        background: rgba(var(--project-rgb), 0.12);
+        border-radius: 5px;
+        font-size: 11px;
+      }
+
+      .footer {
+        margin-top: auto;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--dim);
+        font-size: 12px;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+
+      .kbd {
+        color: var(--text);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 2px 5px;
+      }
+
+      .chooser-wrap {
+        flex: 1;
+        display: grid;
+        place-items: center;
+      }
+
+      .chooser {
+        width: min(760px, 100%);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: 18px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .chooser h3 {
+        margin: 0;
+        font: 800 16px/1.35 var(--mono);
+      }
+
+      .chooser-sub {
+        margin: 0;
+        color: var(--muted);
+        font: 13px/1.45 var(--mono);
+      }
+
+      .choice-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .choice {
+        min-height: 144px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface-2);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .choice.project-choice {
+        border-color: var(--project);
+        background: rgba(var(--project-rgb), 0.1);
+        box-shadow: inset 3px 0 0 var(--project);
+      }
+
+      .choice h4 {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 14px;
+      }
+
+      .choice p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .choice code {
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .settings-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
+        gap: 14px;
+      }
+
+      .settings-panel {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        padding: 14px;
+        min-width: 0;
+      }
+
+      .settings-panel h3 {
+        margin: 0 0 10px;
+        font: 800 14px/1.3 var(--mono);
+      }
+
+      .config-code {
+        margin: 0;
+        min-height: 240px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #0b0e13;
+        color: var(--muted);
+        overflow: auto;
+        font: 12px/1.55 var(--mono);
+      }
+
+      .color-stack {
+        display: grid;
+        gap: 10px;
+      }
+
+      .color-row {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .color-dot {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        background: var(--dot-color);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .source-label {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .source-label strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .source-label span {
+        display: block;
+        color: var(--dim);
+        font-size: 11px;
+        margin-top: 2px;
+      }
+
+      .source-count {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .orange {
+        color: var(--project);
+      }
+
+      .green-text {
+        color: var(--green);
+      }
+
+      .pink-text {
+        color: var(--pink);
+      }
+
+      .purple-text {
+        color: var(--purple);
+      }
+
+      button:focus-visible {
+        outline: 3px solid rgba(var(--project-rgb), 0.35);
+        outline-offset: 2px;
+      }
+
+      @media (max-width: 920px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .control-panel {
+          position: static;
+        }
+
+        .terminal {
+          min-height: 650px;
+        }
+
+        .row {
+          grid-template-columns: minmax(170px, 1.2fr) minmax(80px, 0.5fr) minmax(86px, 0.5fr);
+        }
+
+        .row .cell:nth-child(4),
+        .row .cell:nth-child(5) {
+          display: none;
+        }
+
+        .settings-grid,
+        .choice-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .shell {
+          padding: 12px;
+          gap: 12px;
+        }
+
+        .screen {
+          padding: 12px;
+        }
+
+        .mock-title {
+          align-items: start;
+          flex-direction: column;
+        }
+
+        .tui-header {
+          grid-template-columns: 1fr;
+        }
+
+        .health {
+          white-space: normal;
+        }
+
+        .footer {
+          align-items: start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="control-panel" aria-label="Mockup controls">
+        <div class="brand">
+          <div>
+            <h1>Project Context UX</h1>
+            <code>docs/mockups/project-context-ux</code>
+          </div>
+        </div>
+
+        <section class="section" aria-labelledby="scenario-title">
+          <div id="scenario-title" class="section-title">Scenarios</div>
+          <div class="scenario-list" id="scenario-list"></div>
+        </section>
+
+        <section class="section" aria-labelledby="accent-title">
+          <div id="accent-title" class="section-title">Project Accent</div>
+          <div class="swatches" id="swatches"></div>
+        </section>
+
+        <p class="notes">
+          This is a disposable browser mockup for <code>hm-9zc</code>. It does
+          not change Rust/TUI behavior; it makes the context model concrete
+          before implementation.
+        </p>
+      </aside>
+
+      <section class="stage">
+        <div class="mock-title">
+          <div>
+            <h2 id="scenario-heading"></h2>
+            <p id="scenario-copy"></p>
+          </div>
+        </div>
+
+        <div class="terminal" aria-label="Himitsu TUI mockup">
+          <div class="term-top">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+            <span class="term-title">himitsu</span>
+          </div>
+          <div id="screen" class="screen"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const scenarios = [
+        {
+          id: "chooser",
+          title: "Startup chooser",
+          copy: "Bare himitsu inside a repo asks for global or project context instead of guessing.",
+          buttonTitle: "Startup chooser",
+          buttonCopy: "Global vs Project before search",
+        },
+        {
+          id: "global",
+          title: "Global search",
+          copy: "Global mode keeps the password-manager feel and does not inherit project config from cwd.",
+          buttonTitle: "Global search",
+          buttonCopy: "Normal vault context",
+        },
+        {
+          id: "project",
+          title: "Project search",
+          copy: "Project mode shows a persistent context chip and uses the project accent sparingly.",
+          buttonTitle: "Project search",
+          buttonCopy: "--project from a repo",
+        },
+        {
+          id: "multi",
+          title: "Multi-project search",
+          copy: "Source cues make project-owned secrets recognizable without replacing text labels.",
+          buttonTitle: "Multi-project search",
+          buttonCopy: "Color-coded source rows",
+        },
+        {
+          id: "settings",
+          title: "Accent settings",
+          copy: "A small project config surface lets each repo choose a recognizable accent.",
+          buttonTitle: "Accent settings",
+          buttonCopy: "Preview per-project colors",
+        },
+      ];
+
+      const accents = [
+        { name: "Orange", value: "#f08a36", rgb: "240, 138, 54" },
+        { name: "Green", value: "#72c07d", rgb: "114, 192, 125" },
+        { name: "Pink", value: "#e47aa8", rgb: "228, 122, 168" },
+        { name: "Purple", value: "#a88bf0", rgb: "168, 139, 240" },
+        { name: "Cyan", value: "#57c7d4", rgb: "87, 199, 212" },
+      ];
+
+      let activeScenario = "chooser";
+      let activeAccent = accents[0];
+
+      const scenarioList = document.querySelector("#scenario-list");
+      const swatches = document.querySelector("#swatches");
+      const screen = document.querySelector("#screen");
+      const heading = document.querySelector("#scenario-heading");
+      const copy = document.querySelector("#scenario-copy");
+
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function renderControls() {
+        scenarioList.innerHTML = scenarios
+          .map(
+            (scenario) => `
+              <button class="scenario-button" type="button" data-scenario="${scenario.id}" aria-pressed="${scenario.id === activeScenario}">
+                <strong>${scenario.buttonTitle}</strong>
+                <span>${scenario.buttonCopy}</span>
+              </button>
+            `,
+          )
+          .join("");
+
+        swatches.innerHTML = accents
+          .map(
+            (accent) => `
+              <button class="swatch" type="button" title="${accent.name}" aria-label="${accent.name}" data-accent="${accent.name}" aria-pressed="${accent.name === activeAccent.name}" style="--swatch: ${accent.value}"></button>
+            `,
+          )
+          .join("");
+      }
+
+      function header(context) {
+        const isProject = context.kind === "Project";
+        return `
+          <header class="tui-header">
+            <div>
+              <div class="title-line">
+                <span class="app-name">himitsu</span>
+                <span class="chip ${isProject ? "project" : "global"}">${context.kind}</span>
+                ${isProject ? '<span class="chip soft-project">darkmatter/web</span>' : ""}
+              </div>
+              <div class="context-path">${context.path}</div>
+            </div>
+            <div class="health">${context.health}</div>
+          </header>
+        `;
+      }
+
+      function searchBar(query) {
+        return `
+          <div class="search-bar">
+            <span class="search-prompt">/</span>
+            <span class="search-text">${query}</span>
+          </div>
+        `;
+      }
+
+      function table(rows) {
+        return `
+          <div class="table">
+            <div class="row header-row">
+              <div class="cell">PATH</div>
+              <div class="cell">UPDATED</div>
+              <div class="cell">ENVS</div>
+              <div class="cell">DESCRIPTION</div>
+              <div class="cell">SOURCE</div>
+            </div>
+            ${rows.join("")}
+          </div>
+        `;
+      }
+
+      function row(options) {
+        const classes = ["row"];
+        if (options.selected) classes.push("selected");
+        if (options.group) classes.push("group");
+        const colorClass = options.colorClass || "";
+        return `
+          <div class="${classes.join(" ")}">
+            <div class="cell path ${colorClass}">
+              ${options.marker ? '<span class="accent-marker"></span>' : ""}
+              ${options.path}
+            </div>
+            <div class="cell muted">${options.updated || ""}</div>
+            <div class="cell">${options.envs || ""}</div>
+            <div class="cell muted">${options.description || ""}</div>
+            <div class="cell muted">${options.source || ""}</div>
+          </div>
+        `;
+      }
+
+      function footer(right) {
+        return `
+          <div class="footer">
+            <span><span class="kbd">ctrl+n</span> new <span class="kbd">ctrl+s</span> context <span class="kbd">?</span> help</span>
+            <span>${right}</span>
+          </div>
+        `;
+      }
+
+      function chooserScreen() {
+        return `
+          ${header({
+            kind: "Global",
+            path: "cwd ~/git/darkmatter/web",
+            health: "repo detected",
+          })}
+          <div class="chooser-wrap">
+            <section class="chooser" aria-label="Choose context">
+              <div>
+                <h3>Choose context for this session</h3>
+                <p class="chooser-sub">~/git/darkmatter/web is a git repository with a Himitsu project config.</p>
+              </div>
+              <div class="choice-grid">
+                <article class="choice">
+                  <h4><span>Global</span><span class="chip global">default</span></h4>
+                  <p>Use the personal/global password-manager context.</p>
+                  <code>~/.local/state/himitsu/stores/cm/secrets</code>
+                </article>
+                <article class="choice project-choice">
+                  <h4><span>Project</span><span class="chip project">repo</span></h4>
+                  <p>Use this repository's configured project store.</p>
+                  <code>darkmatter/secrets via .himitsu/config.yaml</code>
+                </article>
+              </div>
+            </section>
+          </div>
+          ${footer("enter selects highlighted context")}
+        `;
+      }
+
+      function globalScreen() {
+        return `
+          ${header({
+            kind: "Global",
+            path: "store cm/secrets",
+            health: "synced",
+          })}
+          ${searchBar("db")}
+          ${table([
+            row({
+              path: '<span class="prefix">prod/</span>DATABASE_URL',
+              updated: "2h",
+              envs: '<span class="tag">shell</span>',
+              description: "personal database tunnel",
+              source: "cm/secrets",
+              selected: true,
+            }),
+            row({
+              path: '<span class="prefix">github/</span>VSCE_TOKEN',
+              updated: "1d",
+              envs: '<span class="tag">publish</span>',
+              description: "extension publishing",
+              source: "cm/secrets",
+            }),
+            row({
+              path: '<span class="prefix">stripe/</span>TEST_KEY',
+              updated: "6d",
+              envs: '<span class="tag">billing</span>',
+              description: "sandbox key",
+              source: "cm/secrets",
+            }),
+          ])}
+          ${footer("global context")}
+        `;
+      }
+
+      function projectScreen() {
+        return `
+          ${header({
+            kind: "Project",
+            path: "repo ~/git/darkmatter/web -> store darkmatter/secrets",
+            health: "project store synced",
+          })}
+          ${searchBar("prod")}
+          ${table([
+            row({
+              path: '<span class="prefix">web/prod/</span>DATABASE_URL',
+              updated: "8m",
+              envs: '<span class="tag">prod</span><span class="tag">worker</span>',
+              description: "Cloudflare D1 connection",
+              source: "darkmatter/web",
+              selected: true,
+              marker: true,
+            }),
+            row({
+              path: '<span class="prefix">web/prod/</span>OPENAI_API_KEY',
+              updated: "3h",
+              envs: '<span class="tag">prod</span>',
+              description: "app runtime key",
+              source: "darkmatter/web",
+              marker: true,
+            }),
+            row({
+              path: '<span class="prefix">web/preview/</span>DATABASE_URL',
+              updated: "2d",
+              envs: '<span class="tag">preview</span>',
+              description: "preview database",
+              source: "darkmatter/web",
+              marker: true,
+            }),
+          ])}
+          ${footer("project context darkmatter/web")}
+        `;
+      }
+
+      function multiScreen() {
+        return `
+          ${header({
+            kind: "Project",
+            path: "searching known project stores",
+            health: "3 project sources",
+          })}
+          ${searchBar("api")}
+          ${table([
+            row({
+              path: "darkmatter/web",
+              updated: "2",
+              envs: "",
+              description: "2 matching secrets",
+              source: "project",
+              group: true,
+              marker: true,
+            }),
+            row({
+              path: '<span class="prefix">  web/prod/</span>API_KEY',
+              updated: "1h",
+              envs: '<span class="tag">prod</span>',
+              description: "web runtime",
+              source: "darkmatter/web",
+              selected: true,
+              marker: true,
+            }),
+            row({
+              path: '<span class="accent-marker green-text"></span>darkmatter/infra',
+              updated: "1",
+              envs: "",
+              description: "1 matching secret",
+              source: "project",
+              group: true,
+              colorClass: "green-text",
+            }),
+            row({
+              path: '<span class="prefix">  tailscale/</span>API_TOKEN',
+              updated: "4h",
+              envs: '<span class="tag">deploy</span>',
+              description: "infra deploy token",
+              source: "darkmatter/infra",
+              colorClass: "green-text",
+            }),
+            row({
+              path: '<span class="accent-marker pink-text"></span>darkmatter/himitsu',
+              updated: "1",
+              envs: "",
+              description: "1 matching secret",
+              source: "project",
+              group: true,
+              colorClass: "pink-text",
+            }),
+            row({
+              path: '<span class="prefix">  demo/</span>API_FIXTURE',
+              updated: "5d",
+              envs: '<span class="tag">demo</span>',
+              description: "demo fixture",
+              source: "darkmatter/himitsu",
+              colorClass: "pink-text",
+            }),
+          ])}
+          ${footer("source color plus text label")}
+        `;
+      }
+
+      function settingsScreen() {
+        const safeColor = escapeHtml(activeAccent.value);
+        return `
+          ${header({
+            kind: "Project",
+            path: "repo ~/git/darkmatter/web -> .himitsu/config.yaml",
+            health: "config preview",
+          })}
+          <section class="settings-grid">
+            <div class="settings-panel">
+              <h3>Project display config</h3>
+              <pre class="config-code">default_store: darkmatter/secrets
+tui:
+  context_label: darkmatter/web
+  accent: "${safeColor}"
+
+envs:
+  prod:
+    - web/prod/DATABASE_URL
+    - web/prod/OPENAI_API_KEY</pre>
+            </div>
+            <div class="settings-panel">
+              <h3>Source preview</h3>
+              <div class="color-stack">
+                <div class="color-row">
+                  <span class="color-dot" style="--dot-color: var(--project)"></span>
+                  <span class="source-label"><strong>darkmatter/web</strong><span>current project</span></span>
+                  <span class="source-count">18</span>
+                </div>
+                <div class="color-row">
+                  <span class="color-dot" style="--dot-color: var(--green)"></span>
+                  <span class="source-label"><strong>darkmatter/infra</strong><span>ops project</span></span>
+                  <span class="source-count">42</span>
+                </div>
+                <div class="color-row">
+                  <span class="color-dot" style="--dot-color: var(--pink)"></span>
+                  <span class="source-label"><strong>darkmatter/himitsu</strong><span>tooling project</span></span>
+                  <span class="source-count">7</span>
+                </div>
+              </div>
+            </div>
+          </section>
+          ${table([
+            row({
+              path: '<span class="prefix">web/prod/</span>DATABASE_URL',
+              updated: "8m",
+              envs: '<span class="tag">prod</span>',
+              description: "accent follows project config",
+              source: "darkmatter/web",
+              selected: true,
+              marker: true,
+            }),
+          ])}
+          ${footer("accent " + safeColor)}
+        `;
+      }
+
+      function renderScenario() {
+        const scenario = scenarios.find((item) => item.id === activeScenario);
+        heading.textContent = scenario.title;
+        copy.textContent = scenario.copy;
+
+        const renderers = {
+          chooser: chooserScreen,
+          global: globalScreen,
+          project: projectScreen,
+          multi: multiScreen,
+          settings: settingsScreen,
+        };
+
+        screen.innerHTML = renderers[activeScenario]();
+      }
+
+      function setAccent(accent) {
+        activeAccent = accent;
+        document.documentElement.style.setProperty("--project", accent.value);
+        document.documentElement.style.setProperty("--project-rgb", accent.rgb);
+      }
+
+      scenarioList.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-scenario]");
+        if (!button) return;
+        activeScenario = button.dataset.scenario;
+        renderControls();
+        renderScenario();
+      });
+
+      swatches.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-accent]");
+        if (!button) return;
+        const accent = accents.find((item) => item.name === button.dataset.accent);
+        if (!accent) return;
+        setAccent(accent);
+        renderControls();
+        renderScenario();
+      });
+
+      setAccent(activeAccent);
+      renderControls();
+      renderScenario();
+    </script>
+  </body>
+</html>
