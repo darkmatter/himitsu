@@ -77,8 +77,7 @@ pub fn refresh_store(state_dir: &Path, store: &Path) -> rusqlite::Result<usize> 
         params![store_key],
     )?;
 
-    let paths =
-        crate::remote::store::list_secrets(store, None).unwrap_or_default();
+    let paths = crate::remote::store::list_secrets(store, None).unwrap_or_default();
     let count = paths.len();
     for p in &paths {
         conn.execute(
@@ -128,26 +127,19 @@ pub fn refresh_all(state_dir: &Path, stores_dir: &Path) -> rusqlite::Result<usiz
 /// Query cached paths across the given stores, filtered by an optional prefix.
 ///
 /// Returns paths sorted lexicographically (deduplicated across stores).
-pub fn lookup(
-    state_dir: &Path,
-    stores: &[PathBuf],
-    prefix: &str,
-) -> rusqlite::Result<Vec<String>> {
+pub fn lookup(state_dir: &Path, stores: &[PathBuf], prefix: &str) -> rusqlite::Result<Vec<String>> {
     let conn = open(state_dir)?;
     let pfx_slash = format!("{prefix}/");
     let mut all: Vec<String> = Vec::new();
 
     for store in stores {
         let store_key = store.to_string_lossy().to_string();
-        let mut stmt = conn.prepare(
-            "SELECT secret_path FROM paths WHERE store_path = ?1 ORDER BY secret_path",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT secret_path FROM paths WHERE store_path = ?1 ORDER BY secret_path")?;
         let rows: Vec<String> = stmt
             .query_map(params![store_key], |row| row.get(0))?
             .filter_map(|r| r.ok())
-            .filter(|p: &String| {
-                prefix.is_empty() || p == prefix || p.starts_with(&pfx_slash)
-            })
+            .filter(|p: &String| prefix.is_empty() || p == prefix || p.starts_with(&pfx_slash))
             .collect();
         all.extend(rows);
     }

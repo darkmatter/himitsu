@@ -144,6 +144,9 @@ enum SearchColumn {
     Store,
 }
 
+const SEARCH_COLUMN_MAX_WIDTH: usize = 32;
+const TRUNCATION_MARKER: &str = "..";
+
 impl SearchColumn {
     fn label(self) -> &'static str {
         match self {
@@ -738,12 +741,12 @@ impl SearchView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(HEADER_HEIGHT),       // header (brand + view name + health)
-                Constraint::Length(1),                   // -- spacer --
+                Constraint::Length(HEADER_HEIGHT), // header (brand + view name + health)
+                Constraint::Length(1),             // -- spacer --
                 Constraint::Length(SEARCH_INPUT_HEIGHT), // search-input
-                Constraint::Min(1),                      // results
-                Constraint::Length(SPACER_HEIGHT),       // -- spacer --
-                Constraint::Length(FOOTER_HEIGHT),       // footer
+                Constraint::Min(1),                // results
+                Constraint::Length(SPACER_HEIGHT), // -- spacer --
+                Constraint::Length(FOOTER_HEIGHT), // footer
             ])
             .split(area);
 
@@ -751,6 +754,9 @@ impl SearchView {
         self.draw_input(frame, chunks[2]);
         self.draw_results(frame, chunks[3]);
         self.draw_footer(frame, chunks[5]);
+        if self.picker.is_none() && self.palette.is_none() {
+            self.draw_selected_description(frame);
+        }
 
         // The autocomplete popup sits between the input bar and the modal
         // overlays — picker/palette still need to draw on top of it when
@@ -879,7 +885,10 @@ impl SearchView {
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(HEADER_LEFT_MIN_WIDTH), Constraint::Length(right_width)])
+            .constraints([
+                Constraint::Min(HEADER_LEFT_MIN_WIDTH),
+                Constraint::Length(right_width),
+            ])
             .split(area);
 
         // Left: brand chip + active view name. The chip carries the project's
@@ -994,9 +1003,14 @@ impl SearchView {
             indent: usize,
             parent_dim: String, // path prefix up to (but not including) the basename
             basename: String,
+            path_display: String,
+            path_truncated: bool,
             updated: String,
-            desc: String,
             envs: String,
+            desc_text: String,
+            desc_display: String,
+            desc_truncated: bool,
+            store: String,
             tags: Option<Vec<String>>,
         }
         let row_data: Vec<Option<SecretCells>> = self
@@ -1005,28 +1019,43 @@ impl SearchView {
             .map(|row| match row {
                 Row::Secret { result, indent, .. } => {
                     let (parent, name) = split_path_basename(&result.path);
+                    let path_budget = SEARCH_COLUMN_MAX_WIDTH.saturating_sub(*indent * 2).max(1);
+                    let path_display = truncate_middle(&result.path, path_budget);
+                    let path_truncated = char_count(&result.path) > char_count(&path_display);
                     let ts = result
                         .updated_at
                         .as_deref()
                         .or(result.created_at.as_deref());
-                    let updated = ts
+                    let updated_raw = ts
                         .and_then(parse_ts)
                         .map(|t| humanize_age_compact(now, t))
                         .unwrap_or_else(|| "—".to_string());
-                    let desc = result.description.clone().unwrap_or_default();
-                    let envs = self
+                    let updated = truncate_middle(&updated_raw, SEARCH_COLUMN_MAX_WIDTH);
+                    let desc_text = result.description.clone().unwrap_or_default();
+                    let envs_raw = self
                         .env_index
                         .get(&result.path)
                         .map(|labels| labels.join(", "))
                         .unwrap_or_default();
+                    let envs = truncate_middle(&envs_raw, SEARCH_COLUMN_MAX_WIDTH);
+                    let tags = result.tags.clone();
+                    let desc_cell = desc_cell_text(&desc_text, tags.as_deref());
+                    let desc_display = truncate_middle(&desc_cell, SEARCH_COLUMN_MAX_WIDTH);
+                    let desc_truncated = char_count(&desc_cell) > char_count(&desc_display);
+                    let store = truncate_middle(&result.store, SEARCH_COLUMN_MAX_WIDTH);
                     Some(SecretCells {
                         indent: *indent,
                         parent_dim: parent.to_string(),
                         basename: name.to_string(),
+                        path_display,
+                        path_truncated,
                         updated,
-                        desc,
                         envs,
-                        tags: result.tags.clone(),
+                        desc_text,
+                        desc_display,
+                        desc_truncated,
+                        store,
+                        tags,
                     })
                 }
                 _ => None,
@@ -1039,39 +1068,33 @@ impl SearchView {
             .iter()
             .filter_map(|d| {
                 d.as_ref()
-                    .map(|c| c.indent * 2 + c.parent_dim.len() + c.basename.len())
+                    .map(|c| c.indent * 2 + char_count(&c.path_display))
             })
             .max()
             .unwrap_or(0)
             .max(path_label.len());
         let updated_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| c.updated.len()))
+            .filter_map(|d| d.as_ref().map(|c| char_count(&c.updated)))
             .max()
             .unwrap_or(0)
             .max(updated_label.len());
         let envs_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| c.envs.len()))
+            .filter_map(|d| d.as_ref().map(|c| char_count(&c.envs)))
             .max()
             .unwrap_or(0)
             .max(envs_label.len());
         let desc_w = row_data
             .iter()
-            .filter_map(|d| {
-                d.as_ref()
-                    .map(|c| desc_cell_width(&c.desc, c.tags.as_deref()))
-            })
+            .filter_map(|d| d.as_ref().map(|c| char_count(&c.desc_display)))
             .max()
             .unwrap_or(0)
             .max(desc_label.len());
         let store_w = if show_store {
-            self.rows
+            row_data
                 .iter()
-                .filter_map(|row| match row {
-                    Row::Secret { result, .. } => Some(result.store.len()),
-                    _ => None,
-                })
+                .filter_map(|d| d.as_ref().map(|c| char_count(&c.store)))
                 .max()
                 .unwrap_or(0)
                 .max(store_label.len())
@@ -1113,13 +1136,11 @@ impl SearchView {
         }
         frame.render_widget(Paragraph::new(Line::from(header_spans)), chunks[0]);
 
-        let selected_row = self.list_state.selected();
         let items: Vec<ListItem> = self
             .rows
             .iter()
             .zip(row_data.iter())
-            .enumerate()
-            .map(|(idx, (row, data))| match row {
+            .map(|(row, data)| match row {
                 Row::Store { name, count } => {
                     let line = Line::from(vec![
                         Span::styled(
@@ -1152,11 +1173,7 @@ impl SearchView {
                     ]);
                     ListItem::new(line)
                 }
-                Row::Secret {
-                    result,
-                    shared_prefix,
-                    ..
-                } => {
+                Row::Secret { shared_prefix, .. } => {
                     let cells = data.as_ref().unwrap();
                     // Compose the path cell. The parent prefix is split into
                     // a "shared" segment (top-level path slice when this leaf
@@ -1164,25 +1181,29 @@ impl SearchView {
                     // accent — replacing the old folder header — and the
                     // remaining parent path which stays dimmed.
                     let indent = "  ".repeat(cells.indent);
-                    let (shared_seg, rest_seg) =
-                        split_shared_prefix(&cells.parent_dim, shared_prefix.as_deref());
-                    let consumed = indent.len() + cells.parent_dim.len() + cells.basename.len();
+                    let consumed = indent.len() + char_count(&cells.path_display);
                     let pad = path_w.saturating_sub(consumed);
-                    let chips = format_tag_chips(cells.tags.as_deref());
-                    let chips_w = tag_chips_width(cells.tags.as_deref());
-                    let consumed_desc = desc_cell_width(&cells.desc, cells.tags.as_deref());
+                    let consumed_desc = char_count(&cells.desc_display);
                     let desc_pad = desc_w.saturating_sub(consumed_desc);
-                    let needs_sep = !cells.desc.is_empty() && chips_w > 0;
-                    let mut spans = vec![
-                        Span::raw(indent),
-                        Span::styled(
+                    let mut spans = vec![Span::raw(indent)];
+                    if cells.path_truncated {
+                        spans.push(Span::raw(cells.path_display.clone()));
+                    } else {
+                        let (shared_seg, rest_seg) =
+                            split_shared_prefix(&cells.parent_dim, shared_prefix.as_deref());
+                        spans.push(Span::styled(
                             shared_seg.to_string(),
                             Style::default()
                                 .fg(theme::accent())
                                 .add_modifier(Modifier::DIM),
-                        ),
-                        Span::styled(rest_seg.to_string(), Style::default().fg(theme::path_dim())),
-                        Span::raw(cells.basename.clone()),
+                        ));
+                        spans.push(Span::styled(
+                            rest_seg.to_string(),
+                            Style::default().fg(theme::path_dim()),
+                        ));
+                        spans.push(Span::raw(cells.basename.clone()));
+                    }
+                    spans.extend([
                         Span::raw(format!("{:<pad$}  ", "", pad = pad)),
                         Span::styled(
                             format!("{:<updated_w$}  ", cells.updated, updated_w = updated_w),
@@ -1192,27 +1213,26 @@ impl SearchView {
                             format!("{:<envs_w$}  ", cells.envs, envs_w = envs_w),
                             Style::default().fg(theme::accent()),
                         ),
-                        Span::raw(cells.desc.clone()),
-                    ];
-                    if needs_sep {
-                        spans.push(Span::raw(" "));
+                    ]);
+                    if cells.desc_truncated {
+                        spans.push(Span::raw(cells.desc_display.clone()));
+                    } else {
+                        let chips = format_tag_chips(cells.tags.as_deref());
+                        let needs_sep = !cells.desc_text.is_empty() && !chips.is_empty();
+                        spans.push(Span::raw(cells.desc_text.clone()));
+                        if needs_sep {
+                            spans.push(Span::raw(" "));
+                        }
+                        spans.extend(chips);
                     }
-                    spans.extend(chips);
                     spans.push(Span::raw(format!("{:<pad$}  ", "", pad = desc_pad)));
                     if show_store {
                         spans.push(Span::styled(
-                            format!("{:<store_w$}", result.store, store_w = store_w),
+                            format!("{:<store_w$}", cells.store, store_w = store_w),
                             Style::default().fg(theme::accent()),
                         ));
                     }
-                    let mut lines = vec![Line::from(spans)];
-                    if selected_row == Some(idx) && !cells.desc.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(cells.desc.clone(), Style::default().fg(theme::muted())),
-                        ]));
-                    }
-                    ListItem::new(lines)
+                    ListItem::new(Line::from(spans))
                 }
             })
             .collect();
@@ -1271,6 +1291,36 @@ impl SearchView {
             ],
         );
     }
+
+    fn draw_selected_description(&self, frame: &mut Frame<'_>) {
+        let Some(desc) = self
+            .selected_result()
+            .and_then(|result| result.description.as_deref())
+            .filter(|desc| !desc.is_empty())
+        else {
+            return;
+        };
+
+        let area = frame.area();
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let strip = Rect {
+            x: area.x,
+            y: area.y + area.height - 1,
+            width: area.width,
+            height: 1,
+        };
+        let display = truncate_middle(desc, area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                display,
+                Style::default().fg(theme::muted()),
+            )))
+            .alignment(Alignment::Right),
+            strip,
+        );
+    }
 }
 
 /// Render a secret's tag list as a sequence of small `[tag]` spans suitable
@@ -1282,8 +1332,7 @@ impl SearchView {
 ///
 /// Each chip renders as `[<label>] ` with a trailing space so consecutive
 /// chips space themselves naturally without the caller having to interleave
-/// separators. The trailing space on the final chip is purely cosmetic and
-/// is accounted for by [`tag_chips_width`] so column padding stays correct.
+/// separators.
 fn format_tag_chips(tags: Option<&[String]>) -> Vec<Span<'static>> {
     let Some(tags) = tags else {
         return Vec::new();
@@ -1297,29 +1346,51 @@ fn format_tag_chips(tags: Option<&[String]>) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// Cell-width of the rendering produced by [`format_tag_chips`], used to
-/// account for chips when computing the description column width. Each chip
-/// renders as `[<label>] ` (label length + 3 cells: brackets + trailing
-/// space). Returns 0 when there are no chips.
-fn tag_chips_width(tags: Option<&[String]>) -> usize {
+fn tag_chips_text(tags: Option<&[String]>) -> String {
     let Some(tags) = tags else {
-        return 0;
+        return String::new();
     };
-    tags.iter().map(|t| t.len() + 3).sum()
+    tags.iter()
+        .map(|tag| format!("[{tag}] "))
+        .collect::<String>()
 }
 
-/// Combined width of a description cell: the description text, an optional
-/// single-cell separator when both description and chips are present, and
-/// the inline tag chips. Used for both the column-width calculation and
-/// the per-row right-padding so they can't drift apart.
-fn desc_cell_width(desc: &str, tags: Option<&[String]>) -> usize {
-    let chips_w = tag_chips_width(tags);
-    let sep = if !desc.is_empty() && chips_w > 0 {
-        1
+fn desc_cell_text(desc: &str, tags: Option<&[String]>) -> String {
+    let chips = tag_chips_text(tags);
+    if desc.is_empty() {
+        chips
+    } else if chips.is_empty() {
+        desc.to_string()
     } else {
-        0
-    };
-    desc.len() + sep + chips_w
+        format!("{desc} {chips}")
+    }
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let value_chars = char_count(value);
+    if value_chars <= max_chars {
+        return value.to_string();
+    }
+    let marker_chars = char_count(TRUNCATION_MARKER);
+    if max_chars <= marker_chars {
+        return TRUNCATION_MARKER
+            .chars()
+            .take(max_chars)
+            .collect::<String>();
+    }
+
+    let keep = max_chars - marker_chars;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let start: String = value.chars().take(head).collect();
+    let mut end_chars: Vec<char> = value.chars().rev().take(tail).collect();
+    end_chars.reverse();
+    let end: String = end_chars.into_iter().collect();
+    format!("{start}{TRUNCATION_MARKER}{end}")
+}
+
+fn char_count(value: &str) -> usize {
+    value.chars().count()
 }
 
 /// Split a slash-delimited secret path into `(parent_with_slash, basename)`.
@@ -1755,8 +1826,8 @@ fn compare_results(
 ) -> std::cmp::Ordering {
     let primary = match sort_state.column {
         SearchColumn::Path => a.path.cmp(&b.path),
-        SearchColumn::Updated => result_timestamp(a).cmp(&result_timestamp(b)),
-        SearchColumn::Envs => result_envs(a, env_index).cmp(&result_envs(b, env_index)),
+        SearchColumn::Updated => result_timestamp(a).cmp(result_timestamp(b)),
+        SearchColumn::Envs => result_envs(a, env_index).cmp(result_envs(b, env_index)),
         SearchColumn::Description => a
             .description
             .as_deref()
@@ -2250,6 +2321,129 @@ mod tests {
             view.on_key(ctrl('n'), &km),
             SearchAction::NewSecret
         ));
+    }
+
+    fn render_view(view: &mut SearchView, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| view.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        rendered
+    }
+
+    fn set_single_result(view: &mut SearchView, result: SearchResult) {
+        view.results = vec![result];
+        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
+        view.list_state.select(Some(0));
+    }
+
+    #[test]
+    fn selected_description_renders_on_bottom_strip_not_as_expanded_row() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        let desc = "selected database credential for production failover";
+        set_single_result(
+            &mut view,
+            SearchResult {
+                store: "local".into(),
+                store_path: ctx.store.clone(),
+                path: "prod/API_KEY".into(),
+                created_at: None,
+                updated_at: None,
+                description: Some(desc.into()),
+                tags: None,
+            },
+        );
+
+        let rendered = render_view(&mut view, 120, 20);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let row_idx = lines
+            .iter()
+            .position(|line| line.contains("prod/API_KEY"))
+            .expect("selected row should render");
+
+        assert!(
+            !lines[row_idx + 1].contains(desc),
+            "description should not expand below the selected row:\n{rendered}"
+        );
+        assert!(
+            lines.last().is_some_and(|line| line.contains(desc)),
+            "description should render on the bottom strip:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn search_columns_cap_long_cells_with_middle_truncation() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        let path = "prod/very-long-secret-name-with-middle-and-baz";
+        set_single_result(
+            &mut view,
+            SearchResult {
+                store: "local".into(),
+                store_path: ctx.store.clone(),
+                path: path.into(),
+                created_at: None,
+                updated_at: None,
+                description: None,
+                tags: None,
+            },
+        );
+
+        let rendered = render_view(&mut view, 120, 20);
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("prod/very-long-") || line.contains(path))
+            .expect("secret row should render");
+
+        assert!(
+            row.contains("prod/very-long-..-middle-and-baz"),
+            "path should be middle-truncated after 32 chars:\n{row}"
+        );
+        assert!(
+            !row.contains(path),
+            "row should not contain the raw long path:\n{row}"
+        );
+
+        let desc = "desc/very-long-secret-name-with-middle-and-baz";
+        set_single_result(
+            &mut view,
+            SearchResult {
+                store: "local".into(),
+                store_path: ctx.store.clone(),
+                path: "prod/API_KEY".into(),
+                created_at: None,
+                updated_at: None,
+                description: Some(desc.into()),
+                tags: None,
+            },
+        );
+
+        let rendered = render_view(&mut view, 120, 20);
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("prod/API_KEY"))
+            .expect("secret row should render");
+        assert!(
+            row.contains("desc/very-long-..-middle-and-baz"),
+            "description should be middle-truncated after 32 chars:\n{row}"
+        );
+        assert!(
+            !row.contains(desc),
+            "row should not contain the raw long description:\n{row}"
+        );
     }
 
     #[test]

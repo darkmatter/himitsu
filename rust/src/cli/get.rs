@@ -88,9 +88,7 @@ pub(crate) fn get_decoded_with_identities(
             for id in &loaded {
                 msg.push_str(&format!("    {id}\n"));
             }
-            msg.push_str(
-                "  hint: run 'himitsu rekey' if your current identity should have access",
-            );
+            msg.push_str("  hint: run 'himitsu rekey' if your current identity should have access");
             Err(HimitsuError::DecryptionFailed(msg))
         }
     }

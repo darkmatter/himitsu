@@ -435,10 +435,7 @@ fn count_secrets_missing_key(store: &Path, pubkey: &str) -> usize {
             };
             let has_key = val["himitsu"]["age"]
                 .as_sequence()
-                .map(|seq| {
-                    seq.iter()
-                        .any(|e| e["recipient"].as_str() == Some(pubkey))
-                })
+                .map(|seq| seq.iter().any(|e| e["recipient"].as_str() == Some(pubkey)))
                 .unwrap_or(false);
             if !has_key {
                 *missing += 1;
@@ -593,10 +590,7 @@ mod tests {
     fn count_secrets_missing_key_returns_zero_when_no_secrets_dir() {
         let tmp = TempDir::new().unwrap();
         // No secrets dir created — should return 0 silently.
-        assert_eq!(
-            count_secrets_missing_key(tmp.path(), AGE_KEY_1),
-            0
-        );
+        assert_eq!(count_secrets_missing_key(tmp.path(), AGE_KEY_1), 0);
     }
 
     #[test]

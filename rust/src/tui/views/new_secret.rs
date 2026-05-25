@@ -693,17 +693,17 @@ impl NewSecretView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(HEADER_HEIGHT),      // header
-                Constraint::Length(FORM_FIELD_HEIGHT),  // path
-                Constraint::Min(FORM_FIELD_HEIGHT),     // value
-                Constraint::Length(FORM_FIELD_HEIGHT),  // description
-                Constraint::Length(FORM_FIELD_HEIGHT),  // tags
-                Constraint::Length(FORM_FIELD_HEIGHT),  // url
-                Constraint::Length(FORM_FIELD_HEIGHT),  // totp
-                Constraint::Length(FORM_FIELD_HEIGHT),  // env_key
-                Constraint::Length(FORM_FIELD_HEIGHT),  // expires_at
-                Constraint::Length(FORM_FIELD_HEIGHT),  // submit button
-                Constraint::Length(FOOTER_HEIGHT),      // footer
+                Constraint::Length(HEADER_HEIGHT),     // header
+                Constraint::Length(FORM_FIELD_HEIGHT), // path
+                Constraint::Min(FORM_FIELD_HEIGHT),    // value
+                Constraint::Length(FORM_FIELD_HEIGHT), // description
+                Constraint::Length(FORM_FIELD_HEIGHT), // tags
+                Constraint::Length(FORM_FIELD_HEIGHT), // url
+                Constraint::Length(FORM_FIELD_HEIGHT), // totp
+                Constraint::Length(FORM_FIELD_HEIGHT), // env_key
+                Constraint::Length(FORM_FIELD_HEIGHT), // expires_at
+                Constraint::Length(FORM_FIELD_HEIGHT), // submit button
+                Constraint::Length(FOOTER_HEIGHT),     // footer
             ])
             .split(area);
 

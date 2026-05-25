@@ -30,4 +30,4 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
-          model: openrouter/tencent/hy3-preview
+          model: openrouter/google/gemini-3.1-pro-preview-customtools

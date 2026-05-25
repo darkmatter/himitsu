@@ -48,11 +48,25 @@ pub fn run(_args: DoctorArgs, ctx: &Context) -> Result<()> {
             };
             if can_decrypt {
                 let line = format!("  \u{2713} {name:<20} {short}  {source}");
-                println!("{}", if use_color { line.green().to_string() } else { line });
+                println!(
+                    "{}",
+                    if use_color {
+                        line.green().to_string()
+                    } else {
+                        line
+                    }
+                );
             } else {
                 warnings += 1;
                 let line = format!("  \u{2717} {name:<20} {short}  [no key found]");
-                println!("{}", if use_color { line.red().to_string() } else { line });
+                println!(
+                    "{}",
+                    if use_color {
+                        line.red().to_string()
+                    } else {
+                        line
+                    }
+                );
             }
         }
     }
@@ -128,21 +142,39 @@ pub fn run(_args: DoctorArgs, ctx: &Context) -> Result<()> {
                         "  \u{26a0} {rel:<30}  stale — your identity is not a recipient (recipients: {})",
                         named.join(", ")
                     );
-                    println!("{}", if use_color { line.yellow().to_string() } else { line });
+                    println!(
+                        "{}",
+                        if use_color {
+                            line.yellow().to_string()
+                        } else {
+                            line
+                        }
+                    );
                 }
                 if !orphan_keys.is_empty() {
                     let line = format!(
                         "  \u{26a0} {rel:<30}  orphan recipients: {}",
                         orphan_keys.join(", ")
                     );
-                    println!("{}", if use_color { line.yellow().to_string() } else { line });
+                    println!(
+                        "{}",
+                        if use_color {
+                            line.yellow().to_string()
+                        } else {
+                            line
+                        }
+                    );
                 }
             } else {
-                let line = format!(
-                    "  \u{2713} {rel:<30}  encrypted for: {}",
-                    named.join(", ")
+                let line = format!("  \u{2713} {rel:<30}  encrypted for: {}", named.join(", "));
+                println!(
+                    "{}",
+                    if use_color {
+                        line.green().to_string()
+                    } else {
+                        line
+                    }
                 );
-                println!("{}", if use_color { line.green().to_string() } else { line });
             }
         }
     }
@@ -207,11 +239,7 @@ fn walk_recipients(base: &Path, dir: &Path, map: &mut HashMap<String, String>) {
     }
 }
 
-fn collect_secret_paths(
-    base: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, std::path::PathBuf)>,
-) {
+fn collect_secret_paths(base: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -305,6 +333,9 @@ mod tests {
         // Doctor should run without panicking and return Ok.
         // (The stale warning is printed but not asserted on here.)
         let result = run(DoctorArgs {}, &ctx);
-        assert!(result.is_ok(), "doctor should succeed even with stale secret");
+        assert!(
+            result.is_ok(),
+            "doctor should succeed even with stale secret"
+        );
     }
 }
