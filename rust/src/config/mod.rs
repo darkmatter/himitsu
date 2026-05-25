@@ -669,14 +669,24 @@ pub fn auto_pull_enabled() -> bool {
 /// Walk upward from the current directory looking for a project-level config
 /// file. Returns the first path found, or `None`.
 ///
+/// See [`find_project_config_from`] for the variant that starts at an
+/// explicit path; this is a convenience wrapper that uses
+/// [`std::env::current_dir`] as the starting point.
+pub fn find_project_config() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    find_project_config_from(&cwd)
+}
+
+/// Walk upward from `start` looking for a project-level config file. Returns
+/// the first path found, or `None`.
+///
 /// Candidate names per directory (checked in order):
 /// 1. `.himitsu/config.yaml` / `.himitsu/config.yml` (preferred)
 /// 2. `.config/himitsu.yaml` / `.config/himitsu.yml`
 /// 3. `himitsu.yaml` / `himitsu.yml` (legacy fallback)
 ///
 /// The walk stops at the user's home directory or after 20 levels.
-pub fn find_project_config() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
+pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
     let home_dir = dirs::home_dir();
     let candidates = [
         ".himitsu/config.yaml",
@@ -687,7 +697,7 @@ pub fn find_project_config() -> Option<PathBuf> {
         "himitsu.yml",
     ];
 
-    let mut dir = cwd.clone();
+    let mut dir = start.to_path_buf();
     for _ in 0..=20 {
         for candidate in &candidates {
             let path = dir.join(candidate);
@@ -709,14 +719,25 @@ pub fn find_project_config() -> Option<PathBuf> {
 /// Load and parse the first project config found by [`find_project_config`].
 ///
 /// Returns `Some((config, path))` if a config file exists and parses
-/// successfully, or `None` if no config file is found.
-///
-/// Parsing errors are returned as `Err`.
+/// successfully, or `None` if no config file is found or parsing fails.
 pub fn load_project_config() -> Option<(ProjectConfig, PathBuf)> {
     let path = find_project_config()?;
     let contents = std::fs::read_to_string(&path).ok()?;
     let cfg: ProjectConfig = serde_yaml::from_str(&contents).ok()?;
     Some((cfg, path))
+}
+
+/// Load and parse the first project config found by walking upward from
+/// `start`. Unlike [`load_project_config`], parse errors are surfaced as
+/// `Err` so callers in explicit project mode can fail loudly when the
+/// config file is present but malformed.
+pub fn load_project_config_from(start: &Path) -> Result<Option<(ProjectConfig, PathBuf)>> {
+    let Some(path) = find_project_config_from(start) else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(&path)?;
+    let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
+    Ok(Some((cfg, path)))
 }
 
 /// Merge global and project env definitions with project labels taking
@@ -815,44 +836,34 @@ pub fn ensure_store(slug: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Resolve which store to use when no explicit `--store`/`--remote` is given.
+/// Resolve which store to use when no explicit `--store`/`--remote`/`--project`
+/// is given. This is the *global* resolution path; it deliberately does NOT
+/// consult project config from the current working directory.
 ///
-/// Resolution order (first match wins, no warning):
+/// Project context is opt-in via the `--project [path]` global flag, which
+/// routes through [`resolve_store_for_project`] instead.
+///
+/// Resolution order (first match wins):
 /// 1. `remote_override` slug — from the `--remote` flag (explicit).
-/// 2. Project config `default_store` — walked up from CWD (explicit).
-/// 3. Global config `context` — set via `himitsu context remote` (explicit).
-/// 4. Global config `default_store` (explicit).
-/// 5. Single store in `stores_dir()` — unambiguous, no warning.
-/// 6. Multiple stores + project-local store detected — use it, emit a warning.
-/// 7. Unresolvable → actionable error.
+/// 2. Global config `context` — set via `himitsu context remote` (explicit).
+/// 3. Global config `default_store` (explicit).
+/// 4. Single store in `stores_dir()` — unambiguous.
+/// 5. Multiple stores + cwd inside one of them — use it, emit a warning.
+/// 6. Unresolvable → actionable error.
 pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
     if let Some(slug) = remote_override {
         return ensure_store(slug);
     }
 
-    // Try project config default_store (walk up from CWD)
-    if let Some(project_config_path) = find_project_config() {
-        if let Ok(contents) = std::fs::read_to_string(&project_config_path) {
-            if let Ok(project_cfg) = serde_yaml::from_str::<ProjectConfig>(&contents) {
-                if let Some(slug) = &project_cfg.default_store {
-                    return ensure_store(slug);
-                }
-            }
-        }
-    }
-
-    // Try global config context (explicit user-set disambiguation)
     let cfg = Config::load(&config_path())?;
     if let Some(slug) = &cfg.context {
         return ensure_store(slug);
     }
 
-    // Try global config default_store
     if let Some(slug) = &cfg.default_store {
         return ensure_store(slug);
     }
 
-    // Enumerate stores (implicit fallback — no lazy clone here)
     let dir = stores_dir();
     let mut found: Vec<PathBuf> = vec![];
     if dir.exists() {
@@ -876,7 +887,6 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
         )),
         1 => Ok(found.into_iter().next().unwrap()),
         _ => {
-            // Build human-readable slugs (relative to stores_dir)
             let slugs: Vec<String> = found
                 .iter()
                 .filter_map(|p| {
@@ -886,8 +896,6 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
                 })
                 .collect();
 
-            // Check whether the CWD sits inside one of the known store checkouts.
-            // If so, use it — but always warn so the user knows we guessed.
             if let Ok(cwd) = std::env::current_dir() {
                 if let Some(matched) = found.iter().find(|p| cwd.starts_with(*p)) {
                     let slug = matched
@@ -905,6 +913,32 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
             Err(HimitsuError::AmbiguousStore(slugs))
         }
     }
+}
+
+/// Resolve which store to use when the user explicitly selected project mode
+/// via `--project [path]`.
+///
+/// `root` must be a git repository root (the caller resolves this through
+/// [`find_git_root`]). The function loads the project config walking upward
+/// from `root` and uses its `default_store`. Missing config or missing
+/// `default_store` produces a [`HimitsuError::ProjectConfigRequired`] with
+/// setup guidance rather than silently falling back to a global store.
+pub fn resolve_store_for_project(root: &Path) -> Result<PathBuf> {
+    let Some((pc, pc_path)) = load_project_config_from(root)? else {
+        return Err(HimitsuError::ProjectConfigRequired(format!(
+            "no project config found at {} (looked for `.himitsu/config.yaml`, `.config/himitsu.yaml`, or `himitsu.yaml`).\n  \
+             Run `himitsu init --project <org/repo>` from this repo to set one up.",
+            root.display()
+        )));
+    };
+    let slug = pc.default_store.ok_or_else(|| {
+        HimitsuError::ProjectConfigRequired(format!(
+            "project config at {} has no `default_store` set.\n  \
+             Add `default_store: <org/repo>` or run `himitsu init --project <org/repo>` from the repo root.",
+            pc_path.display()
+        ))
+    })?;
+    ensure_store(&slug)
 }
 
 // ── Git helpers ─────────────────────────────────────────────────────────────

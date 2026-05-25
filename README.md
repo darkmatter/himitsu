@@ -615,9 +615,10 @@ When a user wants to request access, they can run `himitsu join` to add their pu
 
 | Flag | Description |
 |------|-------------|
-| `-s, --store <path>` | Override the store path directly. |
+| `--project[=<path>]` | Use project context. Bare `--project` resolves the nearest git repository from `cwd`; `--project=<path>` uses the repo at that path. Requires a project config (`.himitsu/config.yaml` or `himitsu.yaml`) inside the repo. Without this flag, store-touching commands ignore project config and use the global default. |
 | `-r, --remote <slug>` | Select a store by `org/repo` slug (or full git URL). |
 | `-v, --verbose` | Increase log verbosity (`-v` debug, `-vv` trace). |
+| `-s, --store <path>` | Hidden / advanced: override the store path directly. Prefer `--project` for repo-scoped workflows and `--remote` for explicit slugs. |
 
 ## Configuration
 

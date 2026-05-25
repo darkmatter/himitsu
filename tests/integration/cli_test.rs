@@ -1491,23 +1491,22 @@ fn resolve_store_via_global_config_default() {
 
 #[test]
 fn resolve_store_via_project_config() {
-    // Place a himitsu.yaml with default_store in a temp project directory.
     let (home, _store) = setup();
     let slug = "myorg/projected";
     create_remote_store(&home, slug);
 
     let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
     std::fs::write(
         project_dir.path().join("himitsu.yaml"),
         format!("default_store: \"{slug}\"\n"),
     )
     .unwrap();
 
-    // Running `ls` from the project directory should resolve via the project config.
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .current_dir(project_dir.path())
-        .args(["ls"])
+        .args(["--project", "ls"])
         .assert()
         .success();
 }
@@ -1539,22 +1538,18 @@ fn resolve_store_remote_flag_overrides_project_config() {
 
 #[test]
 fn resolve_store_project_config_over_global_config() {
-    // A project-level himitsu.yaml default_store takes precedence over the
-    // global config default_store (but --remote still wins).
     let (home, _store) = setup();
     let global_slug = "myorg/global";
     let project_slug = "myorg/local";
     create_remote_store(&home, global_slug);
     create_remote_store(&home, project_slug);
 
-    // Set global default.
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["remote", "default", global_slug])
         .assert()
         .success();
 
-    // Write a secret to the project store so we can tell which one was used.
     let project_path = home.path().join("state/stores/myorg/local");
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
@@ -1569,17 +1564,17 @@ fn resolve_store_project_config_over_global_config() {
         .success();
 
     let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
     std::fs::write(
         project_dir.path().join("himitsu.yaml"),
         format!("default_store: \"{project_slug}\"\n"),
     )
     .unwrap();
 
-    // Should read the secret from the project store, not the global one.
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .current_dir(project_dir.path())
-        .args(["get", "prod/MARKER"])
+        .args(["--project", "get", "prod/MARKER"])
         .assert()
         .success()
         .stdout("from-project");
@@ -2463,4 +2458,202 @@ fn ci_run_dry_run_prints_workflow_command() {
         .stdout(predicate::str::contains("gh workflow run"))
         .stdout(predicate::str::contains("operation=add-recipient"))
         .stdout(predicate::str::contains("remote=acme/secrets"));
+}
+
+// ============ --project context tests (hm-9zc.1) ============
+
+#[test]
+fn project_bare_resolves_git_root_from_cwd() {
+    let (home, _store) = setup();
+    let slug = "myorg/projected";
+    create_remote_store(&home, slug);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{slug}\"\n"),
+    )
+    .unwrap();
+
+    let nested = project_dir.path().join("sub/dir");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(&nested)
+        .args(["--project", "ls"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn project_explicit_path_resolves_that_repo() {
+    let (home, _store) = setup();
+    let slug = "myorg/explicit";
+    create_remote_store(&home, slug);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{slug}\"\n"),
+    )
+    .unwrap();
+
+    let elsewhere = tempfile::tempdir().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(elsewhere.path())
+        .args([&format!("--project={}", project_dir.path().display()), "ls"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn project_outside_git_repo_errors_with_guidance() {
+    let (home, _store) = setup();
+
+    let not_a_repo = tempfile::tempdir().unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(not_a_repo.path())
+        .args(["--project", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--project requires a git repository",
+        ));
+}
+
+#[test]
+fn project_in_repo_without_config_errors_with_setup_hint() {
+    let (home, _store) = setup();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project_dir.path())
+        .args(["--project", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no project config"))
+        .stderr(predicate::str::contains("himitsu init --project"));
+}
+
+#[test]
+fn project_config_without_default_store_errors() {
+    let (home, _store) = setup();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        "envs:\n  dev:\n    - dev/X\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project_dir.path())
+        .args(["--project", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no `default_store` set"));
+}
+
+#[test]
+fn no_project_flag_does_not_silently_switch_to_project_store() {
+    let (home, _store) = setup();
+    let global_slug = "myorg/global";
+    let project_slug = "myorg/local";
+    create_remote_store(&home, global_slug);
+    create_remote_store(&home, project_slug);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["remote", "default", global_slug])
+        .assert()
+        .success();
+
+    let global_path = home.path().join("state/stores/myorg/global");
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &global_path.to_string_lossy(),
+            "set",
+            "prod/MARKER",
+            "from-global",
+        ])
+        .assert()
+        .success();
+
+    let project_path = home.path().join("state/stores/myorg/local");
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &project_path.to_string_lossy(),
+            "set",
+            "prod/MARKER",
+            "from-project",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{project_slug}\"\n"),
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(project_dir.path())
+        .args(["get", "prod/MARKER"])
+        .assert()
+        .success()
+        .stdout("from-global");
+}
+
+#[test]
+fn project_flag_conflicts_with_store() {
+    let (home, store) = setup();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--project", "--store", &store_flag(&store), "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn project_flag_conflicts_with_remote() {
+    let (home, _store) = setup();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--project", "-r", "any/slug", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn store_flag_still_works_as_compat_escape_hatch() {
+    let (home, store) = setup();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "ls"])
+        .assert()
+        .success();
 }

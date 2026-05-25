@@ -268,7 +268,8 @@ cargo test --test '*'             # Integration tests only
 - [x] `generate` resolves alias entries (`MY_KEY: dev/DB_PASSWORD`) to aliased output key
 - [x] `generate` errors clearly when no project config found
 - [x] `generate` errors clearly when referenced env not defined in config
-- [x] `resolve_store` canonical ordering: remote_override → project config → global config → implicit single → error
+- [x] `resolve_store` canonical ordering: remote_override → global config → implicit single → error (project config preference is opt-in via `--project [path]`; see hm-9zc.1)
+- [x] `--project [path]` global flag selects explicit project context via `ContextSelector` (hm-9zc.1)
 - [ ] `init` with keychain enabled stores generated private key in Keychain
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`

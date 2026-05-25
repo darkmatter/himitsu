@@ -1,11 +1,11 @@
 pub mod check;
 pub mod ci;
 pub mod codegen;
-pub mod doctor;
 pub mod completions;
 pub mod context;
 pub mod decrypt;
 pub mod docs;
+pub mod doctor;
 pub mod duration;
 pub mod encrypt;
 pub mod exec;
@@ -261,14 +261,38 @@ impl Context {
     long_about = None
 )]
 pub struct Cli {
-    /// Override the store path directly (for testing or advanced use).
-    #[arg(short = 's', long, global = true)]
+    /// Override the store path directly. Hidden — prefer `--project` for
+    /// repo-scoped workflows and `--remote` for explicit slugs.
+    #[arg(short = 's', long, global = true, hide = true)]
     pub store: Option<String>,
 
     /// Select a remote store by org/repo slug (resolves via stores_dir).
-    /// Mutually exclusive with --store.
-    #[arg(short = 'r', long, global = true, conflicts_with = "store")]
+    /// Mutually exclusive with --store / --project.
+    #[arg(
+        short = 'r',
+        long,
+        global = true,
+        conflicts_with_all = ["store", "project"]
+    )]
     pub remote: Option<String>,
+
+    /// Use project context. Bare `--project` resolves the nearest git
+    /// repository from the current directory; `--project=<path>` uses the
+    /// git repository at that path. Requires a project config
+    /// (`.himitsu/config.yaml` or `himitsu.yaml`) inside the repo.
+    ///
+    /// Explicit paths require `=` (e.g. `--project=/repo`) so the value
+    /// cannot be confused with the following subcommand.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "",
+        conflicts_with_all = ["store", "remote"]
+    )]
+    pub project: Option<String>,
 
     /// Increase log verbosity (-v for debug, -vv for trace).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -276,6 +300,62 @@ pub struct Cli {
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// Explicit selector for which store the current invocation should bind to.
+///
+/// Built from [`Cli`] flags via [`ContextSelector::from_cli`]. Drives
+/// [`crate::config::resolve_store`] / [`crate::config::resolve_store_for_project`]
+/// so behavior is fully determined by what the user typed — there is no
+/// implicit promotion to project mode based on cwd.
+#[derive(Debug, Clone)]
+pub enum ContextSelector {
+    /// No flag passed. Use global config only — do not consult project
+    /// config from cwd, even when a project config is present.
+    Global,
+    /// `--project [path]`. The inner path is the resolved git repository
+    /// root that owns the project config.
+    Project(PathBuf),
+    /// `--remote <slug>`. The slug overrides every other source.
+    Remote(String),
+    /// `--store <path>`. Hidden compat / advanced override.
+    Store(PathBuf),
+}
+
+impl ContextSelector {
+    pub fn from_cli(cli: &Cli) -> Result<Self> {
+        if let Some(slug) = &cli.remote {
+            return Ok(Self::Remote(slug.clone()));
+        }
+        if let Some(path) = &cli.store {
+            return Ok(Self::Store(PathBuf::from(path)));
+        }
+        if let Some(project) = &cli.project {
+            let start = if project.is_empty() {
+                std::env::current_dir()?
+            } else {
+                let p = PathBuf::from(project);
+                p.canonicalize().unwrap_or(p)
+            };
+            let root = crate::config::find_git_root(&start).ok_or_else(|| {
+                HimitsuError::InvalidConfig(format!(
+                    "--project requires a git repository (none found from {})",
+                    start.display()
+                ))
+            })?;
+            return Ok(Self::Project(root));
+        }
+        Ok(Self::Global)
+    }
+
+    pub fn resolve_store(&self) -> Result<PathBuf> {
+        match self {
+            Self::Store(p) => Ok(p.clone()),
+            Self::Remote(slug) => crate::config::ensure_store(slug),
+            Self::Project(root) => crate::config::resolve_store_for_project(root),
+            Self::Global => crate::config::resolve_store(None),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -392,6 +472,8 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        let selector = ContextSelector::from_cli(&self)?;
+
         let command = match self.command {
             Some(cmd) => cmd,
             None => return Self::launch_tui(),
@@ -444,16 +526,6 @@ impl Cli {
             eprintln!();
         }
 
-        // ── Resolve store ─────────────────────────────────────────────────────
-        let store_override: Option<PathBuf> = if let Some(slug) = &self.remote {
-            // ensure_store validates the slug and lazy-clones if the checkout
-            // doesn't exist locally yet.
-            Some(crate::config::ensure_store(slug)?)
-        } else {
-            self.store.as_ref().map(PathBuf::from)
-        };
-
-        // Commands that require a resolved store
         let needs_store = matches!(
             &command,
             Command::Set(_)
@@ -472,18 +544,14 @@ impl Cli {
                 | Command::Tag(_)
         );
 
-        let store = if let Some(ref p) = store_override {
-            p.clone()
-        } else if needs_store {
-            crate::config::resolve_store(None)?
-        } else if is_complete_paths {
-            // Completion helper: best-effort store resolution, never errors.
-            // If nothing resolves we fall back to enumerating stores_dir in
-            // `completions::run_complete_paths`.
-            crate::config::resolve_store(None).unwrap_or_default()
-        } else {
-            // Init, Ls, Search, Remote, Git, Version: store is optional
-            PathBuf::new()
+        let store = match &selector {
+            ContextSelector::Store(p) => p.clone(),
+            ContextSelector::Remote(_) | ContextSelector::Project(_) => selector.resolve_store()?,
+            ContextSelector::Global if needs_store => selector.resolve_store()?,
+            ContextSelector::Global if is_complete_paths => {
+                selector.resolve_store().unwrap_or_default()
+            }
+            ContextSelector::Global => PathBuf::new(),
         };
 
         if self.store.is_some()
@@ -504,7 +572,7 @@ impl Cli {
             init::ensure_default_origin(&store, &state_dir.join("stores"));
         }
 
-        let recipients_path = load_recipients_path_override(&store);
+        let recipients_path = load_recipients_path_override(&store, &selector);
         let key_provider = crate::config::Config::load(&crate::config::config_path())
             .map(|c| c.key_provider)
             .unwrap_or_default();
@@ -619,9 +687,10 @@ impl Cli {
 
         // The dashboard is read-only: if no store resolves (none configured,
         // ambiguous, etc.) we still open and render an empty state rather
-        // than erroring out.
+        // than erroring out. Bare-TUI launch uses Global context — explicit
+        // project mode is reserved for the parent epic's context chooser.
         let store = crate::config::resolve_store(None).unwrap_or_default();
-        let recipients_path = load_recipients_path_override(&store);
+        let recipients_path = load_recipients_path_override(&store, &ContextSelector::Global);
         let key_provider = crate::config::Config::load(&crate::config::config_path())
             .map(|c| c.key_provider)
             .unwrap_or_default();
@@ -742,24 +811,28 @@ fn prompt_to_create_store(store: &Path, data_dir: &Path, state_dir: &Path) -> Re
 ///
 /// Resolution order (first `Some` wins):
 /// 1. Store-internal `.himitsu/config.yaml` → `recipients_path`
-/// 2. Project config (walked up from CWD) → `store.recipients_path`
+/// 2. Project config from the active selector (only consulted in
+///    [`ContextSelector::Project`]) → `recipients_path`
 /// 3. `None` → use default `.himitsu/recipients/` layout
-fn load_recipients_path_override(store: &std::path::Path) -> Option<String> {
+fn load_recipients_path_override(
+    store: &std::path::Path,
+    selector: &ContextSelector,
+) -> Option<String> {
     if store.as_os_str().is_empty() {
         return None;
     }
 
-    // 1. Check store-internal config
     if let Ok(cfg) = crate::remote::store::load_store_config(store) {
         if cfg.recipients_path.is_some() {
             return cfg.recipients_path;
         }
     }
 
-    // 2. Check project config
-    if let Some((project_cfg, _)) = crate::config::load_project_config() {
-        if project_cfg.recipients_path.is_some() {
-            return project_cfg.recipients_path;
+    if let ContextSelector::Project(root) = selector {
+        if let Ok(Some((project_cfg, _))) = crate::config::load_project_config_from(root) {
+            if project_cfg.recipients_path.is_some() {
+                return project_cfg.recipients_path;
+            }
         }
     }
 
