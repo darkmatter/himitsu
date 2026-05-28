@@ -1,8 +1,9 @@
 use clap::Args;
 
 use super::Context;
-use crate::crypto::age;
+use crate::crypto::{age, secret_value};
 use crate::error::{HimitsuError, Result};
+use crate::proto::SecretValue;
 use crate::remote::store;
 
 /// Re-encrypt secrets for the current recipient set.
@@ -43,9 +44,28 @@ pub fn rekey_store(ctx: &Context, path_prefix: Option<&str>) -> Result<usize> {
 
     let mut count = 0;
     for path in &paths_to_process {
-        let ciphertext = store::read_secret(&ctx.store, path)?;
-        let plaintext = age::decrypt_with_identities(&ciphertext, &identities)?;
-        let new_ciphertext = age::encrypt(&plaintext, &recipients)?;
+        let payload = store::read_secret_payload(&ctx.store, path)?;
+        let plaintext = match age::decrypt_with_identities(&payload.ciphertext, &identities) {
+            Ok(plaintext) => plaintext,
+            Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+            Err(err) => return Err(err),
+        };
+        let decoded = secret_value::decode_with_legacy_environment(
+            &plaintext,
+            payload.legacy_environment.as_deref(),
+        );
+        let value = SecretValue {
+            data: decoded.data,
+            content_type: String::new(),
+            annotations: decoded.annotations,
+            totp: decoded.totp,
+            url: decoded.url,
+            expires_at: decoded.expires_at,
+            description: decoded.description,
+            env_key: decoded.env_key,
+            tags: decoded.tags,
+        };
+        let new_ciphertext = age::encrypt(&secret_value::encode(&value), &recipients)?;
         store::write_secret(&ctx.store, path, &new_ciphertext)?;
         count += 1;
     }

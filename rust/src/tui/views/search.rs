@@ -1485,10 +1485,15 @@ fn format_read_command(row_store: &str, secret_path: &str, active_label: &str) -
 fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<String> {
     let mut ctx_for_store = ctx.clone();
     ctx_for_store.store = result.store_path.clone();
-    let ciphertext = store::read_secret(&result.store_path, &result.path)?;
+    let payload = store::read_secret_payload(&result.store_path, &result.path)?;
     let identities = ctx_for_store.load_identities()?;
-    let plain = age::decrypt_with_identities(&ciphertext, &identities)?;
-    let decoded = secret_value::decode(&plain);
+    let plain = match age::decrypt_with_identities(&payload.ciphertext, &identities) {
+        Ok(plain) => plain,
+        Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+        Err(err) => return Err(err),
+    };
+    let decoded =
+        secret_value::decode_with_legacy_environment(&plain, payload.legacy_environment.as_deref());
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
 }
 

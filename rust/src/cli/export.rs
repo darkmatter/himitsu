@@ -63,9 +63,16 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     // Decrypt each matched secret.
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
     for path in &matched {
-        let ciphertext = store::read_secret(&ctx.store, path)?;
-        let decoded =
-            secret_value::decode(&crypto::decrypt_with_identities(&ciphertext, &identities)?);
+        let payload = store::read_secret_payload(&ctx.store, path)?;
+        let plaintext = match crypto::decrypt_with_identities(&payload.ciphertext, &identities) {
+            Ok(plaintext) => plaintext,
+            Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+            Err(err) => return Err(err),
+        };
+        let decoded = secret_value::decode_with_legacy_environment(
+            &plaintext,
+            payload.legacy_environment.as_deref(),
+        );
         super::get::warn_if_expired(path, &decoded);
         let plaintext = String::from_utf8(decoded.data).map_err(|e| {
             HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))
@@ -101,7 +108,7 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
 /// - `prod/**`       matches `prod/FOO` and `prod/sub/FOO`
 /// - `**/API_KEY`    matches `API_KEY`, `prod/API_KEY`, `a/b/API_KEY`
 /// - `prod/*/KEY`    matches `prod/sub/KEY` but not `prod/a/b/KEY`
-fn glob_match(pattern: &str, path: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
     let pat_parts: Vec<&str> = pattern.split('/').collect();
     let path_parts: Vec<&str> = path.split('/').collect();
     glob_match_parts(&pat_parts, &path_parts)
@@ -144,44 +151,35 @@ fn segment_match(pattern: &str, segment: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    // Support patterns like `DB_*` or `*_KEY` with a simple wildcard in segment.
-    if pattern.contains('*') {
+    if pattern.contains('*') || pattern.contains('?') {
         return wildcard_match(pattern, segment);
     }
     pattern == segment
 }
 
-/// Simple wildcard match within a single segment (no `/`).
-/// Supports `*` as a wildcard for zero or more characters.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == text;
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let mut matches = vec![vec![false; text.len() + 1]; pattern.len() + 1];
+    matches[0][0] = true;
+
+    for i in 1..=pattern.len() {
+        if pattern[i - 1] == '*' {
+            matches[i][0] = matches[i - 1][0];
+        }
     }
 
-    let mut pos = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        match text[pos..].find(part) {
-            Some(idx) => {
-                // First part must match at the start.
-                if i == 0 && idx != 0 {
-                    return false;
-                }
-                pos += idx + part.len();
-            }
-            None => return false,
+    for i in 1..=pattern.len() {
+        for j in 1..=text.len() {
+            matches[i][j] = match pattern[i - 1] {
+                '*' => matches[i - 1][j] || matches[i][j - 1],
+                '?' => matches[i - 1][j - 1],
+                ch => ch == text[j - 1] && matches[i - 1][j - 1],
+            };
         }
     }
-    // Last part must match at the end.
-    if let Some(last) = parts.last() {
-        if !last.is_empty() && !text.ends_with(last) {
-            return false;
-        }
-    }
-    true
+
+    matches[pattern.len()][text.len()]
 }
 
 // ── Output formatting ───────────────────────────────────────────────────────

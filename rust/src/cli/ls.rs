@@ -298,13 +298,16 @@ fn secret_has_all_tags(
     identities: &[::age::x25519::Identity],
     want: &[String],
 ) -> bool {
-    let Ok(ciphertext) = store::read_secret(store_path, secret_path) else {
+    let Ok(payload) = store::read_secret_payload(store_path, secret_path) else {
         return false;
     };
-    let Ok(plain) = age::decrypt_with_identities(&ciphertext, identities) else {
-        return false;
+    let plain = match age::decrypt_with_identities(&payload.ciphertext, identities) {
+        Ok(plain) => plain,
+        Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+        Err(_) => return false,
     };
-    let decoded = secret_value::decode(&plain);
+    let decoded =
+        secret_value::decode_with_legacy_environment(&plain, payload.legacy_environment.as_deref());
     matches_all_tags(&decoded.tags, want)
 }
 

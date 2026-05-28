@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use prost::Message;
 
 use crate::cli::duration;
+use crate::crypto::tags::validate_tag;
 use crate::proto::SecretValue;
 
 /// Decoded plaintext from an age envelope.
@@ -35,6 +36,8 @@ pub struct Decoded {
     /// Free-form tags for filtering and env composition. Empty when unset.
     /// See [`crate::crypto::tags::validate_tag`] for the grammar.
     pub tags: Vec<String>,
+    /// Whether a legacy envelope environment field was present and valid.
+    pub legacy_environment_detected: bool,
 }
 
 impl Decoded {
@@ -66,22 +69,69 @@ pub fn encode(sv: &SecretValue) -> Vec<u8> {
 /// populated, the structured form is returned. Otherwise the caller
 /// gets the raw bytes placed in [`Decoded::data`] untouched.
 pub fn decode(plaintext: &[u8]) -> Decoded {
+    decode_with_legacy_environment(plaintext, None)
+}
+
+/// Decode plaintext while folding a valid legacy envelope environment into
+/// the returned tags without mutating the original envelope.
+pub fn decode_with_legacy_environment(
+    plaintext: &[u8],
+    legacy_environment: Option<&str>,
+) -> Decoded {
     match SecretValue::decode(plaintext) {
-        Ok(sv) if has_any_field(&sv) => Decoded {
-            data: sv.data,
-            totp: sv.totp,
-            url: sv.url,
-            description: sv.description,
-            env_key: sv.env_key,
-            expires_at: sv.expires_at,
-            annotations: sv.annotations,
-            tags: sv.tags,
-        },
+        Ok(sv) if has_any_field(&sv) => decoded_from_secret_value(sv, legacy_environment),
         _ => Decoded {
             data: plaintext.to_vec(),
             ..Default::default()
         },
     }
+}
+
+fn decoded_from_secret_value(sv: SecretValue, legacy_environment: Option<&str>) -> Decoded {
+    let SecretValue {
+        data,
+        totp,
+        url,
+        description,
+        env_key,
+        expires_at,
+        annotations,
+        mut tags,
+        ..
+    } = sv;
+
+    let legacy_environment_detected = fold_legacy_environment(&mut tags, legacy_environment);
+
+    Decoded {
+        data,
+        totp,
+        url,
+        description,
+        env_key,
+        expires_at,
+        annotations,
+        tags,
+        legacy_environment_detected,
+    }
+}
+
+fn fold_legacy_environment(tags: &mut Vec<String>, legacy_environment: Option<&str>) -> bool {
+    let Some(env_val) = legacy_environment.filter(|env| !env.is_empty()) else {
+        return false;
+    };
+
+    if validate_tag(env_val).is_err() {
+        tracing::warn!(
+            env_value = %env_val,
+            "legacy environment field contains invalid tag characters; skipping fold"
+        );
+        return false;
+    }
+
+    if !tags.iter().any(|tag| tag == env_val) {
+        tags.push(env_val.to_string());
+    }
+    true
 }
 
 fn has_any_field(sv: &SecretValue) -> bool {
@@ -177,5 +227,27 @@ mod tests {
         let d = decode(&encode(&sv));
         assert_eq!(d.env_key, "API_TOKEN");
         assert!(d.has_metadata());
+    }
+
+    #[test]
+    fn legacy_environment_folds_into_tags() {
+        let sv = SecretValue {
+            data: b"xyz".to_vec(),
+            ..Default::default()
+        };
+        let d = decode_with_legacy_environment(&encode(&sv), Some("prod"));
+        assert_eq!(d.tags, vec!["prod".to_string()]);
+        assert!(d.legacy_environment_detected);
+    }
+
+    #[test]
+    fn invalid_legacy_environment_is_skipped() {
+        let sv = SecretValue {
+            data: b"xyz".to_vec(),
+            ..Default::default()
+        };
+        let d = decode_with_legacy_environment(&encode(&sv), Some("prod env"));
+        assert!(d.tags.is_empty());
+        assert!(!d.legacy_environment_detected);
     }
 }

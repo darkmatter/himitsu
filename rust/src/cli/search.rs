@@ -200,9 +200,14 @@ fn read_metadata(
     secret_path: &str,
     identities: &[::age::x25519::Identity],
 ) -> Option<(Option<String>, Vec<String>)> {
-    let ciphertext = store::read_secret(store_path, secret_path).ok()?;
-    let plain = age::decrypt_with_identities(&ciphertext, identities).ok()?;
-    let decoded = secret_value::decode(&plain);
+    let payload = store::read_secret_payload(store_path, secret_path).ok()?;
+    let plain = match age::decrypt_with_identities(&payload.ciphertext, identities) {
+        Ok(plain) => plain,
+        Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+        Err(_) => return None,
+    };
+    let decoded =
+        secret_value::decode_with_legacy_environment(&plain, payload.legacy_environment.as_deref());
     let description = if decoded.description.is_empty() {
         None
     } else {

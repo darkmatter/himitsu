@@ -52,6 +52,8 @@ fn setup_with_legacy_env_field(
         .success();
 
     let secret_path = store.path().join(".himitsu/secrets/test/legacy-key.age");
+    let yaml_path = store.path().join(".himitsu/secrets/test/legacy-key.yaml");
+    let _ = std::fs::remove_file(yaml_path);
     let envelope = proto::SecretEnvelope {
         version: 1,
         key_name: "legacy-key".to_string(),
@@ -84,6 +86,101 @@ fn setup_helper_creates_envelope_with_env_field() {
         "envelope file should exist at {:?}",
         envelope_path
     );
+}
+
+#[test]
+fn fold_environment_to_tags_happy() {
+    let (home, store, path) = setup_with_legacy_env_field("prod", None);
+    let before = std::fs::read(legacy_envelope_path(&store, &path)).unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "search",
+            "",
+            "--tag",
+            "prod",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&path));
+
+    let after = std::fs::read(legacy_envelope_path(&store, &path)).unwrap();
+    assert_eq!(
+        before, after,
+        "folding legacy env must not rewrite the .age file"
+    );
+}
+
+#[test]
+fn fold_environment_deduplicates_existing_tag() {
+    let (home, store, path) = setup_with_legacy_env_field("prod", Some("prod"));
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "get", &path])
+        .assert()
+        .success()
+        .stdout("legacy-value")
+        .stderr(predicate::str::contains("tags:        prod"))
+        .stderr(predicate::str::contains("prod, prod").not());
+}
+
+#[test]
+fn fold_does_not_mutate_disk() {
+    let (home, store, path) = setup_with_legacy_env_field("prod", None);
+    let before = std::fs::read(legacy_envelope_path(&store, &path)).unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "get", &path])
+        .assert()
+        .success()
+        .stdout("legacy-value")
+        .stderr(predicate::str::contains("tags:        prod"));
+
+    let after = std::fs::read(legacy_envelope_path(&store, &path)).unwrap();
+    assert_eq!(
+        before, after,
+        "himitsu get must not rewrite legacy envelopes"
+    );
+}
+
+#[test]
+fn fold_skips_invalid_env_value() {
+    let (home, store, path) = setup_with_legacy_env_field("prod env with space", None);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "get", &path])
+        .assert()
+        .success()
+        .stdout("legacy-value")
+        .stderr(predicate::str::contains("tags:").not());
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "search",
+            "",
+            "--tag",
+            "prod-env-with-space",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&path).not());
+}
+
+fn legacy_envelope_path(store: &TempDir, path: &str) -> std::path::PathBuf {
+    store
+        .path()
+        .join(".himitsu")
+        .join("secrets")
+        .join(format!("{path}.age"))
 }
 
 /// Returns the --store flag value for a given store root TempDir.

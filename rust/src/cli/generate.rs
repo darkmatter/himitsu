@@ -68,9 +68,17 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         let mut output: BTreeMap<String, String> = BTreeMap::new();
         for (key, path, store_override) in &mappings {
             let effective_store = store_override.as_deref().unwrap_or(&ctx.store);
-            let ciphertext = store::read_secret(effective_store, path)?;
-            let decoded =
-                secret_value::decode(&crypto::decrypt_with_identities(&ciphertext, &identities)?);
+            let payload = store::read_secret_payload(effective_store, path)?;
+            let plaintext = match crypto::decrypt_with_identities(&payload.ciphertext, &identities)
+            {
+                Ok(plaintext) => plaintext,
+                Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+                Err(err) => return Err(err),
+            };
+            let decoded = secret_value::decode_with_legacy_environment(
+                &plaintext,
+                payload.legacy_environment.as_deref(),
+            );
             super::get::warn_if_expired(path, &decoded);
             let plaintext = String::from_utf8(decoded.data).map_err(|e| {
                 HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))

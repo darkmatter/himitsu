@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HimitsuError, Result};
+use crate::proto;
 
 // ── Store-internal layout ──────────────────────────────────────────────────
 //
@@ -113,6 +115,15 @@ pub struct SecretMeta {
     pub lastmodified: Option<String>,
     pub recipients: Vec<String>,
     pub version: Option<u64>,
+}
+
+/// Ciphertext plus legacy proto-envelope metadata recovered from older `.age`
+/// files.
+#[derive(Debug, Clone, Default)]
+pub struct SecretPayload {
+    pub ciphertext: Vec<u8>,
+    pub legacy_environment: Option<String>,
+    pub legacy_proto_envelope: bool,
 }
 
 // ── Path helpers ───────────────────────────────────────────────────────────
@@ -263,15 +274,39 @@ pub fn write_secret(store: &Path, secret_path: &str, ciphertext: &[u8]) -> Resul
 ///
 /// Falls back to the legacy binary `.age` format for backward compatibility.
 pub fn read_secret(store: &Path, secret_path: &str) -> Result<Vec<u8>> {
+    Ok(read_secret_payload(store, secret_path)?.ciphertext)
+}
+
+/// Read the raw age ciphertext and any legacy proto-envelope metadata from a
+/// secret file.
+#[allow(deprecated)]
+pub fn read_secret_payload(store: &Path, secret_path: &str) -> Result<SecretPayload> {
     let yaml_path = secrets_dir(store).join(format!("{secret_path}.yaml"));
     if yaml_path.exists() {
-        return Ok(read_envelope(&yaml_path)?.value.0);
+        return Ok(SecretPayload {
+            ciphertext: read_envelope(&yaml_path)?.value.0,
+            ..Default::default()
+        });
     }
 
     // Legacy binary age format.
     let age_path = secrets_dir(store).join(format!("{secret_path}.age"));
     if age_path.exists() {
-        return Ok(std::fs::read(&age_path)?);
+        let bytes = std::fs::read(&age_path)?;
+        if let Ok(envelope) = proto::SecretEnvelope::decode(bytes.as_slice()) {
+            if !envelope.ciphertext.is_empty() {
+                return Ok(SecretPayload {
+                    ciphertext: envelope.ciphertext,
+                    legacy_environment: (!envelope.environment.is_empty())
+                        .then_some(envelope.environment),
+                    legacy_proto_envelope: true,
+                });
+            }
+        }
+        return Ok(SecretPayload {
+            ciphertext: bytes,
+            ..Default::default()
+        });
     }
 
     Err(HimitsuError::SecretNotFound(secret_path.to_string()))

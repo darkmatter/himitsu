@@ -67,10 +67,19 @@ pub(crate) fn get_decoded_with_identities(
     };
 
     let meta = store::read_secret_meta(&effective_store, &secret_path)?;
-    let ciphertext = store::read_secret(&effective_store, &secret_path)?;
+    let payload = store::read_secret_payload(&effective_store, &secret_path)?;
 
-    match age::decrypt_with_identities(&ciphertext, identities) {
-        Ok(plaintext) => Ok(secret_value::decode(&plaintext)),
+    match age::decrypt_with_identities(&payload.ciphertext, identities) {
+        Ok(plaintext) => Ok(secret_value::decode_with_legacy_environment(
+            &plaintext,
+            payload.legacy_environment.as_deref(),
+        )),
+        Err(_) if payload.legacy_proto_envelope => {
+            Ok(secret_value::decode_with_legacy_environment(
+                &payload.ciphertext,
+                payload.legacy_environment.as_deref(),
+            ))
+        }
         Err(_) => {
             let named = named_recipients(&effective_store, &meta.recipients);
             let loaded: Vec<String> = identities

@@ -59,10 +59,17 @@ pub fn run(args: TagArgs, ctx: &Context) -> Result<()> {
         (ctx.store.clone(), path, ctx.recipients_path.as_deref())
     };
 
-    let ciphertext = store::read_secret(&effective_store, &secret_path)?;
+    let payload = store::read_secret_payload(&effective_store, &secret_path)?;
     let identities = ctx.load_identities()?;
-    let plaintext = age::decrypt_with_identities(&ciphertext, &identities)?;
-    let mut decoded = secret_value::decode(&plaintext);
+    let plaintext = match age::decrypt_with_identities(&payload.ciphertext, &identities) {
+        Ok(plaintext) => plaintext,
+        Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+        Err(err) => return Err(err),
+    };
+    let mut decoded = secret_value::decode_with_legacy_environment(
+        &plaintext,
+        payload.legacy_environment.as_deref(),
+    );
 
     match validated {
         ValidatedAction::List => {
