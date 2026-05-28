@@ -1257,7 +1257,7 @@ impl SearchView {
             vec![
                 Line::from(vec![
                     Span::styled("↑/↓", Style::default().fg(theme::accent())),
-                    Span::styled(" navigate", footer),
+                    Span::styled(" nav", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("enter", Style::default().fg(theme::accent())),
