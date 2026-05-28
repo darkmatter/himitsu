@@ -104,6 +104,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 
 impl EnvCache {
     /// Open (or create) the cache DB at `data_dir()/envs.db`.
+    // REMOVED IN: see .omo/plans/remove-envs-replace-with-tags.md T19
     pub fn open() -> Result<Self> {
         let dir = data_dir();
         if !dir.exists() {
