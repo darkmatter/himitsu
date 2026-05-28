@@ -12,9 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::env_cache::{EnvCache, Scope};
-use crate::config::{
-    config_path, validate_env_label, validate_envs, EnvEntry,
-};
+use crate::config::{config_path, validate_env_label, validate_envs, EnvEntry};
 use crate::error::{HimitsuError, Result};
 
 /// Candidate filenames checked when walking up for a project config.

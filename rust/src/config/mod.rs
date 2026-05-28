@@ -110,7 +110,12 @@ pub struct Config {
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
 
-    #[serde(rename = "envs", default, deserialize_with = "reject_envs_field", skip_serializing)]
+    #[serde(
+        rename = "envs",
+        default,
+        deserialize_with = "reject_envs_field",
+        skip_serializing
+    )]
     _envs_deprecated: (),
 }
 
@@ -171,7 +176,12 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
 
-    #[serde(rename = "envs", default, deserialize_with = "reject_envs_field", skip_serializing)]
+    #[serde(
+        rename = "envs",
+        default,
+        deserialize_with = "reject_envs_field",
+        skip_serializing
+    )]
     _envs_deprecated: (),
 
     #[serde(default)]
@@ -921,7 +931,8 @@ mod tests {
         let yaml = "default_store: org/secrets\nenvs:\n  dev:\n    - dev/API_KEY\n";
         let err = serde_yaml::from_str::<Config>(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("run 'himitsu migrate envs' to convert"),
+            err.to_string()
+                .contains("run 'himitsu migrate envs' to convert"),
             "msg: {err}"
         );
     }
@@ -1226,7 +1237,8 @@ mod tests {
         let yaml = "envs:\n  dev:\n    - dev/API_KEY\n";
         let err = serde_yaml::from_str::<ProjectConfig>(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("run 'himitsu migrate envs' to convert"),
+            err.to_string()
+                .contains("run 'himitsu migrate envs' to convert"),
             "msg: {err}"
         );
     }
