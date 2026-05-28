@@ -140,26 +140,27 @@ himitsu solves duplication and eases maintenance, and is made for the following 
 ```yaml
 # .himitsu.yaml
 ...
-envs:
+outputs:
   web-service-{dev,staging,prod}:
-    # includes all secrets in the "common" directory, converting 'foo-bar' to 'FOO_BAR'
-    - common/*
-    # includes dev/database-url for dev, etc
-    - $1/database-url
-    # override environment variable key
-    - SOME_VALUE: path/to/some-secret
-    # use the full ref to access external stores
-    - SHARED_SECRET: github:org/secrets#prod/api-key
+    selectors:
+      - common/*
+      - $1/database-url
+    aliases:
+      SOME_VALUE: path/to/some-secret
+      SHARED_SECRET: github:org/secrets#prod/api-key
 
   pci-prod:
-    # AND-semantics across tag entries: every secret carrying both tags
-    - tag:pci
-    - tag:prod
-    # alias-rename a single tagged secret
-    - { STRIPE: tag:stripe }
+    selectors:
+      - tag:pci+tag:prod
+    aliases:
+      STRIPE: tag:stripe
 ```
 
 With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory, or `himitsu exec <env> -- <cmd>` to launch a process with the resolved secrets injected as environment variables.
+
+### Migrating from `envs:` to `outputs:`
+
+Existing stores: run `himitsu migrate envs` once. See [migration guide](docs/migrating-envs-to-tags.md).
 
 
 ## Features
@@ -448,10 +449,12 @@ one of:
 2. **Path glob** ending in `/*` (e.g. `prod/*`).
 3. **Concrete secret path** (e.g. `prod/API_KEY`, optionally
    `github:org/repo/prod/API_KEY`).
+4. **Tag selector** (e.g. `tag:pci+tag:prod`).
 
 ```bash
 himitsu exec pci-prod -- node app.js
-himitsu exec prod/* --tag rotate-2026-q1 -- ./run-checks.sh
+himitsu exec tag:pci+tag:prod -- node app.js
+himitsu exec prod/*+tag:pci -- ./run-checks.sh
 himitsu exec prod/API_KEY -i -- env | grep API_KEY    # `-i` = clean env
 ```
 
@@ -460,6 +463,8 @@ DSL alias → `SecretValue.env_key` → `derive_env_key(path tail)` (e.g.
 `api-key` → `API_KEY`, `group/item-name` → `GROUP__ITEM_NAME`). Two
 secrets resolving to the same env-var name is a hard error naming both
 source paths.
+
+If a selector matches no secrets, `himitsu exec` exits 1 with `error: selector 'X' matched no secrets`.
 
 `--clean` / `-i` starts the child with an empty environment plus only
 `PATH`, `HOME`, and `TERM`. The child's exit code is propagated; signal
@@ -536,8 +541,10 @@ Also requires `sops` on `PATH` -- same pipe-through-stdin contract as
 
 ```bash
 himitsu generate           # all envs defined in himitsu.yaml
-himitsu generate --env prod
+himitsu generate --output prod
 ```
+
+Note: the `--env` flag has been removed; use `--output` to specify which environment to generate.
 
 ### `himitsu join`
 
