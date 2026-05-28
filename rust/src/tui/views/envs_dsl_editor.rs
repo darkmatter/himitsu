@@ -1,6 +1,6 @@
 //! YAML/DSL editor pane for envs.
 //!
-//! Wraps a [`super::envs_text::TextBuffer`] with:
+//! Wraps a [`super::outputs_text::TextBuffer`] with:
 //! - YAML parse-on-demand (`current_envs`) producing a `(label,
 //!   Vec<EnvEntry>)` map
 //! - Autocomplete suggestions over a label corpus (item names, group
@@ -28,10 +28,10 @@ use crossterm::event::{KeyEvent, KeyModifiers};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher};
 
-use super::envs_text::TextBuffer;
-use crate::config::env_dsl::{self, ResolutionOutput};
-use crate::config::env_resolver::EnvNode;
-use crate::config::EnvEntry;
+use super::outputs_text::TextBuffer;
+use crate::config::outputs::resolver::{resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate};
+
+use crate::config::outputs::dsl::OutputsMap;
 
 /// Top-level outcome of a key event handled by the DSL editor.
 #[derive(Debug, Clone)]
@@ -76,18 +76,18 @@ impl DslEditor {
     /// Parse the buffer into `(label, entries)` pairs. Returns `Err` with
     /// the raw `serde_yaml` error on parse failure so the preview pane can
     /// render the error.
-    pub fn parse_envs(&self) -> Result<BTreeMap<String, Vec<EnvEntry>>, String> {
+    pub fn parse_envs(&self) -> Result<OutputsMap, String> {
         let raw = self.buffer.to_string();
         if raw.trim().is_empty() {
             return Ok(BTreeMap::new());
         }
-        serde_yaml::from_str::<BTreeMap<String, Vec<EnvEntry>>>(&raw).map_err(|e| e.to_string())
+        serde_yaml::from_str::<OutputsMap>(&raw).map_err(|e| e.to_string())
     }
 
     /// Produce a flat resolution against the available items.
-    pub fn resolve(&self, available_items: &[String]) -> Result<ResolutionOutput, String> {
+    pub fn resolve(&self, available_items: &[SecretCandidate]) -> Result<Vec<ResolvedOutput>, String> {
         let envs = self.parse_envs()?;
-        Ok(env_dsl::resolve_all(&envs, available_items))
+        resolve_outputs(&envs, &ResolverContext { available_secrets: available_items.to_vec() }).map_err(|e| e.to_string())
     }
 
     /// Open or refresh the autocomplete popup. The corpus is generally the
@@ -219,23 +219,6 @@ fn fuzzy_top(corpus: &[String], pattern_str: &str, n: usize) -> Vec<String> {
     scored.into_iter().take(n).map(|(_, s)| s).collect()
 }
 
-/// Utility: produce a "tree" preview from a parsed envs map. Currently
-/// unused by the live preview path (which prefers flat KEY=value pairs)
-/// but exposed for callers that want the legacy nested view.
-#[allow(dead_code)]
-pub fn build_tree_preview(
-    envs: &BTreeMap<String, Vec<EnvEntry>>,
-    available_items: &[String],
-) -> Vec<(String, EnvNode)> {
-    let mut out = Vec::new();
-    for label in envs.keys() {
-        if let Ok(node) = crate::config::env_resolver::resolve(envs, label, available_items) {
-            out.push((label.clone(), node));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,11 +231,11 @@ mod tests {
 
     #[test]
     fn parse_simple_yaml_returns_envs() {
-        let ed = DslEditor::new("dev:\n  - dev/api-key\n", None);
+        let ed = DslEditor::new("dev:\n  selectors:\n    - dev/api-key\n", None);
         let envs = ed.parse_envs().unwrap();
         assert_eq!(envs.len(), 1);
         let entries = envs.get("dev").unwrap();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.selectors.len(), 1);
     }
 
     #[test]
@@ -276,10 +259,10 @@ mod tests {
     #[test]
     fn resolve_round_trip_with_brace_expansion() {
         // Quote the entry so YAML doesn't parse `{}/db` as a flow mapping.
-        let yaml = "env-{dev,prod}:\n  - \"{}/db\"\n";
+        let yaml = "env-{dev,prod}:\n  selectors:\n    - \"$1/db\"\n";
         let ed = DslEditor::new(yaml, None);
-        let items = vec!["dev/db".to_string(), "prod/db".to_string()];
+        let items = vec![SecretCandidate { path: "dev/db".to_string(), tags: vec![] }, SecretCandidate { path: "prod/db".to_string(), tags: vec![] }];
         let out = ed.resolve(&items).unwrap();
-        assert_eq!(out.pairs.len(), 2);
+        assert_eq!(out.iter().map(|o| o.entries.len()).sum::<usize>(), 2);
     }
 }
