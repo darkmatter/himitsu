@@ -19,7 +19,7 @@ pub mod init;
 pub mod join;
 pub mod keys;
 pub mod ls;
-pub mod prime;
+pub mod migrate;
 pub mod read;
 pub mod recipient;
 pub mod rekey;
@@ -412,6 +412,9 @@ pub enum Command {
     /// Manage the active store context used for disambiguation.
     Context(context::ContextArgs),
 
+    /// Run one-shot migrations for legacy store formats.
+    Migrate(migrate::MigrateArgs),
+
     /// (Internal) Generate and manage JSON schemas for himitsu config files.
     #[command(hide = true)]
     Schema(schema::SchemaArgs),
@@ -547,6 +550,7 @@ impl Cli {
                 | Command::Codegen(_)
                 | Command::Exec(_)
                 | Command::Import(_)
+                | Command::Migrate(_)
                 | Command::Tag(_)
         );
 
@@ -633,6 +637,7 @@ impl Cli {
             Command::Recipient(args) => recipient::run(args, &ctx),
             Command::Remote(args) => remote::run(args, &ctx),
             Command::Context(args) => context::run(args, &ctx),
+            Command::Migrate(args) => migrate::run(args, &ctx),
 
             Command::Schema(args) => schema::run(args, &ctx),
             Command::Generate(args) => generate::run(args, &ctx),
@@ -750,6 +755,10 @@ fn mutation_message(cmd: &Command) -> Option<String> {
             tag::TagAction::Rm { .. } => Some(format!("tag rm {}", a.path)),
             tag::TagAction::List => None,
         },
+        Command::Migrate(a) => match &a.cmd {
+            migrate::MigrateCommand::Envs { dry_run: true } => None,
+            migrate::MigrateCommand::Envs { dry_run: false } => Some("migrate envs".to_string()),
+        },
         _ => None,
     }
 }
@@ -783,6 +792,7 @@ fn command_uses_explicit_path_store(command: &Command) -> bool {
             | Command::Codegen(_)
             | Command::Exec(_)
             | Command::Import(_)
+            | Command::Migrate(_)
             | Command::Tag(_)
     )
 }
