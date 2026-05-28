@@ -1,0 +1,9 @@
+Task 10 $1 capture evidence
+
+Command: cargo test --lib config::outputs::resolver
+Result: 12 resolver tests passed.
+
+Covered by test: config::outputs::resolver::tests::dollar_one_capture_substitutes_brace_segment
+Case: output name web-{dev,staging} with selector $1/database-url resolves to:
+- web-dev -> dev/database-url
+- web-staging -> staging/database-url
