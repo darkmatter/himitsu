@@ -6,21 +6,27 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::{self, load_project_config, EnvEntry, ProjectConfig};
+use crate::config::outputs::resolver::{
+    resolve_outputs, Context as ResolverContext, SecretCandidate,
+};
+use crate::config::{self, load_project_config, ProjectConfig};
 use crate::crypto::{age as crypto, secret_value};
 use crate::error::{HimitsuError, Result};
-use crate::reference::SecretRef;
 use crate::remote::store;
 
-/// Generate SOPS-encrypted (or plaintext) output files from env definitions.
+/// Generate SOPS-encrypted (or plaintext) output files from outputs definitions.
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
     /// Override output directory (default: from `generate.target` in project config).
     #[arg(long)]
     pub target: Option<String>,
 
-    /// Generate only this env (default: all envs defined in project config).
+    /// Generate only this output (default: all outputs defined in project config).
     #[arg(long)]
+    pub output: Option<String>,
+
+    /// Removed flag — use `--output` instead.
+    #[arg(long, hide = true)]
     pub env: Option<String>,
 
     /// Print plaintext YAML to stdout instead of writing encrypted files.
@@ -29,10 +35,20 @@ pub struct GenerateArgs {
 }
 
 pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
-    let project_cfg = load_project_config().map(|(cfg, _)| cfg);
-    let envs = config::load_effective_envs()?;
+    if args.env.is_some() {
+        return Err(HimitsuError::GenerateError(
+            "--env flag has been removed; use --output instead".to_string(),
+        ));
+    }
 
-    if envs.is_empty() {
+    let project_cfg = load_project_config().map(|(cfg, _)| cfg);
+
+    let outputs_map = project_cfg
+        .as_ref()
+        .map(|c| c.outputs.clone())
+        .unwrap_or_default();
+
+    if outputs_map.is_empty() {
         return Err(HimitsuError::GenerateError(
             "no `outputs` defined in project config — \
              define outputs: blocks in himitsu.yaml or use `himitsu codegen`"
@@ -40,40 +56,52 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    // Load age identities for decryption.
-    let identities = ctx.load_identities()?;
+    let available_secrets = store::list_secrets(&ctx.store, None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| SecretCandidate { path, tags: vec![] })
+        .collect();
+    let resolver_ctx = ResolverContext { available_secrets };
 
-    // Determine which envs to generate.
-    let env_names: Vec<String> = if let Some(ref env_name) = args.env {
-        if !envs.contains_key(env_name.as_str()) {
+    let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
+
+    let to_generate: Vec<_> = if let Some(ref name) = args.output {
+        let filtered: Vec<_> = all_outputs
+            .into_iter()
+            .filter(|o| &o.name == name)
+            .collect();
+        if filtered.is_empty() {
             return Err(HimitsuError::GenerateError(format!(
-                "env '{env_name}' not found in global or project config"
+                "output '{name}' not found in project config"
             )));
         }
-        vec![env_name.clone()]
+        filtered
     } else {
-        envs.keys().cloned().collect()
+        all_outputs
     };
 
-    for env_name in &env_names {
-        let entries = envs.get(env_name.as_str()).unwrap();
+    let identities = ctx.load_identities()?;
 
-        // Resolve entries to (output_key, store_path, optional_store_override) tuples.
-        let mappings = resolve_entries(entries, env_name, &ctx.store)?;
-
-        if mappings.is_empty() {
-            eprintln!("warning: env '{env_name}' resolved to no secrets — skipping");
+    for resolved_output in &to_generate {
+        if resolved_output.entries.is_empty() {
+            eprintln!(
+                "warning: output '{}' resolved to no secrets — skipping",
+                resolved_output.name
+            );
             continue;
         }
 
-        // Decrypt each secret.
         let mut output: BTreeMap<String, String> = BTreeMap::new();
-        for (key, path, store_override) in &mappings {
-            let effective_store = store_override.as_deref().unwrap_or(&ctx.store);
-            let payload = store::read_secret_payload(effective_store, path)?;
+        for entry in &resolved_output.entries {
+            let effective_store = if let Some(ref slug) = entry.store_slug {
+                config::ensure_store(slug)?
+            } else {
+                ctx.store.clone()
+            };
+            let payload = store::read_secret_payload(&effective_store, &entry.secret_path)?;
             let plaintext = match crypto::decrypt_with_identities(&payload.ciphertext, &identities)
             {
-                Ok(plaintext) => plaintext,
+                Ok(p) => p,
                 Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
                 Err(err) => return Err(err),
             };
@@ -81,17 +109,23 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
                 &plaintext,
                 payload.legacy_environment.as_deref(),
             );
-            super::get::warn_if_expired(path, &decoded);
-            let plaintext = String::from_utf8(decoded.data).map_err(|e| {
-                HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{path}': {e}"))
+            super::get::warn_if_expired(&entry.secret_path, &decoded);
+            let value = String::from_utf8(decoded.data).map_err(|e| {
+                HimitsuError::DecryptionFailed(format!(
+                    "non-UTF-8 secret at '{}': {e}",
+                    entry.secret_path
+                ))
             })?;
-            if output.contains_key(key) {
-                eprintln!("warning: duplicate key '{key}' in env '{env_name}' — using last value");
+            if output.contains_key(&entry.env_key) {
+                eprintln!(
+                    "warning: duplicate key '{}' in output '{}' — using last value",
+                    entry.env_key, resolved_output.name
+                );
             }
-            output.insert(key.clone(), plaintext);
+            output.insert(entry.env_key.clone(), value);
         }
 
-        let yaml = build_plaintext_yaml(&output, env_name);
+        let yaml = build_plaintext_yaml(&output, &resolved_output.name);
 
         if args.stdout {
             print!("{yaml}");
@@ -102,119 +136,17 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
                 )
             })?;
             let target_dir = resolve_target(&args, project_cfg)?;
-            write_env_file(&target_dir, env_name, &yaml, project_cfg)?;
+            write_env_file(&target_dir, &resolved_output.name, &yaml, project_cfg)?;
         }
     }
 
     Ok(())
 }
 
-// ── Entry resolution ─────────────────────────────────────────────────────────
-
-/// Resolve environment entries to `(output_key, secret_path, store_override)` tuples.
-///
-/// - `Alias { key, path }` → `[(key, path, None)]`, or with a resolved store when
-///   `path` is a qualified reference (`provider:org/repo/path`).
-/// - `Single(path)` → `[(last_component(path), path, None)]`, with store override when qualified.
-/// - `Glob(prefix)` → one tuple per secret found under `prefix/`, with store override when qualified.
-///
-/// The third element is `Some(store_path)` when the entry uses a provider-prefixed
-/// qualified reference; callers should use it instead of `ctx.store` for that secret.
-fn resolve_entries(
-    entries: &[EnvEntry],
-    env_name: &str,
-    store_path: &Path,
-) -> Result<Vec<(String, String, Option<PathBuf>)>> {
-    let mut result = vec![];
-    for entry in entries {
-        match entry {
-            EnvEntry::Alias { key, path } => {
-                let secret_ref = SecretRef::parse(path)?;
-                if secret_ref.is_qualified() {
-                    let resolved_store = secret_ref.resolve_store()?;
-                    let secret_path = secret_ref.path.ok_or_else(|| {
-                        HimitsuError::InvalidReference(format!(
-                            "alias '{key}' has a qualified store reference but no secret path: {path:?}"
-                        ))
-                    })?;
-                    result.push((key.clone(), secret_path, Some(resolved_store)));
-                } else {
-                    result.push((key.clone(), path.clone(), None));
-                }
-            }
-            EnvEntry::Single(path) => {
-                let secret_ref = SecretRef::parse(path)?;
-                if secret_ref.is_qualified() {
-                    let resolved_store = secret_ref.resolve_store()?;
-                    let secret_path = secret_ref.path.ok_or_else(|| {
-                        HimitsuError::InvalidReference(format!(
-                            "single entry has a qualified store reference but no secret path: {path:?}"
-                        ))
-                    })?;
-                    let key = last_component(&secret_path);
-                    result.push((key, secret_path, Some(resolved_store)));
-                } else {
-                    let key = last_component(path);
-                    result.push((key, path.clone(), None));
-                }
-            }
-            EnvEntry::Glob(prefix) => {
-                let secret_ref = SecretRef::parse(prefix)?;
-                if secret_ref.is_qualified() {
-                    let resolved_store = secret_ref.resolve_store()?;
-                    let path_prefix = secret_ref.path.as_deref();
-                    let paths = store::list_secrets(&resolved_store, path_prefix)?;
-                    if paths.is_empty() {
-                        eprintln!(
-                            "warning: glob '{prefix}/*' in env '{env_name}' matched no secrets"
-                        );
-                    }
-                    for p in paths {
-                        let key = last_component(&p);
-                        result.push((key, p, Some(resolved_store.clone())));
-                    }
-                } else {
-                    let paths = store::list_secrets(store_path, Some(prefix))?;
-                    if paths.is_empty() {
-                        eprintln!(
-                            "warning: glob '{prefix}/*' in env '{env_name}' matched no secrets"
-                        );
-                    }
-                    for p in paths {
-                        let key = last_component(&p);
-                        result.push((key, p, None));
-                    }
-                }
-            }
-            // Tag selectors require decrypting candidate secrets to read
-            // their `SecretValue.tags` field. The legacy `generate` command
-            // doesn't share `codegen`'s resolver pipeline — point users at
-            // `himitsu codegen <env>` (which calls `resolve_with_tags`).
-            EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {
-                return Err(HimitsuError::InvalidConfig(format!(
-                    "env '{env_name}' uses a `tag:` selector — `himitsu generate` does not \
-                     support tag-based selection; use `himitsu codegen <env>` instead"
-                )));
-            }
-        }
-    }
-    Ok(result)
-}
-
-/// Extract the last path component as a key name
-/// (`"dev/API_KEY"` → `"API_KEY"`).
-fn last_component(path: &str) -> String {
-    path.split('/').next_back().unwrap_or(path).to_string()
-}
-
-// ── YAML output ──────────────────────────────────────────────────────────────
-
-/// Build the plaintext YAML document for one env.
-fn build_plaintext_yaml(secrets: &BTreeMap<String, String>, env_name: &str) -> String {
-    let mut out = format!("# Generated by himitsu for env: {env_name}\n");
+fn build_plaintext_yaml(secrets: &BTreeMap<String, String>, output_name: &str) -> String {
+    let mut out = format!("# Generated by himitsu for output: {output_name}\n");
     out.push_str("# Do not edit — regenerate with `himitsu generate`\n");
     for (k, v) in secrets {
-        // Escape only the chars that break a YAML double-quoted string.
         let escaped = v
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
@@ -224,8 +156,6 @@ fn build_plaintext_yaml(secrets: &BTreeMap<String, String>, env_name: &str) -> S
     }
     out
 }
-
-// ── Target resolution ────────────────────────────────────────────────────────
 
 fn resolve_target(args: &GenerateArgs, project_cfg: &ProjectConfig) -> Result<PathBuf> {
     if let Some(ref t) = args.target {
@@ -239,17 +169,14 @@ fn resolve_target(args: &GenerateArgs, project_cfg: &ProjectConfig) -> Result<Pa
     ))
 }
 
-// ── File output ──────────────────────────────────────────────────────────────
-
-/// Write one env file to `target/<env>.sops.yaml`, encrypting via `sops`.
 fn write_env_file(
     target_dir: &Path,
-    env_name: &str,
+    output_name: &str,
     yaml: &str,
     project_cfg: &ProjectConfig,
 ) -> Result<()> {
     std::fs::create_dir_all(target_dir)?;
-    let out_path = target_dir.join(format!("{env_name}.sops.yaml"));
+    let out_path = target_dir.join(format!("{output_name}.sops.yaml"));
 
     let recipients: Vec<String> = project_cfg
         .generate
@@ -267,7 +194,6 @@ fn write_env_file(
 
     let age_arg = recipients.join(",");
 
-    // Pipe plaintext YAML into `sops --encrypt` — no plaintext is written to disk.
     let mut child = StdCommand::new("sops")
         .args([
             "--encrypt",
