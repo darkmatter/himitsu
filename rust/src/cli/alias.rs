@@ -7,7 +7,7 @@ use crate::reference::SecretRef;
 /// Manage the active store context used for disambiguation.
 ///
 /// When multiple stores are configured, himitsu needs to know which one to
-/// use for bare secret paths (`env/KEY`) that don't include an explicit
+/// use for bare secret paths (`path/KEY`) that don't include an explicit
 /// store reference.  The context is that default.
 ///
 /// # Examples
