@@ -81,10 +81,7 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         .collect();
 
     if candidates.is_empty() {
-        return Err(HimitsuError::SecretNotFound(format!(
-            "ref {:?} matched no secrets{hint}",
-            args.r#ref
-        )));
+        return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
     }
 
     let identities = ctx.load_identities()?;
@@ -92,10 +89,7 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
     let env_map = build_env_map(decrypted, &selector, &args.tags)?;
 
     if env_map.is_empty() {
-        return Err(HimitsuError::SecretNotFound(format!(
-            "ref {:?} matched no secrets",
-            args.r#ref
-        )));
+        return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
     }
 
     spawn_and_wait(cmd, cmd_args, env_map, args.clean)

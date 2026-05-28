@@ -18,6 +18,10 @@ pub enum HimitsuError {
     #[error("secret not found: {0}")]
     SecretNotFound(String),
 
+    /// Selector matched no secrets — subprocess not launched.
+    #[error("selector '{0}' matched no secrets")]
+    ExecEmptyMatch(String),
+
     #[error("remote not found: {0}")]
     RemoteNotFound(String),
 

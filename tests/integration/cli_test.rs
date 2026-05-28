@@ -395,6 +395,101 @@ fn store_flag(store: &TempDir) -> String {
     store.path().to_string_lossy().to_string()
 }
 
+// ============ codegen (T18) tests — outputs-based input source ============
+
+/// Language mode reads from `outputs:` config, not the store filesystem.
+/// Output names become "environments" in the generated TypeScript.
+#[test]
+fn codegen_ts_from_outputs() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "dev/MY_SECRET", "hello"])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(
+        project_dir.path(),
+        "outputs:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "codegen", "--lang", "typescript", "--stdout"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        // Output name "pci-prod" must appear as an environment identifier.
+        .stdout(predicate::str::contains("pci-prod"))
+        // The resolved env_key for "dev/MY_SECRET" is "MY_SECRET".
+        .stdout(predicate::str::contains("MY_SECRET"));
+}
+
+/// Language mode requires an `outputs:` block; bare project config gives an
+/// actionable error.
+#[test]
+fn codegen_ts_requires_outputs_config() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(project_dir.path(), "{}\n");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "codegen", "--lang", "typescript", "--stdout"])
+        .current_dir(project_dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
+}
+
+/// `--env` flag filters to a specific output name; other outputs' keys are
+/// excluded (unless `--merge-common` pulls in "common").
+#[test]
+fn codegen_ts_env_filter_selects_output() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "prod/PROD_KEY", "pval"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "dev/DEV_KEY", "dval"])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(
+        project_dir.path(),
+        "outputs:\n  prod:\n    selectors:\n      - prod/PROD_KEY\n  dev:\n    selectors:\n      - dev/DEV_KEY\n",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &s,
+            "codegen",
+            "--lang",
+            "typescript",
+            "--stdout",
+            "--env",
+            "prod",
+        ])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("readonly prodKey: string"))
+        .stdout(predicate::str::contains("readonly devKey: string").not());
+}
+
 // ============ init tests ============
 
 #[test]
@@ -3359,4 +3454,27 @@ fn exec_bare_name_treated_as_concrete_path() {
         .assert()
         .success()
         .stdout(predicate::str::contains("PCI_PROD=bare_path_value"));
+}
+
+#[test]
+fn exec_empty_match_exits_one() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "tag:nonexistent",
+            "--",
+            "env",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "error: selector 'tag:nonexistent' matched no secrets",
+        ));
 }
