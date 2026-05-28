@@ -76,6 +76,18 @@
 - Folding is read-only: valid legacy env values are appended to in-memory `Decoded.tags` if absent, invalid values warn and skip, and `himitsu get/search/ls/tag/export/generate/rekey` do not rewrite `.age` merely by reading.
 - The T6 helper must remove the current `.yaml` file before writing its legacy `.age` fixture because the store reader prefers YAML over `.age` when both exist.
 
+## Task 15 exec.rs dispatch pattern
+
+- Replaced the three-branch `resolve_ref` dispatch (env-label → dead; glob → old; concrete path → old) with a single `Selector::parse(&args.r#ref)?` call.
+- Dead env-label branch (using `load_effective_envs()` which returns empty map since T14), `collect_env_leaves`, `walk`, and `ResolvedRef` struct all removed.
+- Pre-filter optimization: `is_path_candidate` checks path/glob tokens only before decrypting; tag tokens always pass (need decryption to verify).
+- Post-decrypt: full `Selector::matches(&SecretMatch { path, tags })` applied on decoded values.
+- `--tag` flags remain as additional AND filters on top of the selector (backward compat).
+- `pick_env_key` simplified: `SecretValue.env_key` > derived from path tail — no outputs-block alias lookup.
+- Unit tests updated: `match_all()` helper uses `Selector(vec![Group(vec![])])` (empty AND group → matches all via `Iterator::all` on empty).
+- Integration tests cover: `tag:X`, `tag:A+tag:B`, `glob/*+tag:X`, bare glob, concrete path, `--tag` backward compat.
+- Error for no-match: `HimitsuError::SecretNotFound` (T16 will handle exit-1 semantics).
+
 ## Task 14 Config struct migration
 
 - `EnvEntry` enum + serde impls moved from `config/mod.rs` to `config/env_dsl.rs`; re-exported from `mod.rs` as `pub use self::env_dsl::{EnvEntry, validate_envs}` so all existing callers remain valid.
@@ -86,3 +98,19 @@
 - `tui/views/search.rs::build_env_index` simplified to return empty map; will be retargeted in T20.
 - Integration tests that called generate with `envs:` project configs updated to expect failure with "outputs" in stderr (generate now returns "no `outputs` defined..." since `load_effective_envs` is empty).
 - Discovery tests (`project_config_discovers_*`) restructured to use `--project` + `init_git_repo` and verify "no `default_store` set" error (proves config was found in alternate location).
+
+## Task 19 migrate envs command
+
+- `himitsu migrate envs` is explicit-only and wires through the normal CLI dispatcher as a store-touching command; `--dry-run` is read-only and is excluded from mutation commits.
+- Legacy `.age` proto envelopes are rewritten in-place atomically with `environment` cleared and the old environment folded into encrypted `SecretValue.tags`; legacy plaintext fixture payloads are accepted by falling back to the proto ciphertext bytes when age decrypt fails.
+- `.himitsu.yaml` migration is raw `serde_yaml::Value` based so it can read legacy `envs:` even though typed config loading rejects that field; it writes `.himitsu.yaml.bak` before replacing `envs:` with `outputs:`.
+
+## Task 17 generate.rs → outputs resolver
+
+- `generate.rs` was completely rewritten: `--env` flag replaced by `--output`; `--env` now returns a hard error "–-env flag has been removed; use --output instead" before any config is loaded.
+- Resolution goes through `config::outputs::resolver::resolve_outputs(&project_cfg.outputs, &ResolverContext { available_secrets })` where available_secrets is populated by `store::list_secrets` (paths only, no tags — tag resolution requires decryption which is too expensive for generate).
+- `ResolvedEntry.env_key` replaces the old `last_component(path)` derivation; `ResolvedEntry.store_slug` replaces the old `SecretRef` qualified-ref parsing in `resolve_entries`.
+- Output file naming is stable: `resolved_output.name` matches the old env name key, producing `pci-prod.sops.yaml` from `outputs.pci-prod`.
+- Old `resolve_entries` function (which handled `EnvEntry::Alias/Single/Glob/Tag` variants) was removed; `Tag` entries are now handled naturally by the resolver if context has tags.
+- TUI test fixtures in `tui/views/outputs.rs` and `tui/views/envs_dsl_editor.rs` used old `envs:` sequence format; these were updated to `outputs:` `OutputDef` format as part of this task since they blocked `cargo test --workspace`.
+- The dedicated env cache deletion remains `ctx.state_dir.join("envs.db")`, matching T3 evidence and avoiding the unrelated `himitsu.db`.

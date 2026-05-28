@@ -1,19 +1,16 @@
 //! `himitsu exec <REF> -- <CMD>...` — run a command with secrets injected
 //! into its environment.
 //!
-//! `<REF>` resolves to one or more secrets:
-//!   1. `tag:NAME` — inject all secrets carrying that tag (e.g. `tag:pci`).
-//!      Tag names are validated by [`crypto::tags::validate_tag`].
-//!   2. an env label from `.himitsu.yaml` `envs:` (e.g. `pci-prod`) — uses the
-//!      env DSL resolver; the env-DSL alias key (or path-derived key) becomes
-//!      the env-var name.
-//!   3. a path glob ending in `/*` (e.g. `prod/*`) — every secret under the
-//!      prefix; env-var name comes from `SecretValue.env_key` if set, else
-//!      derived from the path's last segment via [`config::env_dsl::derive_env_key`].
-//!   4. a trailing-slash prefix (e.g. `prod/`) — equivalent to `prod/*` but
-//!      avoids the shell glob-expansion pitfall.
-//!   5. a concrete secret path (e.g. `prod/API_KEY`, optionally
-//!      `github:org/repo/prod/API_KEY`).
+//! `<REF>` uses the selector grammar:
+//!   1. `tag:NAME` — all secrets carrying that tag
+//!   2. `tag:A+tag:B` — AND across tags (both required)
+//!   3. `prod/*` — glob against secret paths
+//!   4. `prod/*+tag:pci` — glob AND tag
+//!   5. `prod/API_KEY` — concrete secret path
+//!   6. `tag:A,tag:B` — OR across groups (union)
+//!
+//! `--tag <T>` flags are treated as additional AND filters on top of the
+//! selector, providing backward-compatible tag filtering.
 //!
 //! Conflicts (two secrets resolving to the same env-var name) are a hard
 //! error: a half-injected env is more confusing than a clear failure.
@@ -24,21 +21,22 @@ use std::path::PathBuf;
 use clap::Args;
 
 use super::Context;
-use crate::config::{self, env_resolver, validate_env_label};
+use crate::cli::export::glob_match;
+use crate::config;
+use crate::config::outputs::selector::{SecretMatch, Selector, Token};
 use crate::crypto::{secret_value, tags as tag_grammar};
 use crate::error::{HimitsuError, Result};
-use crate::reference::SecretRef;
 use crate::remote::store;
 
 /// Run a command with secrets injected as environment variables.
 #[derive(Debug, Args)]
 pub struct ExecArgs {
-    /// Secret reference. One of:
-    ///   * tag selector (e.g. `tag:pci`) — inject all secrets with that tag
-    ///   * env label from project `envs:` map (e.g. `pci-prod`)
-    ///   * path glob ending in `/*` (e.g. `prod/*`)
-    ///   * trailing-slash prefix (e.g. `prod/`) — equivalent to `prod/*`
-    ///   * concrete secret path (e.g. `prod/API_KEY`)
+    /// Secret reference — selector grammar:
+    ///   * `tag:NAME` — all secrets tagged NAME
+    ///   * `tag:A+tag:B` — AND-combined tags
+    ///   * `prod/*` — path glob
+    ///   * `prod/*+tag:pci` — glob AND tag
+    ///   * `prod/API_KEY` — concrete path
     #[arg(value_name = "REF")]
     pub r#ref: String,
 
@@ -74,277 +72,79 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         .split_first()
         .expect("clap enforces required = true on `command`");
 
-    let resolved = resolve_ref(&args.r#ref, ctx)?;
-    if resolved.is_empty() {
-        let hint = if args.r#ref.ends_with("/*") || args.r#ref.ends_with('/') {
-            "\n  Hint: use a trailing slash without quotes (e.g. 'prod/') to avoid shell glob expansion,\n  or pass --remote <slug> to select a specific store."
-        } else {
-            "\n  Hint: pass --remote <slug> to select a specific store, or check 'himitsu ls' for available secrets."
-        };
+    let selector = Selector::parse(&args.r#ref)?;
+
+    let all_paths = store::list_secrets(&ctx.store, None)?;
+    let candidates: Vec<String> = all_paths
+        .into_iter()
+        .filter(|p| is_path_candidate(&selector, p))
+        .collect();
+
+    if candidates.is_empty() {
         return Err(HimitsuError::SecretNotFound(format!(
             "ref {:?} matched no secrets{hint}",
             args.r#ref
         )));
     }
 
-    // Load age identities once so we don't re-parse key files per resolved
-    // secret. `exec` is the first hot loop of decrypts and the win is real.
     let identities = ctx.load_identities()?;
-    let decrypted = decrypt_resolved(ctx, &identities, resolved)?;
-    let env_map = build_env_map(decrypted, &args.tags)?;
+    let decrypted = decrypt_paths(ctx, &identities, candidates)?;
+    let env_map = build_env_map(decrypted, &selector, &args.tags)?;
+
+    if env_map.is_empty() {
+        return Err(HimitsuError::SecretNotFound(format!(
+            "ref {:?} matched no secrets",
+            args.r#ref
+        )));
+    }
 
     spawn_and_wait(cmd, cmd_args, env_map, args.clean)
 }
 
-/// One pre-decryption hit: a secret path plus an optional explicit env-var
-/// name carried in by the env DSL.
-struct ResolvedRef {
-    secret_path: String,
-    /// The store checkout path that holds this secret. Needed because glob/tag
-    /// resolution searches ALL known stores, not just the active one.
-    store_path: PathBuf,
-    /// `Some` when the env DSL pinned the name (alias or resolver-derived);
-    /// `None` for glob/concrete refs — name picked post-decrypt.
-    explicit_key: Option<String>,
+/// Returns true if the path could match any group in the selector based on
+/// path/glob tokens alone. Tag tokens always pass (need decryption to check).
+fn is_path_candidate(selector: &Selector, path: &str) -> bool {
+    selector.0.iter().any(|group| {
+        group.0.iter().all(|token| match token {
+            Token::Tag(_) => true,
+            Token::Glob(pattern) => glob_match(pattern, path),
+            Token::Path(literal) => path == literal.as_str(),
+        })
+    })
 }
 
-/// Collect all known store paths. The active store comes first, then any
-/// additional stores discovered in the XDG state directory. Mirrors the
-/// logic in `ls::collect_stores` but returns only `PathBuf` (no labels).
-fn collect_stores(ctx: &Context) -> Vec<PathBuf> {
-    let mut stores = Vec::new();
-
-    if !ctx.store.as_os_str().is_empty() && ctx.store.exists() {
-        stores.push(ctx.store.clone());
-    }
-
-    let stores_dir = ctx.stores_dir();
-    if stores_dir.exists() {
-        if let Ok(org_entries) = std::fs::read_dir(&stores_dir) {
-            for org_entry in org_entries.flatten() {
-                if !org_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    continue;
-                }
-                if let Ok(repo_entries) = std::fs::read_dir(org_entry.path()) {
-                    for repo_entry in repo_entries.flatten() {
-                        if !repo_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                            continue;
-                        }
-                        let path = repo_entry.path();
-                        if path != ctx.store {
-                            stores.push(path);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    stores
-}
-
-fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
-    // Check for `tag:` prefix — intercept before `SecretRef::parse` treats
-    // ':' as a provider separator. Env labels can't contain ':' so this
-    // never collides with the env-label namespace.
-    if let Some(tag_name) = ref_str.strip_prefix("tag:") {
-        if tag_name.is_empty() {
-            return Err(HimitsuError::InvalidReference(
-                "tag selector requires a tag name after 'tag:' (e.g. tag:pci)".into(),
-            ));
-        }
-        tag_grammar::validate_tag(tag_name).map_err(|reason| {
-            HimitsuError::InvalidReference(format!("invalid tag in selector: {reason}"))
-        })?;
-        let stores = collect_stores(ctx);
-        let identities = ctx.load_identities()?;
-        let mut results = Vec::new();
-        for store_path in &stores {
-            let available = match store::list_secrets(store_path, None) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            for secret_path in available {
-                let store_ctx = Context {
-                    store: store_path.clone(),
-                    ..ctx.clone()
-                };
-                if let Ok(decoded) =
-                    super::get::get_decoded_with_identities(&store_ctx, &secret_path, &identities)
-                {
-                    if decoded.tags.iter().any(|t| t == tag_name) {
-                        results.push(ResolvedRef {
-                            secret_path,
-                            store_path: store_path.clone(),
-                            explicit_key: None,
-                        });
-                    }
-                }
-            }
-        }
-        return Ok(results);
-    }
-
-    // Env labels live in their own namespace and always win when they match
-    // exactly: project authoring intent beats path coincidence.
-    let envs = config::load_effective_envs()?;
-    if envs.contains_key(ref_str) {
-        if config::is_wildcard_label(ref_str) {
-            return Err(HimitsuError::NotSupported(format!(
-                "exec does not support wildcard env labels ({ref_str:?}); \
-                     pass a concrete env or use `himitsu codegen` for templated output"
-            )));
-        }
-        validate_env_label(ref_str)?;
-        let available = store::list_secrets(&ctx.store, None)?;
-        let identities = ctx.load_identities()?;
-        let tag_lookup = |path: &str| {
-            super::get::get_decoded_with_identities(ctx, path, &identities)
-                .map(|decoded| decoded.tags)
-        };
-        let tree = env_resolver::resolve_with_tags(&envs, ref_str, &available, &tag_lookup)?;
-        let leaves = collect_env_leaves(&tree);
-        return Ok(leaves
-            .into_iter()
-            .map(|(key, secret_path)| ResolvedRef {
-                secret_path,
-                store_path: ctx.store.clone(),
-                explicit_key: Some(key),
-            })
-            .collect());
-    }
-
-    // Glob and prefix branches search ALL known stores, not just the active
-    // one. This matches `ls` behavior and fixes the case where secrets live
-    // in a non-default store.
-    if let Some(prefix) = ref_str.strip_suffix("/*") {
-        if prefix.is_empty() {
-            return Err(HimitsuError::InvalidReference(
-                "bare `/*` is not a valid ref; specify a prefix (e.g. `prod/*`)".into(),
-            ));
-        }
-        let needle = format!("{prefix}/");
-        let stores = collect_stores(ctx);
-        let mut results = Vec::new();
-        for store_path in &stores {
-            let available = match store::list_secrets(store_path, None) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            for secret_path in available {
-                if secret_path.starts_with(&needle) {
-                    results.push(ResolvedRef {
-                        secret_path,
-                        store_path: store_path.clone(),
-                        explicit_key: None,
-                    });
-                }
-            }
-        }
-        return Ok(results);
-    }
-
-    // Trailing slash = prefix glob (same as `prefix/*` but without the star).
-    if ref_str.ends_with('/') {
-        let prefix = ref_str.trim_end_matches('/');
-        if prefix.is_empty() {
-            return Err(HimitsuError::InvalidReference(
-                "bare '/' is not a valid ref; specify a prefix (e.g. 'prod/')".into(),
-            ));
-        }
-        let needle = format!("{prefix}/");
-        let stores = collect_stores(ctx);
-        let mut results = Vec::new();
-        for store_path in &stores {
-            let available = match store::list_secrets(store_path, None) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            for secret_path in available {
-                if secret_path.starts_with(&needle) {
-                    results.push(ResolvedRef {
-                        secret_path,
-                        store_path: store_path.clone(),
-                        explicit_key: None,
-                    });
-                }
-            }
-        }
-        return Ok(results);
-    }
-
-    let parsed = SecretRef::parse(ref_str)?;
-    if parsed.path.is_none() {
-        return Err(HimitsuError::InvalidReference(format!(
-            "ref {ref_str:?} has no secret path"
-        )));
-    }
-    Ok(vec![ResolvedRef {
-        secret_path: ref_str.to_string(),
-        store_path: ctx.store.clone(),
-        explicit_key: None,
-    }])
-}
-
-/// Walk an [`env_resolver::EnvNode`] tree and return every `(parent_key,
-/// secret_path)` pair where a leaf sits one level beneath a branch.
-///
-/// The outer label-prefix branch (e.g. `dev` in `Branch{dev: Branch{API_KEY:
-/// Leaf}}`) is collapsed because it carries the env name, not a variable.
-fn collect_env_leaves(node: &env_resolver::EnvNode) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
-}
-
-fn walk(node: &env_resolver::EnvNode, out: &mut Vec<(String, String)>) {
-    if let env_resolver::EnvNode::Branch(map) = node {
-        for (key, child) in map {
-            match child {
-                env_resolver::EnvNode::Leaf { secret_path } => {
-                    out.push((key.clone(), secret_path.clone()));
-                }
-                env_resolver::EnvNode::Branch(_) => walk(child, out),
-            }
-        }
-    }
-}
-
-/// Decrypt every resolved ref into `(ResolvedRef, Decoded)` pairs using
-/// shared identities. Pure I/O — no filtering.
-fn decrypt_resolved(
+fn decrypt_paths(
     ctx: &Context,
     identities: &[::age::x25519::Identity],
-    refs: Vec<ResolvedRef>,
-) -> Result<Vec<(ResolvedRef, secret_value::Decoded)>> {
-    refs.into_iter()
-        .map(|r| {
-            // Use the per-ref store_path so secrets found in non-active
-            // stores decrypt correctly.
-            let ref_ctx = Context {
-                store: r.store_path.clone(),
-                ..ctx.clone()
-            };
-            let decoded =
-                super::get::get_decoded_with_identities(&ref_ctx, &r.secret_path, identities)?;
-            super::get::warn_if_expired(&r.secret_path, &decoded);
-            Ok((r, decoded))
+    paths: Vec<String>,
+) -> Result<Vec<(String, secret_value::Decoded)>> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let decoded = super::get::get_decoded_with_identities(ctx, &path, identities)?;
+            super::get::warn_if_expired(&path, &decoded);
+            Ok((path, decoded))
         })
         .collect()
 }
 
-/// Apply the tag filter, derive env-var names, detect conflicts, and return
-/// the final injection map. Pure on its inputs so unit tests can drive it
-/// without touching the filesystem.
+/// Apply full selector match (including tag tokens), then `--tag` AND filter,
+/// derive env-var names, detect conflicts, and return the injection map.
 fn build_env_map(
-    items: Vec<(ResolvedRef, secret_value::Decoded)>,
+    items: Vec<(String, secret_value::Decoded)>,
+    selector: &Selector,
     want_tags: &[String],
 ) -> Result<BTreeMap<String, String>> {
-    // Map keyed by env-var name → (value, source path). The source path is
-    // kept so a collision message can name both offenders.
     let mut env_map: BTreeMap<String, (String, String)> = BTreeMap::new();
 
-    for (r, decoded) in items {
+    for (path, decoded) in items {
+        if !selector.matches(&SecretMatch {
+            path: &path,
+            tags: &decoded.tags,
+        }) {
+            continue;
+        }
+
         if !want_tags.is_empty()
             && !want_tags
                 .iter()
@@ -353,55 +153,48 @@ fn build_env_map(
             continue;
         }
 
-        let key = pick_env_key(&r, &decoded)?;
-        super::set::validate_env_key(&key).map_err(|e| {
-            HimitsuError::InvalidReference(format!("{e} (from {:?})", r.secret_path))
-        })?;
+        let key = pick_env_key(&path, &decoded)?;
+        super::set::validate_env_key(&key)
+            .map_err(|e| HimitsuError::InvalidReference(format!("{e} (from {:?})", path)))?;
 
         if let Some((_, prev_path)) = env_map.get(&key) {
             return Err(HimitsuError::InvalidConfig(format!(
                 "env-var {key:?} would be set by both {prev_path:?} and {:?}; \
-                 rename one via `set --env-key` or an env-DSL alias",
-                r.secret_path
+                 rename one via `set --env-key` or a selector alias",
+                path
             )));
         }
 
         let value = String::from_utf8(decoded.data).map_err(|e| {
             HimitsuError::InvalidReference(format!(
                 "secret {:?} contains non-UTF-8 bytes — exec can only inject text values: {e}",
-                r.secret_path
+                path
             ))
         })?;
 
-        env_map.insert(key, (value, r.secret_path));
+        env_map.insert(key, (value, path));
     }
 
     Ok(env_map.into_iter().map(|(k, (v, _))| (k, v)).collect())
 }
 
-/// Decide the env-var name for a resolved ref:
-/// 1. explicit key from the env DSL,
-/// 2. `SecretValue.env_key` set on the secret itself,
-/// 3. `derive_env_key(last_segment_of_path)`.
-fn pick_env_key(r: &ResolvedRef, decoded: &secret_value::Decoded) -> Result<String> {
-    if let Some(k) = &r.explicit_key {
-        return Ok(k.clone());
-    }
+/// Decide the env-var name for a decrypted secret:
+/// 1. `SecretValue.env_key` set on the secret itself,
+/// 2. `derive_env_key(last_segment_of_path)`.
+fn pick_env_key(path: &str, decoded: &secret_value::Decoded) -> Result<String> {
     if !decoded.env_key.is_empty() {
         return Ok(decoded.env_key.clone());
     }
-    let tail = config::env_dsl::last_component(&r.secret_path);
+    let tail = config::env_dsl::last_component(path);
     if tail.is_empty() {
         return Err(HimitsuError::InvalidReference(format!(
             "secret path {:?} has no final segment to derive an env-var name from",
-            r.secret_path
+            path
         )));
     }
     Ok(config::env_dsl::derive_env_key(tail))
 }
 
-/// Spawn the child with the resolved env, wait, and propagate its exit
-/// status via `std::process::exit`. Does not return on the success path.
 fn spawn_and_wait(
     cmd: &str,
     cmd_args: &[String],
@@ -477,6 +270,7 @@ fn warn_if_shell_expanded(ref_str: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::outputs::selector::Group;
     use crate::crypto::secret_value::Decoded;
 
     fn decoded(data: &str, env_key: &str, tags: &[&str]) -> Decoded {
@@ -488,71 +282,30 @@ mod tests {
         }
     }
 
-    fn rref(path: &str, explicit: Option<&str>) -> ResolvedRef {
-        ResolvedRef {
-            secret_path: path.to_string(),
-            store_path: PathBuf::new(),
-            explicit_key: explicit.map(String::from),
-        }
+    fn match_all() -> Selector {
+        Selector(vec![Group(vec![])])
     }
 
     #[test]
-    fn pick_env_key_priority_explicit_then_env_key_then_derive() {
-        let k = pick_env_key(
-            &rref("dev/whatever", Some("STRIPE")),
-            &decoded("v", "IGNORED", &[]),
-        )
-        .unwrap();
-        assert_eq!(k, "STRIPE");
-
-        let k = pick_env_key(&rref("dev/whatever", None), &decoded("v", "API_TOKEN", &[])).unwrap();
+    fn pick_env_key_priority_env_key_then_derive() {
+        let k = pick_env_key("dev/whatever", &decoded("v", "API_TOKEN", &[])).unwrap();
         assert_eq!(k, "API_TOKEN");
 
-        let k = pick_env_key(&rref("dev/api-key", None), &decoded("v", "", &[])).unwrap();
+        let k = pick_env_key("dev/api-key", &decoded("v", "", &[])).unwrap();
         assert_eq!(k, "API_KEY");
 
-        let k = pick_env_key(&rref("dev/group/item-name", None), &decoded("v", "", &[])).unwrap();
+        let k = pick_env_key("dev/group/item-name", &decoded("v", "", &[])).unwrap();
         assert_eq!(k, "ITEM_NAME");
-    }
-
-    #[test]
-    fn collect_env_leaves_pulls_every_leaf_with_its_parent_key() {
-        let mut leaves = BTreeMap::new();
-        leaves.insert(
-            "API_KEY".to_string(),
-            env_resolver::EnvNode::Leaf {
-                secret_path: "dev/API_KEY".to_string(),
-            },
-        );
-        leaves.insert(
-            "DB".to_string(),
-            env_resolver::EnvNode::Leaf {
-                secret_path: "dev/DB_PASS".to_string(),
-            },
-        );
-        let mut prefix = BTreeMap::new();
-        prefix.insert("dev".to_string(), env_resolver::EnvNode::Branch(leaves));
-        let tree = env_resolver::EnvNode::Branch(prefix);
-
-        let mut got = collect_env_leaves(&tree);
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                ("API_KEY".to_string(), "dev/API_KEY".to_string()),
-                ("DB".to_string(), "dev/DB_PASS".to_string()),
-            ]
-        );
     }
 
     #[test]
     fn build_env_map_filters_by_tag_and_picks_keys() {
         let items = vec![
-            (rref("a/api-key", None), decoded("v1", "", &["pci"])),
-            (rref("a/db", Some("DB_URL")), decoded("v2", "", &["pci"])),
-            (rref("a/other", None), decoded("v3", "", &["mobile"])),
+            ("a/api-key".to_string(), decoded("v1", "", &["pci"])),
+            ("a/db".to_string(), decoded("v2", "DB_URL", &["pci"])),
+            ("a/other".to_string(), decoded("v3", "", &["mobile"])),
         ];
-        let map = build_env_map(items, &["pci".to_string()]).unwrap();
+        let map = build_env_map(items, &match_all(), &["pci".to_string()]).unwrap();
         assert_eq!(map.get("API_KEY").map(String::as_str), Some("v1"));
         assert_eq!(map.get("DB_URL").map(String::as_str), Some("v2"));
         assert!(!map.contains_key("OTHER"));
@@ -561,24 +314,20 @@ mod tests {
     #[test]
     fn build_env_map_empty_tag_filter_keeps_everything() {
         let items = vec![
-            (rref("a/x", None), decoded("v1", "", &[])),
-            (rref("a/y", None), decoded("v2", "", &["any"])),
+            ("a/x".to_string(), decoded("v1", "", &[])),
+            ("a/y".to_string(), decoded("v2", "", &["any"])),
         ];
-        let map = build_env_map(items, &[]).unwrap();
+        let map = build_env_map(items, &match_all(), &[]).unwrap();
         assert_eq!(map.len(), 2);
     }
 
     #[test]
     fn build_env_map_collision_errors_with_both_paths() {
-        // Two secrets resolving to the same env-var name.
         let items = vec![
-            (rref("a/api-key", None), decoded("first", "", &[])),
-            (
-                rref("b/API_KEY", Some("API_KEY")),
-                decoded("second", "", &[]),
-            ),
+            ("a/api-key".to_string(), decoded("first", "", &[])),
+            ("b/API_KEY".to_string(), decoded("second", "API_KEY", &[])),
         ];
-        let err = build_env_map(items, &[]).unwrap_err();
+        let err = build_env_map(items, &match_all(), &[]).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("API_KEY"), "msg should name the key: {msg}");
         assert!(
@@ -589,9 +338,8 @@ mod tests {
 
     #[test]
     fn build_env_map_rejects_invalid_posix_env_name() {
-        // env_key override that violates POSIX env-name grammar.
-        let items = vec![(rref("a/x", None), decoded("v", "1FOO", &[]))];
-        let err = build_env_map(items, &[]).unwrap_err();
+        let items = vec![("a/x".to_string(), decoded("v", "1FOO", &[]))];
+        let err = build_env_map(items, &match_all(), &[]).unwrap_err();
         assert!(err.to_string().contains("1FOO"));
     }
 
@@ -599,8 +347,71 @@ mod tests {
     fn build_env_map_rejects_non_utf8_value() {
         let mut d = decoded("", "", &[]);
         d.data = vec![0xff, 0xfe, 0xfd];
-        let err = build_env_map(vec![(rref("a/x", None), d)], &[]).unwrap_err();
+        let err = build_env_map(vec![("a/x".to_string(), d)], &match_all(), &[]).unwrap_err();
         assert!(err.to_string().contains("non-UTF-8"));
+    }
+
+    #[test]
+    fn build_env_map_selector_filters_by_tag() {
+        let selector = Selector::parse("tag:pci").unwrap();
+        let items = vec![
+            ("a/key".to_string(), decoded("v1", "PCI_KEY", &["pci"])),
+            ("a/other".to_string(), decoded("v2", "OTHER", &["mobile"])),
+        ];
+        let map = build_env_map(items, &selector, &[]).unwrap();
+        assert_eq!(map.get("PCI_KEY").map(String::as_str), Some("v1"));
+        assert!(!map.contains_key("OTHER"));
+    }
+
+    #[test]
+    fn build_env_map_and_tag_selector_requires_all_tags() {
+        let selector = Selector::parse("tag:pci+tag:prod").unwrap();
+        let items = vec![
+            (
+                "a/both".to_string(),
+                decoded("v1", "BOTH", &["pci", "prod"]),
+            ),
+            (
+                "a/pci-only".to_string(),
+                decoded("v2", "PCI_ONLY", &["pci"]),
+            ),
+            (
+                "a/prod-only".to_string(),
+                decoded("v3", "PROD_ONLY", &["prod"]),
+            ),
+        ];
+        let map = build_env_map(items, &selector, &[]).unwrap();
+        assert_eq!(map.get("BOTH").map(String::as_str), Some("v1"));
+        assert!(!map.contains_key("PCI_ONLY"));
+        assert!(!map.contains_key("PROD_ONLY"));
+    }
+
+    #[test]
+    fn is_path_candidate_tag_only_passes_all_paths() {
+        let selector = Selector::parse("tag:pci").unwrap();
+        assert!(is_path_candidate(&selector, "prod/key"));
+        assert!(is_path_candidate(&selector, "dev/other"));
+    }
+
+    #[test]
+    fn is_path_candidate_glob_filters_by_path() {
+        let selector = Selector::parse("prod/*").unwrap();
+        assert!(is_path_candidate(&selector, "prod/key"));
+        assert!(!is_path_candidate(&selector, "dev/key"));
+    }
+
+    #[test]
+    fn is_path_candidate_path_filters_exact() {
+        let selector = Selector::parse("prod/api-key").unwrap();
+        assert!(is_path_candidate(&selector, "prod/api-key"));
+        assert!(!is_path_candidate(&selector, "prod/other"));
+    }
+
+    #[test]
+    fn is_path_candidate_glob_and_tag_only_checks_glob() {
+        let selector = Selector::parse("prod/*+tag:pci").unwrap();
+        assert!(is_path_candidate(&selector, "prod/key"));
+        assert!(!is_path_candidate(&selector, "dev/key"));
     }
 
     #[test]
@@ -629,6 +440,12 @@ mod tests {
         assert_eq!(cli.args.tags, vec!["pci", "rotate"]);
         assert!(cli.args.clean);
         assert_eq!(cli.args.command, vec!["env"]);
+
+        let cli = Cli::try_parse_from(["test", "tag:pci", "--", "env"]).unwrap();
+        assert_eq!(cli.args.r#ref, "tag:pci");
+
+        let cli = Cli::try_parse_from(["test", "tag:pci+tag:prod", "--", "env"]).unwrap();
+        assert_eq!(cli.args.r#ref, "tag:pci+tag:prod");
     }
 
     #[test]

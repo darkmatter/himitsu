@@ -1,6 +1,9 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use prost::Message;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 #[path = "../../rust/src/proto/mod.rs"]
@@ -71,6 +74,210 @@ fn setup_with_legacy_env_field(
     std::fs::write(&secret_path, envelope.encode_to_vec()).unwrap();
 
     (home, store, "test/legacy-key".to_string())
+}
+
+#[allow(deprecated)]
+fn write_legacy_env_secret(
+    home: &TempDir,
+    store: &TempDir,
+    path: &str,
+    value: &str,
+    env_value: &str,
+    existing_tags: &[&str],
+) {
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(store), "set", path, value])
+        .assert()
+        .success();
+
+    let secret_path = store.path().join(format!(".himitsu/secrets/{path}.age"));
+    let yaml_path = store.path().join(format!(".himitsu/secrets/{path}.yaml"));
+    let _ = std::fs::remove_file(yaml_path);
+    if let Some(parent) = secret_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let envelope = proto::SecretEnvelope {
+        version: 1,
+        key_name: path.rsplit('/').next().unwrap_or(path).to_string(),
+        environment: env_value.to_string(),
+        ciphertext: proto::SecretValue {
+            data: value.as_bytes().to_vec(),
+            tags: existing_tags.iter().map(|tag| (*tag).to_string()).collect(),
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        ..Default::default()
+    };
+    std::fs::write(secret_path, envelope.encode_to_vec()).unwrap();
+}
+
+fn write_legacy_env_project_config(store: &TempDir) -> PathBuf {
+    let config_path = store.path().join(".himitsu.yaml");
+    std::fs::write(
+        &config_path,
+        r#"default_store: local/test
+envs:
+  app-prod:
+    - common/*
+    - tag:pci
+    - tag:prod
+    - STRIPE: tag:stripe
+  app-staging:
+    - staging/*
+generate:
+  target: gen
+"#,
+    )
+    .unwrap();
+    config_path
+}
+
+#[allow(deprecated)]
+fn read_legacy_proto_envelope(path: &Path) -> proto::SecretEnvelope {
+    proto::SecretEnvelope::decode(std::fs::read(path).unwrap().as_slice()).unwrap()
+}
+
+fn collect_file_hashes(root: &Path) -> BTreeMap<PathBuf, String> {
+    fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                let hash = Sha256::digest(&bytes);
+                out.insert(
+                    path.strip_prefix(base).unwrap().to_path_buf(),
+                    format!("{hash:x}"),
+                );
+            }
+        }
+    }
+
+    let mut hashes = BTreeMap::new();
+    walk(root, root, &mut hashes);
+    hashes
+}
+
+#[test]
+#[allow(deprecated)]
+fn migrate_envs_full_roundtrip() {
+    let (home, store) = setup();
+    write_legacy_env_secret(&home, &store, "prod/api-key", "prod-secret", "prod", &[]);
+    write_legacy_env_secret(
+        &home,
+        &store,
+        "prod/stripe",
+        "stripe-secret",
+        "prod",
+        &["stripe"],
+    );
+    write_legacy_env_secret(
+        &home,
+        &store,
+        "staging/api-key",
+        "staging-secret",
+        "staging",
+        &[],
+    );
+    let config_path = write_legacy_env_project_config(&store);
+    std::fs::write(home.path().join("state/envs.db"), b"legacy cache").unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secrets migrated: 3"))
+        .stdout(predicate::str::contains("output blocks rewritten: 2"))
+        .stdout(predicate::str::contains("cache deleted: true"))
+        .stdout(predicate::str::contains("dry-run: false"));
+
+    assert!(store.path().join(".himitsu.yaml.bak").exists());
+    assert!(!home.path().join("state/envs.db").exists());
+    let migrated_config = std::fs::read_to_string(config_path).unwrap();
+    assert!(migrated_config.contains("outputs:"));
+    assert!(!migrated_config.contains("envs:"));
+    assert!(migrated_config.contains("selectors:"));
+    assert!(migrated_config.contains("aliases:"));
+    assert!(migrated_config.contains("tag:pci+tag:prod"));
+
+    for (path, tag) in [
+        ("prod/api-key", "prod"),
+        ("prod/stripe", "prod"),
+        ("staging/api-key", "staging"),
+    ] {
+        let envelope = read_legacy_proto_envelope(&legacy_envelope_path(&store, path));
+        assert_eq!(envelope.environment, "");
+        himitsu()
+            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+            .args(["--store", &store_flag(&store), "get", path])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(tag));
+    }
+}
+
+#[test]
+fn migrate_envs_dry_run_is_nondestructive() {
+    let (home, store) = setup();
+    write_legacy_env_secret(&home, &store, "prod/api-key", "prod-secret", "prod", &[]);
+    write_legacy_env_secret(
+        &home,
+        &store,
+        "staging/api-key",
+        "staging-secret",
+        "staging",
+        &[],
+    );
+    write_legacy_env_project_config(&store);
+    std::fs::write(home.path().join("state/envs.db"), b"legacy cache").unwrap();
+    let store_before = collect_file_hashes(store.path());
+    let home_before = collect_file_hashes(home.path());
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "migrate",
+            "envs",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secrets migrated: 2"))
+        .stdout(predicate::str::contains("output blocks rewritten: 2"))
+        .stdout(predicate::str::contains("cache deleted: true"))
+        .stdout(predicate::str::contains("dry-run: true"));
+
+    assert_eq!(store_before, collect_file_hashes(store.path()));
+    assert_eq!(home_before, collect_file_hashes(home.path()));
+    assert!(!store.path().join(".himitsu.yaml.bak").exists());
+}
+
+#[test]
+fn migrate_envs_is_idempotent() {
+    let (home, store) = setup();
+    write_legacy_env_secret(&home, &store, "prod/api-key", "prod-secret", "prod", &[]);
+    write_legacy_env_project_config(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secrets migrated: 0"))
+        .stdout(predicate::str::contains("output blocks rewritten: 0"))
+        .stdout(predicate::str::contains("cache deleted: false"));
 }
 
 #[test]
@@ -1792,7 +1999,7 @@ fn generate_basic_stdout() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--store", &s, "generate", "--stdout", "--output", "dev"])
         .current_dir(project_dir.path())
         .assert()
         .failure()
@@ -1809,7 +2016,7 @@ fn generate_alias_entry() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--store", &s, "generate", "--stdout", "--output", "dev"])
         .current_dir(project_dir.path())
         .assert()
         .failure()
@@ -1826,7 +2033,7 @@ fn generate_glob_entry() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--store", &s, "generate", "--stdout", "--output", "dev"])
         .current_dir(project_dir.path())
         .assert()
         .failure()
@@ -1843,7 +2050,7 @@ fn generate_single_entry_only_that_key() {
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--store", &s, "generate", "--stdout", "--output", "dev"])
         .current_dir(project_dir.path())
         .assert()
         .failure()
@@ -1882,7 +2089,7 @@ fn generate_unknown_env_errors() {
             &s,
             "generate",
             "--stdout",
-            "--env",
+            "--output",
             "nonexistent",
         ])
         .current_dir(project_dir.path())
@@ -1944,6 +2151,51 @@ fn generate_all_envs_stdout() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("outputs"));
+}
+
+#[test]
+fn generate_output_flag_works() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "dev/MY_SECRET", "hello123"])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(
+        project_dir.path(),
+        "outputs:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store", &s, "generate", "--stdout", "--output", "pci-prod",
+        ])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MY_SECRET"));
+}
+
+#[test]
+fn generate_env_flag_hard_errors() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(project_dir.path(), "{}\n");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "generate", "--stdout", "--env", "pci-prod"])
+        .current_dir(project_dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--env flag has been removed"));
 }
 
 // ============ provider-prefixed path tests ============
@@ -2742,4 +2994,369 @@ fn config_outputs_key_parses_ok() {
         .args(["--store", &store_flag(&store), "ls"])
         .assert()
         .success();
+}
+
+// ============ exec tag-selector tests (T15) ============
+
+#[test]
+fn exec_tag_selector_injects_tagged_secrets_only() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    // prod/api-key tagged "prod"
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "sk_prod_123",
+            "--tag",
+            "prod",
+        ])
+        .assert()
+        .success();
+
+    // prod/db-pass NOT tagged
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/db-pass",
+            "hunter2",
+        ])
+        .assert()
+        .success();
+
+    // dev/token tagged "dev" only
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "dev/token",
+            "dev_tok_456",
+            "--tag",
+            "dev",
+        ])
+        .assert()
+        .success();
+
+    // exec tag:prod -- env  →  only prod/api-key → API_KEY injected
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "tag:prod",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=sk_prod_123"))
+        .stdout(predicate::str::contains("DB_PASS").not())
+        .stdout(predicate::str::contains("TOKEN=dev_tok_456").not());
+}
+
+#[test]
+fn exec_and_combined_tag_selector_requires_all_tags() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    // A: both pci and prod tags
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_live_pci",
+            "--tag",
+            "pci",
+            "--tag",
+            "prod",
+        ])
+        .assert()
+        .success();
+
+    // B: only prod tag
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/db-url",
+            "postgres_prod_only",
+            "--tag",
+            "prod",
+        ])
+        .assert()
+        .success();
+
+    // C: only pci tag
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "dev/pci-config",
+            "dev_pci_only",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // exec tag:pci+tag:prod -- env  →  only A (STRIPE_KEY)
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "tag:pci+tag:prod",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY=sk_live_pci"))
+        .stdout(predicate::str::contains("DB_URL=postgres_prod_only").not())
+        .stdout(predicate::str::contains("PCI_CONFIG=dev_pci_only").not());
+}
+
+#[test]
+fn exec_glob_plus_tag_and_combines() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    // prod/api-key: pci-tagged, under prod/
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "prod_pci_value",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // prod/db-pass: NOT pci-tagged, under prod/
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/db-pass",
+            "prod_no_pci",
+        ])
+        .assert()
+        .success();
+
+    // dev/api-key: pci-tagged but NOT under prod/
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "dev/api-key",
+            "dev_pci_value",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // exec 'prod/*+tag:pci' -- env  →  only prod/api-key → API_KEY
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/*+tag:pci",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=prod_pci_value"))
+        .stdout(predicate::str::contains("DB_PASS=prod_no_pci").not())
+        .stdout(predicate::str::contains("dev_pci_value").not());
+}
+
+#[test]
+fn exec_glob_still_works() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "glob_val",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "dev/secret",
+            "dev_val",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/*",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=glob_val"))
+        .stdout(predicate::str::contains("SECRET=dev_val").not());
+}
+
+#[test]
+fn exec_concrete_path_still_works() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "concrete_val",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/api-key",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=concrete_val"));
+}
+
+#[test]
+fn exec_tag_flag_backward_compat_and_filters() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    // Two prod/* secrets; only one tagged "rotate"
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "api_rotate",
+            "--tag",
+            "rotate",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/db-pass",
+            "db_no_rotate",
+        ])
+        .assert()
+        .success();
+
+    // --tag rotate acts as additional AND filter on top of prod/*
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/*",
+            "--tag",
+            "rotate",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=api_rotate"))
+        .stdout(predicate::str::contains("DB_PASS=db_no_rotate").not());
+}
+
+#[test]
+fn exec_bare_name_treated_as_concrete_path() {
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "pci-prod",
+            "bare_path_value",
+        ])
+        .assert()
+        .success();
+
+    // Bare name with no tag: prefix and no * is a concrete path Token::Path
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "pci-prod",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PCI_PROD=bare_path_value"));
 }
