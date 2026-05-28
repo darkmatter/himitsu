@@ -1,0 +1,6 @@
+build OK
+target/debug/build/himitsu-cli-05c1c536b452d66f/out/himitsu.secrets.rs:    pub environment: ::prost::alloc::string::String,
+target/debug/build/himitsu-cli-05c1c536b452d66f/out/himitsu.secrets.rs:    pub environment: ::prost::alloc::string::String,
+target/debug/build/himitsu-c85a7d5100b9b1f7/out/himitsu.secrets.rs:    pub environment: ::prost::alloc::string::String,
+target/debug/build/himitsu-c85a7d5100b9b1f7/out/himitsu.secrets.rs:    pub environment: ::prost::alloc::string::String,
+target/debug/build/himitsu-c85a7d5100b9b1f7/out/himitsu.secrets.rs:    pub environment: ::prost::alloc::string::String,
