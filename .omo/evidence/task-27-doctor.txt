@@ -1,0 +1,20 @@
+   Compiling rustix v1.1.4
+   Compiling getrandom v0.4.2
+   Compiling fastrand v2.3.0
+   Compiling himitsu-cli v0.1.0 (/Users/cm/git/darkmatter/himitsu)
+   Compiling crossterm v0.29.0
+   Compiling tempfile v3.26.0
+   Compiling crokey v1.4.0
+   Compiling coolor v1.1.0
+   Compiling termimad v0.30.1
+    Finished `release` profile [optimized] target(s) in 19.37s
+     Running `target/release/himitsu doctor`
+──────────────────────────────────────────────────
+IDENTITIES
+  ✗ common/self          age1vwtkfgkh…  [no key found]
+
+SECRETS
+  (no secrets)
+
+KEY PROVIDER
+  ✓ provider: disk
