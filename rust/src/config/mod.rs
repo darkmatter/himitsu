@@ -574,13 +574,16 @@ pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
 
 /// Load and parse the first project config found by [`find_project_config`].
 ///
-/// Returns `Some((config, path))` if a config file exists and parses
-/// successfully, or `None` if no config file is found or parsing fails.
-pub fn load_project_config() -> Option<(ProjectConfig, PathBuf)> {
-    let path = find_project_config()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let cfg: ProjectConfig = serde_yaml::from_str(&contents).ok()?;
-    Some((cfg, path))
+/// Returns `Ok(Some((config, path)))` if a config file exists and parses
+/// successfully, `Ok(None)` if no config file is found, or `Err` if a config
+/// file exists but fails to parse (e.g. contains the deprecated `envs:` key).
+pub fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> {
+    let Some(path) = find_project_config() else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(&path)?;
+    let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
+    Ok(Some((cfg, path)))
 }
 
 /// Load and parse the first project config found by walking upward from

@@ -1476,7 +1476,7 @@ fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealth>) 
 /// in it, or the slug doesn't resolve to an existing checkout under
 /// `stores_dir`.
 fn resolve_project_store(ctx: &Context) -> Option<std::path::PathBuf> {
-    let (project_cfg, _) = crate::config::load_project_config()?;
+    let (project_cfg, _) = crate::config::load_project_config().ok()??;
     let slug = project_cfg.default_store?;
     let (org, repo) = crate::config::validate_remote_slug(&slug).ok()?;
     let candidate = ctx.stores_dir().join(org).join(repo);
@@ -1644,11 +1644,7 @@ fn prefix_of(path: &str) -> &str {
 /// the renderer can paint it in a subtle accent. Singletons render the same
 /// in both modes. The active sort column controls ordering inside each store;
 /// store headers stay grouped for readability.
-fn build_rows(
-    results: &[SearchResult],
-    folded: bool,
-    sort_state: SortState,
-) -> Vec<Row> {
+fn build_rows(results: &[SearchResult], folded: bool, sort_state: SortState) -> Vec<Row> {
     use std::collections::BTreeMap;
 
     let mut by_store: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
@@ -1670,13 +1666,7 @@ fn build_rows(
                 count: bucket.len(),
             });
         }
-        append_prefix_grouped_rows(
-            &mut rows,
-            bucket,
-            multi_store,
-            folded,
-            sort_state,
-        );
+        append_prefix_grouped_rows(&mut rows, bucket, multi_store, folded, sort_state);
     }
     rows
 }

@@ -116,7 +116,7 @@ fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
     // 2. Global + project config
     let global = config::Config::load(&config::config_path()).unwrap_or_default();
     let mut slugs = collect_stores_from_global_config(&global);
-    if let Some((cfg, _path)) = config::load_project_config() {
+    if let Some((cfg, _path)) = config::load_project_config().ok().flatten() {
         slugs.extend(collect_stores_from_project_config(&cfg));
     }
     if !slugs.is_empty() {

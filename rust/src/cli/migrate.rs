@@ -82,7 +82,22 @@ fn migrate_secret_environments(ctx: &super::Context, dry_run: bool) -> Result<us
 
         let plaintext = match age::decrypt_with_identities(&envelope.ciphertext, &identities) {
             Ok(plaintext) => plaintext,
-            Err(_) => envelope.ciphertext.clone(),
+            Err(e) => {
+                // If age decryption fails, check whether the ciphertext bytes are
+                // already a valid unencrypted SecretValue proto. This handles test
+                // fixtures and legacy stores that wrote unencrypted proto bytes.
+                // If the bytes are NOT a valid proto, skip to avoid corrupting the
+                // secret with a double-encrypt.
+                if proto::SecretValue::decode(envelope.ciphertext.as_slice()).is_ok() {
+                    envelope.ciphertext.clone()
+                } else {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "cannot decrypt secret; skipping migration for this file: {e}"
+                    );
+                    continue;
+                }
+            }
         };
         let decoded = secret_value::decode_with_legacy_environment(
             &plaintext,
@@ -207,7 +222,9 @@ fn translate_envs_to_outputs(envs: &Value) -> Result<Value> {
         }
 
         if !tag_selectors.is_empty() {
-            selectors.push(Value::String(tag_selectors.join("+")));
+            // Multiple tag entries in the same env had OR semantics (each independently
+            // contributes matching secrets). Use "," (OR between groups) not "+" (AND).
+            selectors.push(Value::String(tag_selectors.join(",")));
         }
 
         let mut output = Mapping::new();

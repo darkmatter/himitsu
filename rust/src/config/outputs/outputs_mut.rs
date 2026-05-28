@@ -58,8 +58,7 @@ pub use ScopeHint as OutputScopeHint;
 /// Mutex used in tests to serialise mutations to `HIMITSU_CONFIG` / config
 /// files so test runs do not stomp on each other.
 #[cfg(test)]
-pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn find_project_config_from(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();

@@ -25,8 +25,8 @@ use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::config::outputs::dsl as env_dsl;
-use crate::config::outputs::outputs_mut::Scope;
 use crate::config::outputs::dsl::{AliasMap, OutputDef, SelectorEntry};
+use crate::config::outputs::outputs_mut::Scope;
 use crate::config::outputs::outputs_mut::{self, OutputScopeHint as ScopeHint};
 use crate::config::outputs::resolver::{
     resolve_outputs, Context as ResolverContext, SecretCandidate,

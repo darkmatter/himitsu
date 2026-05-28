@@ -8,11 +8,11 @@ use ratatui::Frame;
 use crate::tui::layout::{CANVAS_MARGIN, CANVAS_MAX_HEIGHT, CANVAS_MAX_WIDTH};
 
 pub mod command_palette;
-pub mod outputs_dsl_editor;
 pub mod help;
 pub mod init_wizard;
 pub mod new_secret;
 pub mod outputs;
+pub mod outputs_dsl_editor;
 pub mod outputs_text;
 pub mod remote_add;
 pub mod search;

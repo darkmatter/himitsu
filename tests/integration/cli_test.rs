@@ -202,7 +202,7 @@ fn migrate_envs_full_roundtrip() {
     assert!(!migrated_config.contains("envs:"));
     assert!(migrated_config.contains("selectors:"));
     assert!(migrated_config.contains("aliases:"));
-    assert!(migrated_config.contains("tag:pci+tag:prod"));
+    assert!(migrated_config.contains("tag:pci,tag:prod"));
 
     for (path, tag) in [
         ("prod/api-key", "prod"),

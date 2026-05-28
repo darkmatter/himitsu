@@ -41,7 +41,7 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let project_cfg = load_project_config().map(|(cfg, _)| cfg);
+    let project_cfg = load_project_config()?.map(|(cfg, _)| cfg);
 
     let outputs_map = project_cfg
         .as_ref()

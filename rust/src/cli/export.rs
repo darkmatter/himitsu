@@ -92,7 +92,7 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     }
 
     // Encrypt via SOPS and write to file.
-    let project_cfg = load_project_config().map(|(c, _)| c);
+    let project_cfg = load_project_config()?.map(|(c, _)| c);
     let out_path = resolve_output_path(&args)?;
     write_encrypted(&out_path, &output_text, &args.format, project_cfg.as_ref())?;
 

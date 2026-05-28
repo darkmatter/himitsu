@@ -90,7 +90,7 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
     );
 
     // 2. Load project outputs config and resolve.
-    let outputs_map = load_project_config()
+    let outputs_map = load_project_config()?
         .map(|(cfg, _)| cfg.outputs)
         .unwrap_or_default();
 
@@ -154,7 +154,7 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result<()> {
     validate_env_label(label)?;
 
-    let outputs_map = load_project_config()
+    let outputs_map = load_project_config()?
         .map(|(cfg, _)| cfg.outputs)
         .unwrap_or_default();
 
