@@ -29,7 +29,9 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher};
 
 use super::outputs_text::TextBuffer;
-use crate::config::outputs::resolver::{resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate};
+use crate::config::outputs::resolver::{
+    resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate,
+};
 
 use crate::config::outputs::dsl::OutputsMap;
 
@@ -85,9 +87,18 @@ impl DslEditor {
     }
 
     /// Produce a flat resolution against the available items.
-    pub fn resolve(&self, available_items: &[SecretCandidate]) -> Result<Vec<ResolvedOutput>, String> {
+    pub fn resolve(
+        &self,
+        available_items: &[SecretCandidate],
+    ) -> Result<Vec<ResolvedOutput>, String> {
         let envs = self.parse_envs()?;
-        resolve_outputs(&envs, &ResolverContext { available_secrets: available_items.to_vec() }).map_err(|e| e.to_string())
+        resolve_outputs(
+            &envs,
+            &ResolverContext {
+                available_secrets: available_items.to_vec(),
+            },
+        )
+        .map_err(|e| e.to_string())
     }
 
     /// Open or refresh the autocomplete popup. The corpus is generally the
@@ -261,7 +272,16 @@ mod tests {
         // Quote the entry so YAML doesn't parse `{}/db` as a flow mapping.
         let yaml = "env-{dev,prod}:\n  selectors:\n    - \"$1/db\"\n";
         let ed = DslEditor::new(yaml, None);
-        let items = vec![SecretCandidate { path: "dev/db".to_string(), tags: vec![] }, SecretCandidate { path: "prod/db".to_string(), tags: vec![] }];
+        let items = vec![
+            SecretCandidate {
+                path: "dev/db".to_string(),
+                tags: vec![],
+            },
+            SecretCandidate {
+                path: "prod/db".to_string(),
+                tags: vec![],
+            },
+        ];
         let out = ed.resolve(&items).unwrap();
         assert_eq!(out.iter().map(|o| o.entries.len()).sum::<usize>(), 2);
     }

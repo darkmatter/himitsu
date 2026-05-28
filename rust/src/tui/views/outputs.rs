@@ -26,12 +26,14 @@ use ratatui::Frame;
 use crate::cli::Context;
 use crate::config::env_cache::Scope;
 use crate::config::env_dsl;
+use crate::config::outputs::dsl::{AliasMap, OutputDef, SelectorEntry};
 use crate::config::outputs::outputs_mut::{self, OutputScopeHint as ScopeHint};
-use crate::config::outputs::dsl::{OutputDef, SelectorEntry, AliasMap};
-use crate::config::outputs::resolver::{resolve_outputs, Context as ResolverContext, SecretCandidate};
+use crate::config::outputs::resolver::{
+    resolve_outputs, Context as ResolverContext, SecretCandidate,
+};
 use crate::config::validate_env_label;
 use crate::tui::keymap::{Bindings, KeyMap};
-use crate::tui::views::envs_dsl_editor::{DslEditor, DslEditorOutcome};
+use crate::tui::views::outputs_dsl_editor::{DslEditor, DslEditorOutcome};
 
 /// Outcome of handling a key — routed by the app.
 #[derive(Debug, Clone)]
@@ -293,7 +295,10 @@ impl CreateEditor {
             },
             EntryKind::Alias => {
                 let mut aliases = AliasMap::new();
-                aliases.insert(self.alias_key.trim().to_string(), self.path.trim().to_string());
+                aliases.insert(
+                    self.alias_key.trim().to_string(),
+                    self.path.trim().to_string(),
+                );
                 OutputDef {
                     selectors: vec![],
                     aliases,
@@ -790,7 +795,9 @@ impl OutputsView {
                             Scope::Project => ScopeHint::Project,
                             Scope::Global => ScopeHint::Global,
                         };
-                        if let Err(e) = outputs_mut::delete_output(original_label, original_hint, &cwd) {
+                        if let Err(e) =
+                            outputs_mut::delete_output(original_label, original_hint, &cwd)
+                        {
                             return OutputsAction::CreateFailed(format!(
                                 "save failed while removing old label: {e}"
                             ));
@@ -970,7 +977,9 @@ impl OutputsView {
             envs.insert(label.to_string(), entries.clone());
         }
 
-        let ctx = ResolverContext { available_secrets: self.available_secrets.clone() };
+        let ctx = ResolverContext {
+            available_secrets: self.available_secrets.clone(),
+        };
         let lines: Vec<Line> = match resolve_outputs(&envs, &ctx) {
             Ok(outputs) => {
                 let mut out = Vec::new();
@@ -1254,7 +1263,9 @@ impl OutputsView {
         let label = editor.label.trim().to_string();
         let mut envs = BTreeMap::new();
         envs.insert(label.clone(), editor.entries());
-        let ctx = ResolverContext { available_secrets: self.available_secrets.clone() };
+        let ctx = ResolverContext {
+            available_secrets: self.available_secrets.clone(),
+        };
         let lines = match resolve_outputs(&envs, &ctx) {
             Ok(outputs) => {
                 let mut out = Vec::new();
