@@ -110,6 +110,9 @@ pub struct Config {
     /// for any given label.
     #[serde(default)]
     pub envs: BTreeMap<String, Vec<EnvEntry>>,
+
+    #[serde(default)]
+    pub outputs: outputs::OutputsMap,
 }
 
 impl Config {
@@ -172,6 +175,9 @@ pub struct ProjectConfig {
     /// Environment definitions: env name → list of entry specs.
     #[serde(default)]
     pub envs: BTreeMap<String, Vec<EnvEntry>>,
+
+    #[serde(default)]
+    pub outputs: outputs::OutputsMap,
 
     /// Generate output settings.
     #[serde(default)]

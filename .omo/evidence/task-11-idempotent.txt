@@ -1,0 +1,28 @@
+Task 11 verification evidence
+
+TDD red check:
+- cargo test --lib config::outputs 2>&1 | tail -20
+- Initial result failed because outputs mutation API/types were missing.
+
+LSP diagnostics:
+- rust/src/config/outputs/outputs_mut.rs: clean
+- rust/src/config/outputs/dsl.rs: clean
+- rust/src/config/outputs/mod.rs: clean
+- rust/src/config/outputs/resolver.rs: clean
+- rust/src/config/outputs/selector.rs: clean
+- rust/src/config/mod.rs: clean
+- rust/src/tui/views/secret_viewer.rs: clean
+
+Required test commands:
+- cargo test --lib config::outputs 2>&1 | tail -20
+  - ok: 47 passed; 0 failed; 0 ignored; 635 filtered out
+- cargo test --lib config::envs_mut 2>&1 | tail -5
+  - ok: 10 passed; 0 failed; 0 ignored; 672 filtered out
+- cargo test --workspace
+  - ok: 681 unit tests passed, 117 integration tests passed, doctests ok
+- cargo clippy --workspace --all-targets -- -D warnings
+  - ok: finished dev profile with no warnings
+
+Idempotency contract:
+- add_output_entry with the same output name and identical OutputDef is idempotent.
+- remove_output for a missing name is a no-op.

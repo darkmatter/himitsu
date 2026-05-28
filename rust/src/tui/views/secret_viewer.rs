@@ -116,15 +116,20 @@ impl SecretViewerView {
         // Best-effort eager decrypt so the metadata pane can show structured
         // fields. Failures are silent — the viewer still lets the user press
         // `r` to surface the real error.
-        let decoded = store::read_secret(&store_path, &path)
+        let decoded = store::read_secret_payload(&store_path, &path)
             .ok()
-            .and_then(|ct| {
-                ctx_owned
-                    .load_identities()
-                    .and_then(|ids| age::decrypt_with_identities(&ct, &ids))
-                    .ok()
-            })
-            .map(|plain| secret_value::decode(&plain));
+            .and_then(|payload| {
+                let identities = ctx_owned.load_identities().ok()?;
+                let plain = match age::decrypt_with_identities(&payload.ciphertext, &identities) {
+                    Ok(plain) => plain,
+                    Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+                    Err(_) => return None,
+                };
+                Some(secret_value::decode_with_legacy_environment(
+                    &plain,
+                    payload.legacy_environment.as_deref(),
+                ))
+            });
 
         Self {
             store_label,
@@ -339,6 +344,7 @@ impl SecretViewerView {
             expires_at: sv.expires_at,
             annotations: sv.annotations,
             tags: sv.tags,
+            legacy_environment_detected: false,
         });
         Ok(parsed.value)
     }
@@ -424,10 +430,17 @@ impl SecretViewerView {
     }
 
     fn read_decoded(&self) -> crate::error::Result<secret_value::Decoded> {
-        let ciphertext = store::read_secret(&self.store_path, &self.path)?;
+        let payload = store::read_secret_payload(&self.store_path, &self.path)?;
         let identities = self.ctx.load_identities()?;
-        let plain = age::decrypt_with_identities(&ciphertext, &identities)?;
-        Ok(secret_value::decode(&plain))
+        let plain = match age::decrypt_with_identities(&payload.ciphertext, &identities) {
+            Ok(plain) => plain,
+            Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+            Err(err) => return Err(err),
+        };
+        Ok(secret_value::decode_with_legacy_environment(
+            &plain,
+            payload.legacy_environment.as_deref(),
+        ))
     }
 
     // ── Drawing ────────────────────────────────────────────────────────
@@ -1343,6 +1356,7 @@ s3cret";
             expires_at: None,
             annotations,
             tags: vec!["pci".to_string(), "stripe".to_string()],
+            legacy_environment_detected: false,
         };
         let doc = render_edit_doc("prod/SECRET", &decoded);
         let parsed = parse_edit_doc(&doc).unwrap();

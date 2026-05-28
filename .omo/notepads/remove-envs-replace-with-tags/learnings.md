@@ -38,3 +38,40 @@
 - `himitsu-cli` is binary-only in `Cargo.toml`, so integration tests cannot import `crate::proto` directly.
 - The test crate can still reuse generated proto types by path-including `rust/src/proto/mod.rs` with `#[path = "../../rust/src/proto/mod.rs"] mod proto;`.
 - That makes `proto::SecretEnvelope` and `proto::SecretValue` usable in fixtures without adding a library target.
+
+## Task 10 output resolver transplant
+
+- Legacy `env_resolver` wildcard `$1` capture substitutes only bare `$1` occurrences and leaves other numeric captures literal; the outputs resolver preserves that scanner for brace-expanded output names.
+- Output brace-expansion is name-driven: `web-{dev,staging}` emits `web-dev` and `web-staging`, and each brace segment becomes the `$1` value for selectors and aliases in that expanded output.
+- Cross-store output refs should split store and secret path at `#`, delegate store grammar to `SecretRef::parse_store_ref`, then parse the full ref with `SecretRef::parse` so canonical normalization stays centralized.
+
+## Task 8 selector parser
+
+- Existing glob matching lives in `rust/src/cli/export.rs` as `glob_match`; T8 reused that matcher for selector `Token::Glob` and extended it to support `?` segment wildcards without adding dependencies.
+
+## Task 11 output mutation API
+
+- `envs_mut.rs` exposes scope resolution plus upsert/delete/read over a lossy `serde_yaml` round-trip; comments and custom formatting are not preserved, while map ordering is deterministic through `BTreeMap`.
+- `outputs/outputs_mut.rs` mirrors that style for `OutputsMap`: in-memory `add_output_entry` / `remove_output`, plus file-backed `upsert_output_entry` / `delete_output` / `read_outputs` using the same project/global scope resolution.
+- `add_output_entry` is idempotent for identical name+definition calls and uses upsert semantics when the same output name receives a different `OutputDef`; `remove_output` is a no-op for absent names.
+
+## Task 9 outputs DSL schema
+
+- `config::outputs::dsl::OutputDef` is a fixed YAML map with `selectors: Vec<SelectorEntry>` and `aliases: BTreeMap<String, String>`.
+- `selectors` and `aliases` default independently when omitted; explicit empty list/map are also valid.
+- `#[serde(deny_unknown_fields)]` on `OutputDef` keeps the new `outputs:` schema strict while leaving brace expansion and `$1` substitution for resolution-time work.
+- A small `OutputEntry` string-or-single-key-map serde shim coexists with `OutputDef` for one-entry migration/editor normalization without touching legacy `env_dsl.rs`.
+
+## Task 12 env_cache verdict
+
+- VERDICT: DROP `env_cache.rs` rather than transplant it to outputs.
+- The cache mirrors user-authored `envs:` YAML definitions into `data_dir().join("envs.db")`; it does not cache decrypted values or the full secret store walk.
+- Current production callers refresh the cache after env mutations, while readback is only evident in tests; TUI usage imports the `Scope` enum for labels/toasts rather than querying SQLite on a hot path.
+- T19 should delete the dedicated cache file with `std::fs::remove_file(data_dir().join("envs.db"))`, treating missing files as harmless.
+
+## Task 13 auto-fold legacy envelope env
+
+- Current writes use the YAML envelope in `remote/store.rs`; legacy proto `SecretEnvelope` support belongs to `.age` fallback reads.
+- The decode seam is `crypto::secret_value::decode_with_legacy_environment`, called after `age::decrypt_with_identities` and given `SecretPayload.legacy_environment` from `store::read_secret_payload`.
+- Folding is read-only: valid legacy env values are appended to in-memory `Decoded.tags` if absent, invalid values warn and skip, and `himitsu get/search/ls/tag/export/generate/rekey` do not rewrite `.age` merely by reading.
+- The T6 helper must remove the current `.yaml` file before writing its legacy `.age` fixture because the store reader prefers YAML over `.age` when both exist.
