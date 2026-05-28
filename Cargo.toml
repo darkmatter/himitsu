@@ -43,6 +43,9 @@ exclude = [
 name = "himitsu"
 path = "rust/src/main.rs"
 
+[lib]
+path = "rust/src/lib.rs"
+
 [dependencies]
 age = { version = "0.11", features = ["armor"] }
 clap = { version = "4", features = ["derive"] }
