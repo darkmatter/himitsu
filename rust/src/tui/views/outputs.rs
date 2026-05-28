@@ -24,8 +24,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use crate::cli::Context;
-use crate::config::env_cache::Scope;
-use crate::config::env_dsl;
+use crate::config::outputs::dsl as env_dsl;
+use crate::config::outputs::outputs_mut::Scope;
 use crate::config::outputs::dsl::{AliasMap, OutputDef, SelectorEntry};
 use crate::config::outputs::outputs_mut::{self, OutputScopeHint as ScopeHint};
 use crate::config::outputs::resolver::{
@@ -1603,7 +1603,7 @@ mod tests {
     // outputs_mut tests serialize HIMITSU_CONFIG because it's process-global.
     // Use the same lock here so our fixtures don't stomp on their runs or
     // each other — see `crate::config::outputs_mut::HIMITSU_CONFIG_TEST_GUARD`.
-    use crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD as ENV_GUARD;
+    use crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD as ENV_GUARD;
 
     struct Home {
         _guard: std::sync::MutexGuard<'static, ()>,

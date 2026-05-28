@@ -328,8 +328,8 @@ impl App {
             }
             OutputsAction::Deleted { label, scope } => {
                 let scope_str = match scope {
-                    crate::config::env_cache::Scope::Project => "project",
-                    crate::config::env_cache::Scope::Global => "global",
+                    crate::config::outputs::outputs_mut::Scope::Project => "project",
+                    crate::config::outputs::outputs_mut::Scope::Global => "global",
                 };
                 self.push_toast(
                     format!("deleted `{label}` ({scope_str})"),
@@ -341,8 +341,8 @@ impl App {
             }
             OutputsAction::Created { label, scope } => {
                 let scope_str = match scope {
-                    crate::config::env_cache::Scope::Project => "project",
-                    crate::config::env_cache::Scope::Global => "global",
+                    crate::config::outputs::outputs_mut::Scope::Project => "project",
+                    crate::config::outputs::outputs_mut::Scope::Global => "global",
                 };
                 self.push_toast(
                     format!("created `{label}` ({scope_str})"),

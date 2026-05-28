@@ -71,6 +71,48 @@ pub struct OutputDef {
 /// The full `outputs:` block: output-name → OutputDef.
 pub type OutputsMap = BTreeMap<String, OutputDef>;
 
+/// Expand a brace-pattern label into `(expanded_name, capture_value)` pairs.
+///
+/// `web-{dev,staging,prod}` → `[("web-dev","dev"), ("web-staging","staging"), ...]`.
+/// Labels without braces return a single `(label, "")` pair.
+pub fn expand_brace_label(label: &str) -> Vec<(String, String)> {
+    let Some(open) = label.find('{') else {
+        return vec![(label.to_string(), String::new())];
+    };
+    let Some(close_rel) = label[open..].find('}') else {
+        return vec![(label.to_string(), String::new())];
+    };
+    let close = open + close_rel;
+    let prefix = &label[..open];
+    let suffix = &label[close + 1..];
+    let body = &label[open + 1..close];
+    if body.is_empty() {
+        return vec![(label.to_string(), String::new())];
+    }
+    body.split(',')
+        .map(|raw| raw.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|val| (format!("{prefix}{val}{suffix}"), val))
+        .collect()
+}
+
+/// Derive a SCREAMING_SNAKE_CASE env-var name from a secret path tail.
+///
+/// `api-key` → `API_KEY`, `group/item-name` → `GROUP__ITEM_NAME`.
+pub fn derive_env_key(item_name: &str) -> String {
+    item_name
+        .replace('/', "__")
+        .replace('-', "_")
+        .to_ascii_uppercase()
+}
+
+/// Return the last non-empty path component of `path`.
+///
+/// `prod/api-key` → `api-key`, `API_KEY` → `API_KEY`.
+pub(crate) fn last_component(path: &str) -> &str {
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

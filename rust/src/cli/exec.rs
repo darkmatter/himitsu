@@ -179,14 +179,14 @@ fn pick_env_key(path: &str, decoded: &secret_value::Decoded) -> Result<String> {
     if !decoded.env_key.is_empty() {
         return Ok(decoded.env_key.clone());
     }
-    let tail = config::env_dsl::last_component(path);
+    let tail = config::outputs::dsl::last_component(path);
     if tail.is_empty() {
         return Err(HimitsuError::InvalidReference(format!(
             "secret path {:?} has no final segment to derive an env-var name from",
             path
         )));
     }
-    Ok(config::env_dsl::derive_env_key(tail))
+    Ok(config::outputs::dsl::derive_env_key(tail))
 }
 
 fn spawn_and_wait(

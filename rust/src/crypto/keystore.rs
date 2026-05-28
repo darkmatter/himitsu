@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn fallback_paths_include_common_sops_age_locations() {
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn load_identities_falls_back_to_all_sops_age_keys() {
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn himitsu_disk_key_takes_precedence_over_sops_fallback() {
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
@@ -522,7 +522,7 @@ mod tests {
     fn load_identities_keychain_miss_falls_through_to_disk() {
         // When the keychain has no entry for the pubkey fingerprint, load_identities
         // must not error — it should fall through and return disk identities instead.
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();

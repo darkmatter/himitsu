@@ -6,14 +6,109 @@
 //! output definition twice is idempotent; adding the same name with different
 //! content replaces the previous definition.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::config::envs_mut::{resolve_scope, ResolvedScope, ScopeHint};
 use crate::config::outputs::{OutputDef, OutputsMap};
-use crate::config::{Config, ProjectConfig};
+use crate::config::{config_path, Config, ProjectConfig};
 use crate::error::{HimitsuError, Result};
 
-pub use crate::config::envs_mut::ScopeHint as OutputScopeHint;
+/// Candidate filenames checked when walking up for a project config.
+const PROJECT_CANDIDATES: &[&str] = &[
+    ".himitsu.yaml",
+    "himitsu.yaml",
+    "himitsu.yml",
+    ".config/himitsu.yaml",
+    ".config/himitsu.yml",
+    ".himitsu/config.yaml",
+    ".himitsu/config.yml",
+];
+
+/// Whether the config file is project-scoped or global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Project-scoped config file (discovered by walking up from cwd).
+    Project,
+    /// Global config at `config_dir()/config.yaml`.
+    Global,
+}
+
+/// Which config file an output mutation targets.
+#[derive(Debug, Clone, Copy)]
+pub enum ScopeHint {
+    /// Force project scope — errors if no project config is found walking up.
+    Project,
+    /// Force global scope — writes to `config_dir()/config.yaml`.
+    Global,
+    /// Auto: project if a project config exists walking up from cwd, else global.
+    Auto,
+}
+
+/// Resolved scope after inference — what actually got chosen.
+#[derive(Debug, Clone)]
+pub struct ResolvedScope {
+    /// Which scope class (Project | Global).
+    pub scope: Scope,
+    /// Absolute path to the config file we will read/write.
+    pub config_path: PathBuf,
+}
+
+/// Re-export so callers that name the hint type `OutputScopeHint` still compile.
+pub use ScopeHint as OutputScopeHint;
+
+/// Mutex used in tests to serialise mutations to `HIMITSU_CONFIG` / config
+/// files so test runs do not stomp on each other.
+#[cfg(test)]
+pub(crate) static HIMITSU_CONFIG_TEST_GUARD: std::sync::Mutex<()> =
+    std::sync::Mutex::new(());
+
+fn find_project_config_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    for _ in 0..=20 {
+        for candidate in PROJECT_CANDIDATES {
+            let path = dir.join(candidate);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+    None
+}
+
+/// Resolve a scope hint against `cwd`. Pure: only does existence checks.
+pub fn resolve_scope(hint: ScopeHint, cwd: &Path) -> Result<ResolvedScope> {
+    match hint {
+        ScopeHint::Project => match find_project_config_from(cwd) {
+            Some(p) => Ok(ResolvedScope {
+                scope: Scope::Project,
+                config_path: p,
+            }),
+            None => Err(HimitsuError::ProjectConfigRequired(format!(
+                "no project config (.himitsu.yaml) found walking up from {}",
+                cwd.display()
+            ))),
+        },
+        ScopeHint::Global => Ok(ResolvedScope {
+            scope: Scope::Global,
+            config_path: config_path(),
+        }),
+        ScopeHint::Auto => {
+            if let Some(p) = find_project_config_from(cwd) {
+                Ok(ResolvedScope {
+                    scope: Scope::Project,
+                    config_path: p,
+                })
+            } else {
+                Ok(ResolvedScope {
+                    scope: Scope::Global,
+                    config_path: config_path(),
+                })
+            }
+        }
+    }
+}
 
 fn validate_output_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -30,11 +125,11 @@ fn load_outputs(resolved: &ResolvedScope) -> Result<OutputsMap> {
     }
     let contents = std::fs::read_to_string(&resolved.config_path)?;
     match resolved.scope {
-        crate::config::env_cache::Scope::Project => {
+        Scope::Project => {
             let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
             Ok(cfg.outputs)
         }
-        crate::config::env_cache::Scope::Global => {
+        Scope::Global => {
             let cfg: Config = serde_yaml::from_str(&contents)?;
             Ok(cfg.outputs)
         }
@@ -49,7 +144,7 @@ fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<(
     }
 
     let serialized = match resolved.scope {
-        crate::config::env_cache::Scope::Project => {
+        Scope::Project => {
             let mut cfg: ProjectConfig = if resolved.config_path.exists() {
                 let contents = std::fs::read_to_string(&resolved.config_path)?;
                 serde_yaml::from_str(&contents)?
@@ -60,7 +155,7 @@ fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<(
             cfg.validate()?;
             serde_yaml::to_string(&cfg)?
         }
-        crate::config::env_cache::Scope::Global => {
+        Scope::Global => {
             let mut cfg: Config = if resolved.config_path.exists() {
                 let contents = std::fs::read_to_string(&resolved.config_path)?;
                 serde_yaml::from_str(&contents)?

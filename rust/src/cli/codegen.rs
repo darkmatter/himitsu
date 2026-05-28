@@ -770,7 +770,7 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -1150,7 +1150,7 @@ mod tests {
 
     #[test]
     fn run_sops_unknown_output_label_errors() {
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();

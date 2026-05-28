@@ -114,3 +114,12 @@
 - Old `resolve_entries` function (which handled `EnvEntry::Alias/Single/Glob/Tag` variants) was removed; `Tag` entries are now handled naturally by the resolver if context has tags.
 - TUI test fixtures in `tui/views/outputs.rs` and `tui/views/envs_dsl_editor.rs` used old `envs:` sequence format; these were updated to `outputs:` `OutputDef` format as part of this task since they blocked `cargo test --workspace`.
 - The dedicated env cache deletion remains `ctx.state_dir.join("envs.db")`, matching T3 evidence and avoiding the unrelated `himitsu.db`.
+
+## Task 18 codegen.rs → outputs resolver
+
+- Language mode replaced `scan_store()` (filesystem scan: `.himitsu/secrets/<env>/<key>.age`) with `resolve_outputs()` + `build_inventory_from_outputs()`. The `SecretInventory` struct is unchanged; output names become "environments" and `ResolvedEntry.env_key` values become "keys". All four emitters (gen_typescript, gen_golang, gen_python, gen_rust) were NOT modified.
+- Sops mode (`himitsu codegen <label>`) was completely rewritten: replaced the defunct `load_effective_envs()` + `env_resolver::resolve_with_tags()` + `materialize_tree()` chain with the same `load_project_config()` → `resolve_outputs()` → flat entry decryption pattern used by generate.rs (T17). Output YAML is now flat (env_key: value) instead of nested.
+- `scan_store()` moved from production code into `#[cfg(test)]` (renamed `scan_store_test`) since it's only needed by emitter unit tests after the switch.
+- `materialize_tree()` (production) and its test helpers (`materialize_tree_stub`, tree tests, sops_plaintext_contains_auto_generated_header) removed — dead code after sops mode rewrite.
+- `HIMITSU_KEYS_BY_ENV` in TypeScript output always shows ALL output names and ALL their keys regardless of `--env` filtering; only `HimitsuKey`, `HimitsuSecrets`, and `HIMITSU_KEYS` are filtered. Integration tests must check `readonly <camelKey>: string` presence/absence rather than raw key name strings.
+- Pattern (TDD): wrote 3 failing integration tests (`codegen_ts_from_outputs`, `codegen_ts_requires_outputs_config`, `codegen_ts_env_filter_selects_output`) before implementing, verified they failed, then implemented. Evidence: `.omo/evidence/task-18-ts-diff.txt`.

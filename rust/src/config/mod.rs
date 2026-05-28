@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -7,13 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{HimitsuError, Result};
 use crate::tui::keymap::KeyMap;
 
-pub mod env_cache;
-pub mod env_dsl;
-pub mod env_resolver;
-pub mod envs_mut;
 pub mod outputs;
-
-pub use self::env_dsl::{validate_envs, EnvEntry};
 
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -603,24 +596,6 @@ pub fn load_project_config_from(start: &Path) -> Result<Option<(ProjectConfig, P
     Ok(Some((cfg, path)))
 }
 
-/// Merge global and project env definitions with project labels taking
-/// precedence. This is the env lookup surface used by CLI consumers; the TUI
-/// can still show scopes separately when scope matters for editing.
-pub fn merge_envs(
-    global: &BTreeMap<String, Vec<EnvEntry>>,
-    project: Option<&BTreeMap<String, Vec<EnvEntry>>>,
-) -> BTreeMap<String, Vec<EnvEntry>> {
-    let mut merged = global.clone();
-    if let Some(project) = project {
-        merged.extend(project.clone());
-    }
-    merged
-}
-
-pub fn load_effective_envs() -> Result<BTreeMap<String, Vec<EnvEntry>>> {
-    Ok(BTreeMap::new())
-}
-
 // ── Store resolution ────────────────────────────────────────────────────────
 
 /// Validate a remote slug (e.g., `"org/repo"`).
@@ -870,7 +845,7 @@ mod tests {
     #[test]
     fn auto_pull_enabled_env_var_overrides_config() {
         // Serialize via the same mutex used by other env-touching tests.
-        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+        let _guard = crate::config::outputs::outputs_mut::HIMITSU_CONFIG_TEST_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -935,176 +910,6 @@ mod tests {
                 .contains("run 'himitsu migrate envs' to convert"),
             "msg: {err}"
         );
-    }
-
-    #[test]
-    fn merge_envs_keeps_global_and_project_overrides_conflicts() {
-        let mut global = BTreeMap::new();
-        global.insert(
-            "shared".to_string(),
-            vec![EnvEntry::Single("global/SHARED".into())],
-        );
-        global.insert(
-            "global-only".to_string(),
-            vec![EnvEntry::Single("global/ONLY".into())],
-        );
-
-        let mut project = BTreeMap::new();
-        project.insert(
-            "shared".to_string(),
-            vec![EnvEntry::Single("project/SHARED".into())],
-        );
-
-        let merged = merge_envs(&global, Some(&project));
-        assert!(matches!(
-            &merged["shared"][0],
-            EnvEntry::Single(path) if path == "project/SHARED"
-        ));
-        assert!(merged.contains_key("global-only"));
-    }
-
-    #[test]
-    fn env_entry_deserialize_single() {
-        let yaml = "\"dev/API_KEY\"";
-        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(entry, EnvEntry::Single(ref p) if p == "dev/API_KEY"));
-    }
-
-    #[test]
-    fn env_entry_deserialize_glob() {
-        let yaml = "\"dev/*\"";
-        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(entry, EnvEntry::Glob(ref p) if p == "dev"));
-    }
-
-    #[test]
-    fn env_entry_deserialize_alias() {
-        let yaml = "MY_KEY: dev/DB_PASSWORD";
-        let entry: EnvEntry = serde_yaml::from_str(yaml).unwrap();
-        match entry {
-            EnvEntry::Alias { key, path } => {
-                assert_eq!(key, "MY_KEY");
-                assert_eq!(path, "dev/DB_PASSWORD");
-            }
-            _ => panic!("expected Alias variant"),
-        }
-    }
-
-    #[test]
-    fn env_entry_round_trip_serialize() {
-        // Single
-        let e = EnvEntry::Single("prod/STRIPE_KEY".into());
-        let s = serde_yaml::to_string(&e).unwrap();
-        assert!(s.trim() == "prod/STRIPE_KEY");
-
-        // Glob
-        let e = EnvEntry::Glob("prod".into());
-        let s = serde_yaml::to_string(&e).unwrap();
-        assert!(s.trim() == "prod/*");
-
-        // Alias
-        let e = EnvEntry::Alias {
-            key: "MY_DB".into(),
-            path: "prod/DB_PASS".into(),
-        };
-        let s = serde_yaml::to_string(&e).unwrap();
-        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
-        assert!(
-            matches!(back, EnvEntry::Alias { ref key, ref path } if key == "MY_DB" && path == "prod/DB_PASS")
-        );
-    }
-
-    // ── Tag selector entries ───────────────────────────────────────────
-
-    #[test]
-    fn env_entry_deserialize_tag_string_form() {
-        // `- tag:pci` — bare string with the `tag:` prefix.
-        let e: EnvEntry = serde_yaml::from_str("\"tag:pci\"").unwrap();
-        assert!(matches!(e, EnvEntry::Tag(ref t) if t == "pci"));
-    }
-
-    #[test]
-    fn env_entry_deserialize_tag_map_form() {
-        // `- { tag: stripe }` — map whose literal key is `tag`.
-        let e: EnvEntry = serde_yaml::from_str("{tag: stripe}").unwrap();
-        assert!(matches!(e, EnvEntry::Tag(ref t) if t == "stripe"));
-    }
-
-    #[test]
-    fn env_entry_deserialize_alias_tag_map_form() {
-        // `- { STRIPE: tag:stripe }` — alias whose value is a `tag:` selector.
-        let e: EnvEntry = serde_yaml::from_str("{STRIPE: \"tag:stripe\"}").unwrap();
-        match e {
-            EnvEntry::AliasTag { key, tag } => {
-                assert_eq!(key, "STRIPE");
-                assert_eq!(tag, "stripe");
-            }
-            other => panic!("expected AliasTag, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn env_entry_round_trip_tag_variants() {
-        // Tag → string form `tag:foo`, round-trip preserves the variant.
-        let e = EnvEntry::Tag("pci".into());
-        let s = serde_yaml::to_string(&e).unwrap();
-        assert_eq!(s.trim(), "tag:pci");
-        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
-        assert!(matches!(back, EnvEntry::Tag(ref t) if t == "pci"));
-
-        // AliasTag → map form `{ STRIPE: tag:stripe }`, round-trip preserves
-        // the variant (not lowered to a plain Alias).
-        let e = EnvEntry::AliasTag {
-            key: "STRIPE".into(),
-            tag: "stripe".into(),
-        };
-        let s = serde_yaml::to_string(&e).unwrap();
-        let back: EnvEntry = serde_yaml::from_str(&s).unwrap();
-        assert!(
-            matches!(back, EnvEntry::AliasTag { ref key, ref tag } if key == "STRIPE" && tag == "stripe")
-        );
-    }
-
-    #[test]
-    fn env_entry_rejects_invalid_tag_grammar_in_string_form() {
-        // Whitespace is forbidden by the tag grammar.
-        let err = serde_yaml::from_str::<EnvEntry>("\"tag:bad tag\"").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("invalid character"), "msg: {msg}");
-    }
-
-    #[test]
-    fn env_entry_rejects_invalid_tag_grammar_in_map_form() {
-        // `{ tag: "bad tag" }` — same grammar check, alternate shape.
-        let err = serde_yaml::from_str::<EnvEntry>("{tag: \"bad tag\"}").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("invalid character"), "msg: {msg}");
-    }
-
-    #[test]
-    fn env_entry_rejects_invalid_tag_in_alias_value() {
-        // `{ STRIPE: "tag:bad tag" }` — invalid tag inside alias-rename form
-        // also fails at parse time, not later in resolve.
-        let err = serde_yaml::from_str::<EnvEntry>("{STRIPE: \"tag:bad tag\"}").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("invalid character"), "msg: {msg}");
-    }
-
-    #[test]
-    fn validate_envs_accepts_tag_entries_in_concrete_label() {
-        // Tag entries skip the capture-ref check entirely (no `$1` to bind).
-        let mut envs = BTreeMap::new();
-        envs.insert(
-            "dev".into(),
-            vec![
-                EnvEntry::Tag("pci".into()),
-                EnvEntry::AliasTag {
-                    key: "STRIPE".into(),
-                    tag: "stripe".into(),
-                },
-            ],
-        );
-        validate_envs(&envs).unwrap();
     }
 
     // ── Env label grammar ──────────────────────────────────────────────
@@ -1182,54 +987,6 @@ mod tests {
         assert_eq!(parse_captures("foo$10bar"), vec![10]);
         // Literal `$` followed by non-digit is ignored.
         assert_eq!(parse_captures("$abc"), Vec::<u32>::new());
-    }
-
-    #[test]
-    fn validate_envs_accepts_capture_in_wildcard_alias() {
-        let mut envs = BTreeMap::new();
-        envs.insert(
-            "foo/*".to_string(),
-            vec![EnvEntry::Alias {
-                key: "POSTGRES".into(),
-                path: "/$1/postgres-url".into(),
-            }],
-        );
-        validate_envs(&envs).unwrap();
-    }
-
-    #[test]
-    fn validate_envs_rejects_capture_in_concrete_env() {
-        let mut envs = BTreeMap::new();
-        envs.insert(
-            "foo/bar".to_string(),
-            vec![EnvEntry::Alias {
-                key: "POSTGRES".into(),
-                path: "/$1/postgres-url".into(),
-            }],
-        );
-        let err = validate_envs(&envs).unwrap_err();
-        assert!(
-            err.to_string().contains("capture refs"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_envs_rejects_high_capture_index() {
-        let mut envs = BTreeMap::new();
-        envs.insert(
-            "foo/*".to_string(),
-            vec![EnvEntry::Single("/$2/postgres-url".into())],
-        );
-        let err = validate_envs(&envs).unwrap_err();
-        assert!(err.to_string().contains("$1"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_envs_rejects_bad_label() {
-        let mut envs = BTreeMap::new();
-        envs.insert("foo/*/bar".to_string(), vec![EnvEntry::Single("x".into())]);
-        assert!(validate_envs(&envs).is_err());
     }
 
     #[test]
