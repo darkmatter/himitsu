@@ -18,9 +18,9 @@ pub use crate::tui::hint::Hint;
 use crate::tui::keymap::{Dispatch, KeyAction, KeyMap};
 use crate::tui::theme;
 pub use crate::tui::toast::{Toast, ToastKind};
-use crate::tui::views::envs::{EnvsAction, EnvsView};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
+use crate::tui::views::outputs::{OutputsAction, OutputsView};
 use crate::tui::views::remote_add::{RemoteAddAction, RemoteAddView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
@@ -29,7 +29,7 @@ enum View {
     Search(SearchView),
     SecretViewer(SecretViewerView),
     NewSecret(NewSecretView),
-    Envs(EnvsView),
+    Outputs(OutputsView),
     RemoteAdd(RemoteAddView),
 }
 
@@ -171,9 +171,9 @@ impl App {
                 let action = viewer.on_key(key, &self.keymap);
                 self.handle_secret_viewer_action(action)
             }
-            View::Envs(envs) => {
+            View::Outputs(envs) => {
                 let action = envs.on_key(key, &self.keymap);
-                self.handle_envs_action(action)
+                self.handle_outputs_action(action)
             }
             View::NewSecret(form) => {
                 let action = form.on_key(key, &self.keymap);
@@ -224,7 +224,7 @@ impl App {
             // for now. Falling through is fine — chord completion in
             // those views just no-ops, since none of their bindings are
             // multi-step by default.
-            View::Envs(_) | View::RemoteAdd(_) => {}
+            View::Outputs(_) | View::RemoteAdd(_) => {}
         }
         None
     }
@@ -256,7 +256,7 @@ impl App {
                 self.view = View::RemoteAdd(RemoteAddView::new(&self.ctx));
             }
             SearchAction::OpenOutputs => {
-                self.view = View::Envs(EnvsView::new(&self.ctx));
+                self.view = View::Outputs(OutputsView::new(&self.ctx));
             }
             SearchAction::SwitchStore(path) => {
                 let label = path
@@ -319,14 +319,14 @@ impl App {
         None
     }
 
-    fn handle_envs_action(&mut self, action: EnvsAction) -> Option<AppIntent> {
+    fn handle_outputs_action(&mut self, action: OutputsAction) -> Option<AppIntent> {
         match action {
-            EnvsAction::None => {}
-            EnvsAction::Quit => self.should_quit = true,
-            EnvsAction::Back => {
+            OutputsAction::None => {}
+            OutputsAction::Quit => self.should_quit = true,
+            OutputsAction::Back => {
                 self.view = View::Search(SearchView::new(&self.ctx));
             }
-            EnvsAction::Deleted { label, scope } => {
+            OutputsAction::Deleted { label, scope } => {
                 let scope_str = match scope {
                     crate::config::env_cache::Scope::Project => "project",
                     crate::config::env_cache::Scope::Global => "global",
@@ -336,10 +336,10 @@ impl App {
                     ToastKind::Success,
                 );
             }
-            EnvsAction::DeleteFailed(msg) => {
+            OutputsAction::DeleteFailed(msg) => {
                 self.push_toast(msg, ToastKind::Error);
             }
-            EnvsAction::Created { label, scope } => {
+            OutputsAction::Created { label, scope } => {
                 let scope_str = match scope {
                     crate::config::env_cache::Scope::Project => "project",
                     crate::config::env_cache::Scope::Global => "global",
@@ -349,7 +349,7 @@ impl App {
                     ToastKind::Success,
                 );
             }
-            EnvsAction::CreateFailed(msg) => {
+            OutputsAction::CreateFailed(msg) => {
                 self.push_toast(msg, ToastKind::Error);
             }
         }
@@ -464,7 +464,7 @@ impl App {
             View::Search(_) => "search",
             View::SecretViewer(_) => "secret_viewer",
             View::NewSecret(_) => "new_secret",
-            View::Envs(_) => "envs",
+            View::Outputs(_) => "envs",
             View::RemoteAdd(_) => "remote_add",
         }
     }
@@ -488,7 +488,7 @@ impl App {
             View::Search(search) => search.draw(frame),
             View::SecretViewer(viewer) => viewer.draw(frame),
             View::NewSecret(form) => form.draw(frame),
-            View::Envs(envs) => envs.draw(frame),
+            View::Outputs(envs) => envs.draw(frame),
             View::RemoteAdd(form) => form.draw(frame),
         }
         // Expire-then-paint the toast. Eviction happens lazily at draw time
@@ -548,7 +548,9 @@ impl App {
             View::NewSecret(_) => {
                 HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
             }
-            View::Envs(_) => HelpView::new(EnvsView::help_entries(), EnvsView::help_title()),
+            View::Outputs(_) => {
+                HelpView::new(OutputsView::help_entries(), OutputsView::help_title())
+            }
             View::RemoteAdd(_) => {
                 HelpView::new(RemoteAddView::help_entries(), RemoteAddView::help_title())
             }
