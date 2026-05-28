@@ -504,7 +504,7 @@ pub enum KeyAction {
     CopySelected,
     /// In the search view: copy `himitsu read <ref>` for the selected row.
     CopyRefSelected,
-    Envs,
+    Outputs,
 
     Reveal,
     CopyValue,
@@ -630,7 +630,7 @@ impl KeyMap {
             (KeyAction::SwitchStore, &self.switch_store),
             (KeyAction::CopySelected, &self.copy_selected),
             (KeyAction::CopyRefSelected, &self.copy_ref_selected),
-            (KeyAction::Envs, &self.envs),
+            (KeyAction::Outputs, &self.envs),
             (KeyAction::Reveal, &self.reveal),
             (KeyAction::CopyValue, &self.copy_value),
             (KeyAction::CopyRef, &self.copy_ref),

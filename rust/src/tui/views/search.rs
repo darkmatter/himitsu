@@ -47,8 +47,7 @@ pub enum SearchAction {
     /// User picked "add remote" from the command palette — open the
     /// protobuf-driven add-remote form.
     AddRemote,
-    /// User requested the envs view (Shift+E) — browse/delete preset envs.
-    OpenEnvs,
+    OpenOutputs,
     /// User picked a new active store via the embedded picker overlay.
     SwitchStore(PathBuf),
     /// User picked "show help" from the command palette — the router
@@ -451,7 +450,7 @@ impl SearchView {
                 Some(SearchAction::None)
             }
             KeyAction::NewSecret => Some(SearchAction::NewSecret),
-            KeyAction::Envs => Some(SearchAction::OpenEnvs),
+            KeyAction::Outputs => Some(SearchAction::OpenOutputs),
             KeyAction::SwitchStore => {
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),
@@ -800,7 +799,7 @@ impl SearchView {
                 self.normalize_selected_column();
                 return SearchAction::None;
             }
-            Command::Envs => return SearchAction::OpenEnvs,
+            Command::Outputs => return SearchAction::OpenOutputs,
             Command::Help => return SearchAction::ShowHelp,
             Command::Quit => return SearchAction::Quit,
             _ => {}
@@ -1455,7 +1454,7 @@ const SEARCH_ACTION_PRIORITY: &[KeyAction] = &[
     KeyAction::Quit,
     KeyAction::CommandPalette,
     KeyAction::NewSecret,
-    KeyAction::Envs,
+    KeyAction::Outputs,
     KeyAction::SwitchStore,
     KeyAction::CopyRefSelected,
     KeyAction::CopySelected,
@@ -1905,7 +1904,7 @@ impl SearchView {
             ("ctrl-n", "new secret"),
             ("ctrl-s", "switch store"),
             ("ctrl-y", "copy selection to clipboard"),
-            ("shift-e", "browse env presets"),
+            ("shift-e", "browse outputs"),
             ("?", "toggle this help"),
             ("esc / ctrl-c", "quit"),
         ]

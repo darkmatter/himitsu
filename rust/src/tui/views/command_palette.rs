@@ -37,7 +37,7 @@ pub enum Command {
     AddRemote,
     SwitchStore,
     ToggleStoreColumn,
-    Envs,
+    Outputs,
     Help,
     Quit,
 
@@ -70,7 +70,7 @@ impl Command {
             Command::AddRemote => "add remote",
             Command::SwitchStore => "switch store",
             Command::ToggleStoreColumn => "toggle store column",
-            Command::Envs => "browse envs",
+            Command::Outputs => "browse outputs",
             Command::Help => "show help",
             Command::Quit => "quit",
 
@@ -97,7 +97,7 @@ impl Command {
         match self {
             Command::NewSecret => "ctrl-n",
             Command::SwitchStore => "ctrl-s",
-            Command::Envs => "shift-e",
+            Command::Outputs => "shift-e",
             Command::Help => "?",
             Command::Quit => "esc",
             _ => "",
@@ -113,7 +113,7 @@ impl Command {
             Command::AddRemote => "Clone and register a remote git store",
             Command::SwitchStore => "Pick a different remote / checkout",
             Command::ToggleStoreColumn => "Show/hide the STORE column in the results table",
-            Command::Envs => "Browse env presets defined in himitsu.yaml",
+            Command::Outputs => "Browse output presets defined in himitsu.yaml",
             Command::Help => "Open the contextual key reference",
             Command::Quit => "Exit the TUI",
 
@@ -148,7 +148,7 @@ impl Command {
             | Command::AddRemote
             | Command::SwitchStore
             | Command::ToggleStoreColumn
-            | Command::Envs
+            | Command::Outputs
             | Command::Help
             | Command::Quit => None,
 
@@ -204,7 +204,7 @@ const COMMANDS: &[Command] = &[
     Command::AddRemote,
     Command::SwitchStore,
     Command::ToggleStoreColumn,
-    Command::Envs,
+    Command::Outputs,
     // CLI-parity commands — discoverable here, but selecting them surfaces
     // the equivalent CLI invocation rather than running an in-TUI form.
     Command::RecipientLs,
@@ -483,15 +483,13 @@ mod tests {
     #[test]
     fn typing_filters_the_list() {
         let mut p = CommandPalette::new();
-        // "browse" only appears in Envs (label "browse envs"); narrower
-        // queries like "env" now also match Generate's description.
         for ch in "browse".chars() {
             p.on_key(press(KeyCode::Char(ch)));
         }
-        assert_eq!(p.filtered, vec![Command::Envs]);
+        assert_eq!(p.filtered, vec![Command::Outputs]);
         assert_eq!(
             p.on_key(press(KeyCode::Enter)),
-            CommandPaletteOutcome::Selected(Command::Envs),
+            CommandPaletteOutcome::Selected(Command::Outputs),
         );
     }
 
@@ -532,7 +530,7 @@ mod tests {
                 | Command::AddRemote
                 | Command::SwitchStore
                 | Command::ToggleStoreColumn
-                | Command::Envs
+                | Command::Outputs
                 | Command::Help
                 | Command::Quit => assert!(hint.is_none(), "{:?} should be wired", cmd),
                 _ => {

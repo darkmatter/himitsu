@@ -255,7 +255,7 @@ impl App {
             SearchAction::AddRemote => {
                 self.view = View::RemoteAdd(RemoteAddView::new(&self.ctx));
             }
-            SearchAction::OpenEnvs => {
+            SearchAction::OpenOutputs => {
                 self.view = View::Envs(EnvsView::new(&self.ctx));
             }
             SearchAction::SwitchStore(path) => {
