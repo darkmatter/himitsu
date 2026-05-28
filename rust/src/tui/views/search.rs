@@ -138,7 +138,7 @@ enum StoreHealth {
 enum SearchColumn {
     Path,
     Updated,
-    Envs,
+    Tags,
     Description,
     Store,
 }
@@ -151,7 +151,7 @@ impl SearchColumn {
         match self {
             SearchColumn::Path => "PATH",
             SearchColumn::Updated => "UPDATED",
-            SearchColumn::Envs => "ENVS",
+            SearchColumn::Tags => "TAGS",
             SearchColumn::Description => "DESCRIPTION",
             SearchColumn::Store => "STORE",
         }
@@ -161,7 +161,7 @@ impl SearchColumn {
         &[
             SearchColumn::Path,
             SearchColumn::Updated,
-            SearchColumn::Envs,
+            SearchColumn::Tags,
             SearchColumn::Description,
         ]
     }
@@ -227,10 +227,6 @@ pub struct SearchView {
     /// (multi-store searches) the column is hidden regardless because the
     /// store name is already in a group header row.
     show_store_column: bool,
-    /// Map of secret path → list of env labels that reference it. Built
-    /// once at view-construction time from the project + global configs.
-    /// Used to render the ENVS column in the results table.
-    env_index: std::collections::HashMap<String, Vec<String>>,
     /// Active tag filters selected from result-row tag chips. AND semantics,
     /// matching CLI `search --tag`.
     tag_filters: Vec<String>,
@@ -267,7 +263,6 @@ impl SearchView {
             key_provider: ctx.key_provider.clone(),
         };
         let (global_health, project_health) = check_store_health_pair(&ctx_owned);
-        let env_index = build_env_index();
         let mut view = Self {
             query: String::new(),
             results: Vec::new(),
@@ -279,7 +274,6 @@ impl SearchView {
             global_health,
             project_health,
             show_store_column: false,
-            env_index,
             tag_filters: Vec::new(),
             selected_column: SearchColumn::Path,
             sort_state: SortState {
@@ -503,7 +497,7 @@ impl SearchView {
 
     fn refresh_results(&mut self) {
         self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
-        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.normalize_selected_column();
         self.list_state.select(self.first_selectable());
         // Keep the autocomplete corpus aligned with what the user could
@@ -542,7 +536,7 @@ impl SearchView {
         let anchor = self.selected_anchor();
 
         self.folded = folded;
-        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.list_state.select(self.reanchor(anchor));
     }
 
@@ -573,7 +567,7 @@ impl SearchView {
             }
         };
         let anchor = self.selected_anchor();
-        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.list_state.select(self.reanchor(anchor));
     }
 
@@ -621,7 +615,7 @@ impl SearchView {
             return;
         }
         self.folded = false;
-        self.rows = build_rows(&self.results, self.folded, self.sort_state, &self.env_index);
+        self.rows = build_rows(&self.results, self.folded, self.sort_state);
         let target = self.rows.iter().position(|row| match row {
             Row::Secret {
                 result,
@@ -992,7 +986,7 @@ impl SearchView {
         let now = Utc::now();
         let path_label = self.header_label(SearchColumn::Path);
         let updated_label = self.header_label(SearchColumn::Updated);
-        let envs_label = self.header_label(SearchColumn::Envs);
+        let tags_label = self.header_label(SearchColumn::Tags);
         let desc_label = self.header_label(SearchColumn::Description);
         let store_label = self.header_label(SearchColumn::Store);
 
@@ -1005,7 +999,7 @@ impl SearchView {
             path_display: String,
             path_truncated: bool,
             updated: String,
-            envs: String,
+            tags_col: String,
             desc_text: String,
             desc_display: String,
             desc_truncated: bool,
@@ -1031,12 +1025,8 @@ impl SearchView {
                         .unwrap_or_else(|| "—".to_string());
                     let updated = truncate_middle(&updated_raw, SEARCH_COLUMN_MAX_WIDTH);
                     let desc_text = result.description.clone().unwrap_or_default();
-                    let envs_raw = self
-                        .env_index
-                        .get(&result.path)
-                        .map(|labels| labels.join(", "))
-                        .unwrap_or_default();
-                    let envs = truncate_middle(&envs_raw, SEARCH_COLUMN_MAX_WIDTH);
+                    let tags_raw = result.tags.as_deref().unwrap_or_default().join(", ");
+                    let tags_col = truncate_middle(&tags_raw, SEARCH_COLUMN_MAX_WIDTH);
                     let tags = result.tags.clone();
                     let desc_cell = desc_cell_text(&desc_text, tags.as_deref());
                     let desc_display = truncate_middle(&desc_cell, SEARCH_COLUMN_MAX_WIDTH);
@@ -1049,7 +1039,7 @@ impl SearchView {
                         path_display,
                         path_truncated,
                         updated,
-                        envs,
+                        tags_col,
                         desc_text,
                         desc_display,
                         desc_truncated,
@@ -1078,12 +1068,12 @@ impl SearchView {
             .max()
             .unwrap_or(0)
             .max(updated_label.len());
-        let envs_w = row_data
+        let tags_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| char_count(&c.envs)))
+            .filter_map(|d| d.as_ref().map(|c| char_count(&c.tags_col)))
             .max()
             .unwrap_or(0)
-            .max(envs_label.len());
+            .max(tags_label.len());
         let desc_w = row_data
             .iter()
             .filter_map(|d| d.as_ref().map(|c| char_count(&c.desc_display)))
@@ -1119,8 +1109,8 @@ impl SearchView {
                 self.header_style(SearchColumn::Updated, header_style),
             ),
             Span::styled(
-                format!("{:<envs_w$}  ", envs_label, envs_w = envs_w),
-                self.header_style(SearchColumn::Envs, header_style),
+                format!("{:<tags_w$}  ", tags_label, tags_w = tags_w),
+                self.header_style(SearchColumn::Tags, header_style),
             ),
             Span::styled(
                 format!("{:<desc_w$}  ", desc_label, desc_w = desc_w),
@@ -1209,7 +1199,7 @@ impl SearchView {
                             Style::default().fg(theme::muted()),
                         ),
                         Span::styled(
-                            format!("{:<envs_w$}  ", cells.envs, envs_w = envs_w),
+                            format!("{:<tags_w$}  ", cells.tags_col, tags_w = tags_w),
                             Style::default().fg(theme::accent()),
                         ),
                     ]);
@@ -1401,14 +1391,6 @@ fn split_path_basename(path: &str) -> (&str, &str) {
         Some(idx) => path.split_at(idx + 1),
         None => ("", path),
     }
-}
-
-/// Build a `secret_path → [env labels]` map from the project + global
-/// configs. Glob entries (`prefix/*`) match every secret whose path starts
-/// with `prefix/`; aliases and singles match their explicit path. Keeps
-/// the result sorted within each entry so render order stays stable.
-fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
-    std::collections::HashMap::new()
 }
 
 /// Search view's keymap action priority. Quit comes first so a user who
@@ -1666,7 +1648,6 @@ fn build_rows(
     results: &[SearchResult],
     folded: bool,
     sort_state: SortState,
-    env_index: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<Row> {
     use std::collections::BTreeMap;
 
@@ -1695,7 +1676,6 @@ fn build_rows(
             multi_store,
             folded,
             sort_state,
-            env_index,
         );
     }
     rows
@@ -1711,7 +1691,6 @@ fn append_prefix_grouped_rows(
     under_store_header: bool,
     folded: bool,
     sort_state: SortState,
-    env_index: &std::collections::HashMap<String, Vec<String>>,
 ) {
     use std::collections::HashMap;
 
@@ -1724,7 +1703,7 @@ fn append_prefix_grouped_rows(
     } else {
         sort_state
     };
-    sort_results(&mut bucket, bucket_sort, env_index);
+    sort_results(&mut bucket, bucket_sort);
 
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -1780,24 +1759,19 @@ fn append_prefix_grouped_rows(
     }
 }
 
-fn sort_results(
-    results: &mut [SearchResult],
-    sort_state: SortState,
-    env_index: &std::collections::HashMap<String, Vec<String>>,
-) {
-    results.sort_by(|a, b| compare_results(a, b, sort_state, env_index));
+fn sort_results(results: &mut [SearchResult], sort_state: SortState) {
+    results.sort_by(|a, b| compare_results(a, b, sort_state));
 }
 
 fn compare_results(
     a: &SearchResult,
     b: &SearchResult,
     sort_state: SortState,
-    env_index: &std::collections::HashMap<String, Vec<String>>,
 ) -> std::cmp::Ordering {
     let primary = match sort_state.column {
         SearchColumn::Path => a.path.cmp(&b.path),
         SearchColumn::Updated => result_timestamp(a).cmp(result_timestamp(b)),
-        SearchColumn::Envs => result_envs(a, env_index).cmp(result_envs(b, env_index)),
+        SearchColumn::Tags => result_tags(a).cmp(result_tags(b)),
         SearchColumn::Description => a
             .description
             .as_deref()
@@ -1829,13 +1803,11 @@ fn result_timestamp(result: &SearchResult) -> &str {
         .unwrap_or("")
 }
 
-fn result_envs<'a>(
-    result: &SearchResult,
-    env_index: &'a std::collections::HashMap<String, Vec<String>>,
-) -> &'a str {
-    env_index
-        .get(&result.path)
-        .and_then(|labels| labels.first())
+fn result_tags(result: &SearchResult) -> &str {
+    result
+        .tags
+        .as_deref()
+        .and_then(|tags| tags.first())
         .map(String::as_str)
         .unwrap_or("")
 }
@@ -2021,7 +1993,7 @@ mod tests {
             description: None,
             tags: Some(vec!["pci".into(), "prod".into()]),
         }];
-        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
+        view.rows = build_rows(&view.results, false, view.sort_state);
         view.list_state.select(Some(0));
 
         let action = view.on_key(ctrl('t'), &KeyMap::default());
@@ -2149,7 +2121,7 @@ mod tests {
                 .to_string(),
             );
         }
-        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
+        view.rows = build_rows(&view.results, false, view.sort_state);
 
         let paths = |view: &SearchView| -> Vec<String> {
             view.rows
@@ -2313,7 +2285,7 @@ mod tests {
 
     fn set_single_result(view: &mut SearchView, result: SearchResult) {
         view.results = vec![result];
-        view.rows = build_rows(&view.results, false, view.sort_state, &view.env_index);
+        view.rows = build_rows(&view.results, false, view.sort_state);
         view.list_state.select(Some(0));
     }
 
@@ -2440,7 +2412,7 @@ mod tests {
             rendered
         };
 
-        // Default render: PATH / UPDATED / ENVS / DESCRIPTION are always
+        // Default render: PATH / UPDATED / TAGS / DESCRIPTION are always
         // shown; STORE is hidden until the user toggles it on via the
         // command palette.
         let rendered = render(&mut view);
@@ -2449,7 +2421,7 @@ mod tests {
             rendered.contains("UPDATED"),
             "missing UPDATED header: {rendered}"
         );
-        assert!(rendered.contains("ENVS"), "missing ENVS header: {rendered}");
+        assert!(rendered.contains("TAGS"), "missing TAGS header: {rendered}");
         assert!(
             rendered.contains("DESCRIPTION"),
             "missing DESCRIPTION header: {rendered}"
