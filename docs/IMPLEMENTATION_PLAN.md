@@ -227,6 +227,7 @@ cargo test --test '*'             # Integration tests only
 - [x] `config::Config::parse` loads `policies` with `path_pattern`, `include`, `exclude`
 - [x] `config::Config::parse` loads `imports` (`type`, `ref`, `path`)
 - [x] `config::Config::parse` loads optional `codegen` (`lang`, `path`)
+- [x] **Refactor: Remove env namespace, replace with tags** (completed). See git log for commits.
 - [x] `crypto::age::keygen` produces valid x25519 keypair
 - [x] `crypto::age::encrypt` → `decrypt` roundtrip preserves plaintext
 - [x] `crypto::age::encrypt` with multiple recipients succeeds
@@ -262,7 +263,7 @@ cargo test --test '*'             # Integration tests only
 - [x] `ProjectConfig` expanded with `envs`, `generate`, and `store` sections
 - [x] `EnvEntry` supports three YAML shapes: scalar string (Single/Glob with `/*`), single-key map (Alias)
 - [x] `load_project_config()` convenience function combining discovery + deserialization
-- [x] `generate --stdout --env <env>` decrypts and outputs YAML for an env definition
+- [x] `generate --stdout --env <env>` decrypts and outputs YAML for an env definition (Superseded: `--env` removed, use `--output`)
 - [x] `generate --stdout` (no `--env`) generates all envs from project config
 - [x] `generate` resolves glob entries (`dev/*`) to all matching secret paths
 - [x] `generate` resolves alias entries (`MY_KEY: dev/DB_PASSWORD`) to aliased output key
@@ -274,7 +275,7 @@ cargo test --test '*'             # Integration tests only
 - [ ] keychain scope pointer is unique for every `<org>/<repo>/<group>` combination
 - [ ] `SOPS_AGE_KEY_CMD` resolves keychain key for scope before checking `SOPS_AGE_KEY_FILE`
 - [ ] `SOPS_AGE_KEY_CMD` falls back to file-based key when keychain item is missing
-- [x] `set prod/API_KEY "secret"` creates `vars/prod/API_KEY.age` (path-based syntax)
+- [x] `set prod/API_KEY "secret"` creates `.himitsu/secrets/prod/API_KEY.age` (path-based syntax; migrated from `vars/`)
 - [x] `get prod/API_KEY` returns `"secret"` after set
 - [x] `set` then `get` with multiline values preserves newlines
 - [x] `set` then `get` with special characters (quotes, backslashes, unicode)

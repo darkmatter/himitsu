@@ -42,16 +42,19 @@ User mode uses `~/.himitsu/config.yaml` default remote or `-r <org/repo>`.
 
 Secrets are stored as one file per key:
 
-`vars/<env>/<KEY>.age`
+`.himitsu/secrets/<path>.age`
 
-Subdirectories within an environment are allowed for organizational grouping:
+Subdirectories are allowed for organizational grouping:
 
-`vars/<env>/<subdir>/<KEY>.age`
+`.himitsu/secrets/<subdir>/<KEY>.age`
 
-For example, `vars/prod/integrations/STRIPE_KEY.age` is valid.
+For example, `.himitsu/secrets/prod/integrations/STRIPE_KEY.age` is valid.
 
 Values are encrypted, key names are visible in filenames. This keeps change
 diffs simple and allows fast listing/search without decrypting everything.
+
+Note: v[next] removed the `envs:` block, replaced with `outputs:` and tag selectors.
+Legacy `vars/<env>/` paths are migrated to `.himitsu/secrets/<path>.age`.
 
 ## 3) Filesystem Layout
 
@@ -82,21 +85,22 @@ diffs simple and allows fast listing/search without decrypting everything.
 ~/.himitsu/data/<org>/<repo>/
 ├── himitsu.yaml                   # Remote config (policies, identity sources, sync)
 ├── data.json                      # Group/env/app metadata
-├── vars/
-│   ├── common/
-│   │   └── API_BASE_URL.age
-│   ├── dev/
-│   │   └── DB_PASSWORD.age
-│   └── prod/
-│       └── DB_PASSWORD.age
+├── .himitsu/
+│   ├── secrets/
+│   │   ├── common/
+│   │   │   └── API_BASE_URL.age
+│   │   ├── dev/
+│   │   │   └── DB_PASSWORD.age
+│   │   └── prod/
+│   │       └── DB_PASSWORD.age
+│   └── inbox/                     # Incoming envelopes for GitHub PR mode
 ├── recipients/
 │   ├── team/
 │   │   ├── alice.pub              # age recipient pubkey
 │   │   └── bot.ssh                # ssh pubkey recipient
 │   └── admins/
 │       └── root.pub
-└── .himitsu/
-    └── inbox/                     # Incoming envelopes for GitHub PR mode
+└── himitsu.yaml                   # Remote policy config
 ```
 
 ### 3.3 Project binding
@@ -133,29 +137,14 @@ sharing:
 ```yaml
 # remote himitsu.yaml
 policies:
-  - path_prefix: "vars/common/"
+  - path_prefix: ".himitsu/secrets/common/"
     include: ["group:all"]
 
-  - path_prefix: "vars/prod/"
+  - path_prefix: ".himitsu/secrets/prod/"
     include: ["group:admins", "remote:github:coopmoney/keys#team=security"]
     exclude: ["group:contractors"]
-
-identity_sources:
-  - id: coopmoney_keys
-    kind: github_keys_repo
-    repo: coopmoney/keys
-    ref: main
-
-  - id: coopmoney_domain
-    kind: well_known
-    domain: coopmoney.com
-    path: /.well-known/himitsu.json
-
-  - id: ens_default
-    kind: ens_text_record
-    key_public: himitsu_public_key
-    key_inbox: himitsu_inbox
 ```
+
 
 ## 5) Recipient Resolution
 
@@ -291,8 +280,7 @@ CREATE TABLE remotes (
 CREATE TABLE secrets (
   id        INTEGER PRIMARY KEY,
   remote_id TEXT NOT NULL REFERENCES remotes(id),
-  env       TEXT NOT NULL,     -- "prod", "dev", "common", etc.
-  path      TEXT NOT NULL,     -- "vars/prod/STRIPE_KEY.age"
+  path      TEXT NOT NULL,     -- ".himitsu/secrets/prod/STRIPE_KEY.age"
   key_name  TEXT NOT NULL,     -- "STRIPE_KEY"
   updated_at TEXT,
   UNIQUE(remote_id, path)
