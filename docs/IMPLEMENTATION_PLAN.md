@@ -632,7 +632,7 @@ cargo test proto                  # Proto round-trip and JSON Schema tests
 rust/src/
 ├── cli/
 │   ├── sync.rs                   # Full implementation (sync destinations + autosync)
-│   ├── codegen.rs                # Full implementation (TS, Go, Python, Rust from store scan)
+│   ├── codegen.rs                # Full implementation (TS, Go, Python, Rust from outputs config)
 │   └── import.rs                 # Full implementation
 ├── import/
 │   ├── mod.rs                    # Import trait, dispatch by source type

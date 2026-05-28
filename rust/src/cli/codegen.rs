@@ -6,7 +6,10 @@ use clap::Args;
 use tracing::{debug, info};
 
 use super::Context;
-use crate::config::{self, env_resolver, validate_env_label};
+use crate::config::outputs::resolver::{
+    resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate,
+};
+use crate::config::{self, load_project_config, validate_env_label};
 use crate::error::{HimitsuError, Result};
 use crate::proto::{self, CodegenLang};
 
@@ -86,17 +89,38 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
         args.env,
     );
 
-    // 2. Scan the store for environments and key names.
-    let inventory = scan_store(&ctx.store)?;
+    // 2. Load project outputs config and resolve.
+    let outputs_map = load_project_config()
+        .map(|(cfg, _)| cfg.outputs)
+        .unwrap_or_default();
+
+    if outputs_map.is_empty() {
+        return Err(HimitsuError::InvalidConfig(
+            "no `outputs` defined in project config — \
+             define outputs: blocks in himitsu.yaml"
+                .into(),
+        ));
+    }
+
+    let available_secrets = crate::remote::store::list_secrets(&ctx.store, None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| SecretCandidate { path, tags: vec![] })
+        .collect();
+    let resolver_ctx = ResolverContext { available_secrets };
+    let resolved_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
+
+    // 3. Build inventory from resolved outputs.
+    let inventory = build_inventory_from_outputs(&resolved_outputs);
 
     if inventory.all_keys.is_empty() {
         return Err(HimitsuError::InvalidConfig(
-            "no secrets found in store — nothing to generate".into(),
+            "no secrets found in outputs — nothing to generate".into(),
         ));
     }
 
     info!(
-        "found {} keys across {} environments",
+        "found {} keys across {} outputs",
         inventory.all_keys.len(),
         inventory.environments.len(),
     );
@@ -127,41 +151,68 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 // Sops mode: `himitsu codegen <env>` → `<env>.sops.yaml`
 // ---------------------------------------------------------------------------
 
-/// Resolve `label` against the project config's `envs` map, decrypt every
-/// leaf via the active store, write plaintext YAML with the AUTO-GENERATED
-/// banner, then shell out to `sops --encrypt --in-place <path>`.
 fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result<()> {
-    // Validate the label up front so we can give a precise error before
-    // loading any config. `resolve` will also validate — this is defensive.
     validate_env_label(label)?;
 
-    let envs = config::load_effective_envs()?;
+    let outputs_map = load_project_config()
+        .map(|(cfg, _)| cfg.outputs)
+        .unwrap_or_default();
 
-    if !envs.contains_key(label) {
-        return Err(HimitsuError::InvalidConfig(format!("unknown env: {label}")));
+    if outputs_map.is_empty() {
+        return Err(HimitsuError::InvalidConfig(
+            "no `outputs` defined in project config — \
+             define outputs: blocks in himitsu.yaml"
+                .into(),
+        ));
     }
 
-    // Enumerate store secrets so the resolver can expand wildcards/globs.
-    let secrets = crate::remote::store::list_secrets(&ctx.store, None)?;
+    let available_secrets = crate::remote::store::list_secrets(&ctx.store, None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| SecretCandidate { path, tags: vec![] })
+        .collect();
+    let resolver_ctx = ResolverContext { available_secrets };
+    let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
+
+    let resolved = all_outputs
+        .into_iter()
+        .find(|o| o.name == label)
+        .ok_or_else(|| HimitsuError::InvalidConfig(format!("unknown output: {label}")))?;
+
     let identities = ctx.load_identities()?;
-    let tag_lookup = |path: &str| {
-        crate::cli::get::get_decoded_with_identities(ctx, path, &identities)
-            .map(|decoded| decoded.tags)
-    };
+    let mut output: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &resolved.entries {
+        let effective_store = if let Some(ref slug) = entry.store_slug {
+            config::ensure_store(slug)?
+        } else {
+            ctx.store.clone()
+        };
+        let payload =
+            crate::remote::store::read_secret_payload(&effective_store, &entry.secret_path)?;
+        let plaintext =
+            match crate::crypto::age::decrypt_with_identities(&payload.ciphertext, &identities) {
+                Ok(p) => p,
+                Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
+                Err(err) => return Err(err),
+            };
+        let decoded = crate::crypto::secret_value::decode_with_legacy_environment(
+            &plaintext,
+            payload.legacy_environment.as_deref(),
+        );
+        super::get::warn_if_expired(&entry.secret_path, &decoded);
+        let value = String::from_utf8(decoded.data).map_err(|e| {
+            HimitsuError::DecryptionFailed(format!(
+                "non-UTF-8 secret at '{}': {e}",
+                entry.secret_path
+            ))
+        })?;
+        output.insert(entry.env_key.clone(), value);
+    }
 
-    // Resolve into the nested EnvNode tree.
-    let tree = env_resolver::resolve_with_tags(&envs, label, &secrets, &tag_lookup)?;
-
-    // Walk the tree and decrypt each Leaf into a plaintext YAML value.
-    let yaml_tree = materialize_tree(&tree, ctx)?;
-
-    // Serialize with the AUTO-GENERATED banner on top.
-    let body = serde_yaml::to_string(&yaml_tree)?;
+    let body = serde_yaml::to_string(&output)?;
     let mut out = gen_header("#", Some(label));
     out.push_str(&body);
 
-    // Determine the output path (default: `<label>`.sops.yaml with `/`→`-`
-    // and trailing `/*` stripped).
     let output_path = output_override
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(default_sops_output_name(label)));
@@ -174,49 +225,15 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
     std::fs::write(&output_path, out.as_bytes())?;
     debug!("wrote plaintext to {}", output_path.display());
 
-    // Invoke sops to encrypt in place. The user's `.sops.yaml` rules file
-    // supplies the recipients; we don't pass `--age`/`--kms` ourselves.
     encrypt_with_sops(&output_path)?;
 
     println!("wrote {}", output_path.display());
     Ok(())
 }
 
-/// Derive the default output file name from an env label.
-///
-/// - `foo` → `foo.sops.yaml`
-/// - `foo/bar` → `foo-bar.sops.yaml`
-/// - `foo/*` → `foo.sops.yaml` (strip trailing `/*` first)
-/// - `foo/bar/*` → `foo-bar.sops.yaml`
 fn default_sops_output_name(label: &str) -> String {
     let trimmed = label.strip_suffix("/*").unwrap_or(label);
     format!("{}.sops.yaml", trimmed.replace('/', "-"))
-}
-
-/// Walk an [`EnvNode`] tree and decrypt every `Leaf` into its plaintext
-/// string, producing a parallel [`serde_yaml::Value`] tree. `Branch`es
-/// become YAML mappings; `Leaf`s become YAML strings.
-fn materialize_tree(node: &env_resolver::EnvNode, ctx: &Context) -> Result<serde_yaml::Value> {
-    match node {
-        env_resolver::EnvNode::Leaf { secret_path } => {
-            let decoded = crate::cli::get::get_decoded(ctx, secret_path)?;
-            crate::cli::get::warn_if_expired(secret_path, &decoded);
-            let s = String::from_utf8(decoded.data).map_err(|e| {
-                HimitsuError::DecryptionFailed(format!("non-UTF-8 secret at '{secret_path}': {e}"))
-            })?;
-            Ok(serde_yaml::Value::String(s))
-        }
-        env_resolver::EnvNode::Branch(map) => {
-            let mut m = serde_yaml::Mapping::with_capacity(map.len());
-            for (k, child) in map {
-                m.insert(
-                    serde_yaml::Value::String(k.clone()),
-                    materialize_tree(child, ctx)?,
-                );
-            }
-            Ok(serde_yaml::Value::Mapping(m))
-        }
-    }
 }
 
 /// Shell out to `sops --encrypt --in-place <path>`. Maps missing binary to
@@ -313,40 +330,27 @@ fn resolve_config(args: &CodegenArgs, ctx: &Context) -> Result<(CodegenLang, Opt
 }
 
 // ---------------------------------------------------------------------------
-// Store scanning
+// Inventory building from resolved outputs
 // ---------------------------------------------------------------------------
 
-/// Scan the store's `.himitsu/secrets/` directory to discover environments and key names.
-fn scan_store(store: &Path) -> Result<SecretInventory> {
+fn build_inventory_from_outputs(resolved: &[ResolvedOutput]) -> SecretInventory {
     let mut inventory = SecretInventory {
         environments: BTreeSet::new(),
         keys_by_env: BTreeMap::new(),
         all_keys: BTreeSet::new(),
     };
-
-    let paths = crate::remote::store::list_secrets(store, None)?;
-    if paths.is_empty() {
-        debug!("no secrets in store at {}", store.display());
-        return Ok(inventory);
-    }
-
-    for path in &paths {
-        // Parse "env/key" or "key" from secret path
-        if let Some((env, key)) = path.split_once('/') {
-            inventory.environments.insert(env.to_string());
+    for output in resolved {
+        inventory.environments.insert(output.name.clone());
+        for entry in &output.entries {
             inventory
                 .keys_by_env
-                .entry(env.to_string())
+                .entry(output.name.clone())
                 .or_default()
-                .insert(key.to_string());
-            inventory.all_keys.insert(key.to_string());
-        } else {
-            // Top-level key with no env prefix
-            inventory.all_keys.insert(path.to_string());
+                .insert(entry.env_key.clone());
+            inventory.all_keys.insert(entry.env_key.clone());
         }
     }
-
-    Ok(inventory)
+    inventory
 }
 
 /// Compute the effective set of keys for the given environment.
@@ -726,8 +730,57 @@ fn to_camel_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::outputs::resolver::{ResolvedEntry, ResolvedOutput};
 
-    // -- Helper tests --
+    fn make_store(tmp: &Path, envs: &[(&str, &[&str])]) {
+        let secrets = crate::remote::store::secrets_dir(tmp);
+        for (env, keys) in envs {
+            let env_dir = secrets.join(env);
+            std::fs::create_dir_all(&env_dir).unwrap();
+            for key in *keys {
+                std::fs::write(env_dir.join(format!("{key}.age")), b"cipher").unwrap();
+            }
+        }
+    }
+
+    fn scan_store_test(store: &Path) -> SecretInventory {
+        let mut inventory = SecretInventory {
+            environments: BTreeSet::new(),
+            keys_by_env: BTreeMap::new(),
+            all_keys: BTreeSet::new(),
+        };
+        let paths = crate::remote::store::list_secrets(store, None).unwrap_or_default();
+        for path in &paths {
+            if let Some((env, key)) = path.split_once('/') {
+                inventory.environments.insert(env.to_string());
+                inventory
+                    .keys_by_env
+                    .entry(env.to_string())
+                    .or_default()
+                    .insert(key.to_string());
+                inventory.all_keys.insert(key.to_string());
+            } else {
+                inventory.all_keys.insert(path.to_string());
+            }
+        }
+        inventory
+    }
+
+    fn with_outputs_project<F, R>(outputs_yaml: &str, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("himitsu.yaml"), outputs_yaml).unwrap();
+        let saved_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = f();
+        std::env::set_current_dir(saved_cwd).unwrap();
+        result
+    }
 
     #[test]
     fn to_pascal_case_screaming_snake() {
@@ -750,22 +803,47 @@ mod tests {
         assert_eq!(to_pascal_case(""), "");
     }
 
-    // -- Scanning tests --
+    #[test]
+    fn build_inventory_from_outputs_basic() {
+        let resolved = vec![
+            ResolvedOutput {
+                name: "pci-prod".to_string(),
+                entries: vec![
+                    ResolvedEntry {
+                        env_key: "STRIPE_KEY".to_string(),
+                        secret_path: "prod/stripe-key".to_string(),
+                        store_slug: None,
+                    },
+                    ResolvedEntry {
+                        env_key: "DB_PASS".to_string(),
+                        secret_path: "prod/db-pass".to_string(),
+                        store_slug: None,
+                    },
+                ],
+            },
+            ResolvedOutput {
+                name: "dev".to_string(),
+                entries: vec![ResolvedEntry {
+                    env_key: "DB_URL".to_string(),
+                    secret_path: "dev/db-url".to_string(),
+                    store_slug: None,
+                }],
+            },
+        ];
 
-    /// Helper: populate `<tmp>/.himitsu/secrets/<env>/<key>.age`.
-    fn make_store(tmp: &Path, envs: &[(&str, &[&str])]) {
-        let secrets = crate::remote::store::secrets_dir(tmp);
-        for (env, keys) in envs {
-            let env_dir = secrets.join(env);
-            std::fs::create_dir_all(&env_dir).unwrap();
-            for key in *keys {
-                std::fs::write(env_dir.join(format!("{key}.age")), b"cipher").unwrap();
-            }
-        }
+        let inv = build_inventory_from_outputs(&resolved);
+        assert_eq!(
+            inv.environments,
+            BTreeSet::from(["pci-prod".to_string(), "dev".to_string()])
+        );
+        assert_eq!(inv.all_keys.len(), 3);
+        assert_eq!(inv.keys_by_env["pci-prod"].len(), 2);
+        assert!(inv.keys_by_env["pci-prod"].contains("STRIPE_KEY"));
+        assert!(inv.keys_by_env["dev"].contains("DB_URL"));
     }
 
     #[test]
-    fn scan_store_discovers_envs_and_keys() {
+    fn scan_store_test_discovers_envs_and_keys() {
         let tmp = tempfile::tempdir().unwrap();
         make_store(
             tmp.path(),
@@ -776,24 +854,22 @@ mod tests {
             ],
         );
 
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
         assert_eq!(
             inv.environments,
-            BTreeSet::from(["common".into(), "dev".into(), "prod".into(),])
+            BTreeSet::from(["common".into(), "dev".into(), "prod".into()])
         );
-        assert_eq!(inv.all_keys.len(), 3); // API_URL, DB_PASS, DEBUG_TOKEN
+        assert_eq!(inv.all_keys.len(), 3);
         assert_eq!(inv.keys_by_env["prod"].len(), 2);
     }
 
     #[test]
-    fn scan_store_empty_returns_empty_inventory() {
+    fn scan_store_test_empty_returns_empty_inventory() {
         let tmp = tempfile::tempdir().unwrap();
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
         assert!(inv.environments.is_empty());
         assert!(inv.all_keys.is_empty());
     }
-
-    // -- Effective keys --
 
     #[test]
     fn effective_keys_merges_common() {
@@ -802,7 +878,7 @@ mod tests {
             tmp.path(),
             &[("common", &["SHARED_KEY"]), ("prod", &["PROD_KEY"])],
         );
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let keys = effective_keys(&inv, Some("prod"), true);
         assert!(keys.contains("SHARED_KEY"));
@@ -816,7 +892,7 @@ mod tests {
             tmp.path(),
             &[("common", &["SHARED_KEY"]), ("prod", &["PROD_KEY"])],
         );
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let keys = effective_keys(&inv, Some("prod"), false);
         assert!(!keys.contains("SHARED_KEY"));
@@ -830,19 +906,17 @@ mod tests {
             tmp.path(),
             &[("common", &["A"]), ("prod", &["B"]), ("dev", &["C"])],
         );
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let keys = effective_keys(&inv, None, true);
         assert_eq!(keys.len(), 3);
     }
 
-    // -- TypeScript generation --
-
     #[test]
     fn gen_typescript_produces_valid_output() {
         let tmp = tempfile::tempdir().unwrap();
         make_store(tmp.path(), &[("prod", &["STRIPE_KEY", "DB_PASS"])]);
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let code = gen_typescript(&inv, &inv.all_keys, Some("prod"));
         assert!(code.contains("AUTO-GENERATED"));
@@ -864,7 +938,7 @@ mod tests {
             tmp.path(),
             &[("common", &["SHARED"]), ("prod", &["PROD_ONLY"])],
         );
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let code = gen_typescript(&inv, &inv.all_keys, None);
         assert!(code.contains("HIMITSU_KEYS_BY_ENV"));
@@ -872,13 +946,11 @@ mod tests {
         assert!(code.contains("\"SHARED\""));
     }
 
-    // -- Go generation --
-
     #[test]
     fn gen_golang_produces_valid_output() {
         let tmp = tempfile::tempdir().unwrap();
         make_store(tmp.path(), &[("prod", &["API_KEY"])]);
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let code = gen_golang(&inv, &inv.all_keys, Some("prod"));
         assert!(code.contains("package secrets"));
@@ -889,13 +961,11 @@ mod tests {
         assert!(code.contains("var AllKeys = []string{"));
     }
 
-    // -- Python generation --
-
     #[test]
     fn gen_python_produces_valid_output() {
         let tmp = tempfile::tempdir().unwrap();
         make_store(tmp.path(), &[("dev", &["TOKEN", "SECRET"])]);
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let code = gen_python(&inv, &inv.all_keys, Some("dev"));
         assert!(code.contains("from dataclasses import dataclass"));
@@ -909,13 +979,11 @@ mod tests {
         assert!(code.contains("KEYS_BY_ENV"));
     }
 
-    // -- Rust generation --
-
     #[test]
     fn gen_rust_produces_valid_output() {
         let tmp = tempfile::tempdir().unwrap();
         make_store(tmp.path(), &[("staging", &["DB_URL", "REDIS_URL"])]);
-        let inv = scan_store(tmp.path()).unwrap();
+        let inv = scan_store_test(tmp.path());
 
         let code = gen_rust(&inv, &inv.all_keys, Some("staging"));
         assert!(code.contains("#![allow(dead_code)]"));
@@ -930,8 +998,6 @@ mod tests {
         assert!(code.contains("pub const ALL_KEY_NAMES: [&str; 2]"));
     }
 
-    // -- Header --
-
     #[test]
     fn gen_header_includes_env_note() {
         let h = gen_header("//", Some("prod"));
@@ -941,13 +1007,10 @@ mod tests {
         assert!(h2.contains("(all environments)"));
     }
 
-    // -- Full run via CLI with --stdout --
-
     #[test]
     fn run_with_stdout_flag_and_explicit_lang() {
         let tmp = tempfile::tempdir().unwrap();
         let store = tmp.path().to_path_buf();
-        // New layout: .himitsu/secrets/prod/MY_SECRET.age
         let secrets = crate::remote::store::secrets_dir(&store).join("prod");
         std::fs::create_dir_all(&secrets).unwrap();
         std::fs::write(secrets.join("MY_SECRET.age"), b"ciphertext").unwrap();
@@ -969,25 +1032,23 @@ mod tests {
             merge_common: true,
         };
 
-        // Should succeed (prints to stdout).
-        let result = run(args, &ctx);
+        let result = with_outputs_project(
+            "outputs:\n  prod:\n    selectors:\n      - prod/MY_SECRET\n",
+            || run(args, &ctx),
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn run_fails_on_empty_store() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = tmp.path().to_path_buf();
-        std::fs::create_dir_all(&store).unwrap();
-
         let ctx = Context {
             data_dir: tmp.path().join("share"),
             state_dir: tmp.path().join("state"),
-            store,
+            store: tmp.path().to_path_buf(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
         };
-
         let args = CodegenArgs {
             env_positional: None,
             lang: Some("typescript".into()),
@@ -996,8 +1057,7 @@ mod tests {
             stdout: true,
             merge_common: true,
         };
-
-        let result = run(args, &ctx);
+        let result = with_outputs_project("{}\n", || run(args, &ctx));
         assert!(result.is_err());
     }
 
@@ -1057,15 +1117,16 @@ mod tests {
             merge_common: true,
         };
 
-        run(args, &ctx).unwrap();
+        with_outputs_project(
+            "outputs:\n  prod:\n    selectors:\n      - prod/TOKEN\n",
+            || run(args, &ctx).unwrap(),
+        );
         assert!(output.exists());
 
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("export interface HimitsuSecrets"));
         assert!(content.contains("readonly token: string;"));
     }
-
-    // -- Sops-mode output path derivation --
 
     #[test]
     fn default_sops_output_name_concrete_top_level() {
@@ -1087,93 +1148,20 @@ mod tests {
         assert_eq!(default_sops_output_name("foo/bar/*"), "foo-bar.sops.yaml");
     }
 
-    // -- Tree materialization --
-
-    /// Stubbed-leaf walker with the same shape as `materialize_tree` but
-    /// replacing the live decrypt call with a fixed string. Lets us assert
-    /// structure without standing up a full store + age identity.
-    fn materialize_tree_stub(node: &env_resolver::EnvNode, leaf_value: &str) -> serde_yaml::Value {
-        match node {
-            env_resolver::EnvNode::Leaf { .. } => serde_yaml::Value::String(leaf_value.to_string()),
-            env_resolver::EnvNode::Branch(map) => {
-                let mut m = serde_yaml::Mapping::with_capacity(map.len());
-                for (k, child) in map {
-                    m.insert(
-                        serde_yaml::Value::String(k.clone()),
-                        materialize_tree_stub(child, leaf_value),
-                    );
-                }
-                serde_yaml::Value::Mapping(m)
-            }
-        }
-    }
-
     #[test]
-    fn materialize_tree_serializes_concrete_env_as_flat_yaml() {
-        use crate::config::EnvEntry;
-        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
-        envs.insert(
-            "dev".into(),
-            vec![
-                EnvEntry::Single("dev/API_KEY".into()),
-                EnvEntry::Alias {
-                    key: "DB".into(),
-                    path: "dev/DB_PASS".into(),
-                },
-            ],
-        );
-        let tree = env_resolver::resolve(&envs, "dev", &[]).unwrap();
-        let value = materialize_tree_stub(&tree, "PLAINTEXT");
-
-        let yaml = serde_yaml::to_string(&value).unwrap();
-        // Shape: dev: { API_KEY: PLAINTEXT, DB: PLAINTEXT }
-        assert!(yaml.contains("dev:"), "yaml=\n{yaml}");
-        assert!(yaml.contains("API_KEY: PLAINTEXT"), "yaml=\n{yaml}");
-        assert!(yaml.contains("DB: PLAINTEXT"), "yaml=\n{yaml}");
-    }
-
-    #[test]
-    fn materialize_tree_serializes_wildcard_env_as_nested_yaml() {
-        use crate::config::EnvEntry;
-        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
-        envs.insert(
-            "foo/*".into(),
-            vec![EnvEntry::Alias {
-                key: "POSTGRES".into(),
-                path: "$1/postgres-url".into(),
-            }],
-        );
-        let secrets = vec!["dev/postgres-url".to_string(), "prod/postgres-url".into()];
-        let tree = env_resolver::resolve(&envs, "foo/*", &secrets).unwrap();
-        let value = materialize_tree_stub(&tree, "PW");
-
-        let yaml = serde_yaml::to_string(&value).unwrap();
-        // Shape: foo: { dev: { POSTGRES: PW }, prod: { POSTGRES: PW } }
-        assert!(yaml.contains("foo:"), "yaml=\n{yaml}");
-        assert!(yaml.contains("dev:"), "yaml=\n{yaml}");
-        assert!(yaml.contains("prod:"), "yaml=\n{yaml}");
-        assert!(yaml.contains("POSTGRES: PW"), "yaml=\n{yaml}");
-    }
-
-    // -- Unknown env label --
-
-    #[test]
-    fn run_sops_unknown_env_label_errors() {
-        // Build an isolated project root (doubles as CWD and git root) with
-        // a himitsu.yaml that *doesn't* declare the label we'll ask for.
+    fn run_sops_unknown_output_label_errors() {
+        let _guard = crate::config::envs_mut::HIMITSU_CONFIG_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
-        // .git so the walk stops here; project config discovery still finds
-        // himitsu.yaml at this level.
-        std::fs::create_dir_all(project.join(".git")).unwrap();
         std::fs::write(
             project.join("himitsu.yaml"),
-            "envs:\n  dev:\n    - dev/API_KEY\n",
+            "outputs:\n  dev:\n    selectors:\n      - dev/API_KEY\n",
         )
         .unwrap();
 
-        // Chdir into the project so `load_project_config` finds it.
         let saved_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&project).unwrap();
 
@@ -1186,46 +1174,15 @@ mod tests {
         };
         let result = run_sops("ghost", None, &ctx);
 
-        // Always restore CWD before asserting so a panic here doesn't leak.
         std::env::set_current_dir(saved_cwd).unwrap();
 
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("unknown env") && msg.contains("ghost"),
+            msg.contains("unknown output") && msg.contains("ghost"),
             "unexpected error: {msg}"
         );
     }
-
-    // -- Header banner present in plaintext --
-
-    #[test]
-    fn sops_plaintext_contains_auto_generated_header() {
-        // The plaintext we feed to `sops --encrypt --in-place` is constructed
-        // as `gen_header("#", Some(label)) + serde_yaml::to_string(tree)`.
-        // Rather than stand up sops + age here, verify the composition rule
-        // by re-running the same assembly with a stub tree.
-        use crate::config::EnvEntry;
-        let mut envs: BTreeMap<String, Vec<EnvEntry>> = BTreeMap::new();
-        envs.insert("dev".into(), vec![EnvEntry::Single("dev/API_KEY".into())]);
-        let tree = env_resolver::resolve(&envs, "dev", &[]).unwrap();
-        let value = materialize_tree_stub(&tree, "XXX");
-        let body = serde_yaml::to_string(&value).unwrap();
-        let mut out = gen_header("#", Some("dev"));
-        out.push_str(&body);
-
-        assert!(out.starts_with("# ="), "plaintext must start with header");
-        assert!(out.contains("AUTO-GENERATED"));
-        assert!(out.contains("(environment: dev)"));
-        // And the body is below the banner.
-        let header_end = out.find("\n\n").expect("banner ends with blank line");
-        assert!(
-            out[header_end..].contains("dev:"),
-            "body should follow banner"
-        );
-    }
-
-    // -- sops shell-out: gated behind #[ignore] (requires sops + keys). --
 
     #[test]
     #[ignore]
@@ -1233,8 +1190,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("x.sops.yaml");
         std::fs::write(&p, "foo: bar\n").unwrap();
-        // This will fail without a .sops.yaml rules file + recipients on
-        // PATH — the test is ignored by default.
         encrypt_with_sops(&p).unwrap();
     }
 }
