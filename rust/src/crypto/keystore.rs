@@ -167,7 +167,7 @@ pub fn load_identities(
 /// are skipped (already loaded by the primary key path above).
 #[allow(clippy::only_used_in_recursion)]
 fn probe_recipient_pubkeys(
-    base: &Path,
+    _base: &Path,
     dir: &Path,
     primary_pubkey: Option<&str>,
     identities: &mut Vec<Identity>,
@@ -178,7 +178,7 @@ fn probe_recipient_pubkeys(
     for entry in rd.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            probe_recipient_pubkeys(base, &path, primary_pubkey, identities);
+            probe_recipient_pubkeys(_base, &path, primary_pubkey, identities);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("pub") {

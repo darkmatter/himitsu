@@ -1,6 +1,11 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use prost::Message;
 use tempfile::TempDir;
+
+#[path = "../../rust/src/proto/mod.rs"]
+#[allow(unused_imports, dead_code)]
+mod proto;
 
 #[allow(deprecated)]
 fn himitsu() -> Command {
@@ -25,6 +30,60 @@ fn setup() -> (TempDir, TempDir) {
         .success();
 
     (home, store)
+}
+
+#[allow(deprecated)]
+fn setup_with_legacy_env_field(
+    env_value: &str,
+    existing_tag: Option<&str>,
+) -> (TempDir, TempDir, String) {
+    let (home, store) = setup();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "test/legacy-key",
+            "legacy-value",
+        ])
+        .assert()
+        .success();
+
+    let secret_path = store.path().join(".himitsu/secrets/test/legacy-key.age");
+    let envelope = proto::SecretEnvelope {
+        version: 1,
+        key_name: "legacy-key".to_string(),
+        environment: env_value.to_string(),
+        ciphertext: proto::SecretValue {
+            data: b"legacy-value".to_vec(),
+            tags: existing_tag
+                .map(|tag| vec![tag.to_string()])
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        ..Default::default()
+    };
+    std::fs::write(&secret_path, envelope.encode_to_vec()).unwrap();
+
+    (home, store, "test/legacy-key".to_string())
+}
+
+#[test]
+fn setup_helper_creates_envelope_with_env_field() {
+    let (_home, store, path) = setup_with_legacy_env_field("prod", None);
+    let envelope_path = store
+        .path()
+        .join(".himitsu")
+        .join("secrets")
+        .join(format!("{}.age", path));
+    assert!(
+        envelope_path.exists(),
+        "envelope file should exist at {:?}",
+        envelope_path
+    );
 }
 
 /// Returns the --store flag value for a given store root TempDir.
