@@ -27,3 +27,14 @@
 
 - `EnvCache::open()` builds the SQLite cache path with `data_dir().join("envs.db")`.
 - This is the dedicated env cache DB, separate from `himitsu.db`.
+
+## Task 7 inventory
+
+- Captured 10 H2 sections in `.omo/evidence/task-7-refs/inventory.md`.
+- Verified 111 file:line citation bullets across EnvEntry, EnvNode, EnvCache, cache module surface, env_index, TUI env actions, proto env access, config module exports, YAML `envs:` keys, and extra CLI/TUI consumers.
+
+## proto accessibility from integration tests
+
+- `himitsu-cli` is binary-only in `Cargo.toml`, so integration tests cannot import `crate::proto` directly.
+- The test crate can still reuse generated proto types by path-including `rust/src/proto/mod.rs` with `#[path = "../../rust/src/proto/mod.rs"] mod proto;`.
+- That makes `proto::SecretEnvelope` and `proto::SecretValue` usable in fixtures without adding a library target.
