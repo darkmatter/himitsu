@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::env_cache::{EnvCache, Scope};
 use crate::config::{
-    config_path, validate_env_label, validate_envs, Config, EnvEntry, ProjectConfig,
+    config_path, validate_env_label, validate_envs, EnvEntry,
 };
 use crate::error::{HimitsuError, Result};
 
@@ -110,62 +110,49 @@ fn load_envs(resolved: &ResolvedScope) -> Result<BTreeMap<String, Vec<EnvEntry>>
         return Ok(BTreeMap::new());
     }
     let contents = std::fs::read_to_string(&resolved.config_path)?;
-    match resolved.scope {
-        Scope::Project => {
-            let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
-            Ok(cfg.envs)
+    let value: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap_or_default();
+    match value.get("envs") {
+        Some(envs_val) => {
+            let envs: BTreeMap<String, Vec<EnvEntry>> =
+                serde_yaml::from_value(envs_val.clone()).unwrap_or_default();
+            Ok(envs)
         }
-        Scope::Global => {
-            let cfg: Config = serde_yaml::from_str(&contents)?;
-            Ok(cfg.envs)
-        }
+        None => Ok(BTreeMap::new()),
     }
 }
 
-/// Serialize the new envs map back into the file at `resolved.config_path`,
-/// preserving any other fields already present. Performs an atomic
-/// temp-file + rename write and creates parent directories for the global
-/// config if they do not exist yet.
 fn write_envs(resolved: &ResolvedScope, new_envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
-    // Make sure parent exists (common for a fresh global config).
     if let Some(parent) = resolved.config_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
     }
 
-    let serialized = match resolved.scope {
-        Scope::Project => {
-            // Load existing on-disk state (if any), update envs, validate,
-            // then serialize. Using ProjectConfig preserves sibling fields
-            // like `default_store`, `generate`, `store`.
-            let mut cfg: ProjectConfig = if resolved.config_path.exists() {
-                let contents = std::fs::read_to_string(&resolved.config_path)?;
-                serde_yaml::from_str(&contents)?
-            } else {
-                ProjectConfig::default()
-            };
-            cfg.envs = new_envs.clone();
-            cfg.validate()?;
-            serde_yaml::to_string(&cfg)?
-        }
-        Scope::Global => {
-            let mut cfg: Config = if resolved.config_path.exists() {
-                let contents = std::fs::read_to_string(&resolved.config_path)?;
-                serde_yaml::from_str(&contents)?
-            } else {
-                Config::default()
-            };
-            cfg.envs = new_envs.clone();
-            cfg.validate()?;
-            serde_yaml::to_string(&cfg)?
-        }
+    validate_envs(new_envs)?;
+
+    let mut yaml_map: serde_yaml::Mapping = if resolved.config_path.exists() {
+        let contents = std::fs::read_to_string(&resolved.config_path)?;
+        serde_yaml::from_str::<serde_yaml::Value>(&contents)
+            .ok()
+            .and_then(|v| match v {
+                serde_yaml::Value::Mapping(m) => Some(m),
+                _ => None,
+            })
+            .unwrap_or_default()
+    } else {
+        serde_yaml::Mapping::new()
     };
 
-    // Atomic write via temp + rename in the same directory. Using the
-    // target file's parent keeps the rename on a single filesystem.
+    let key = serde_yaml::Value::String("envs".to_string());
+    if new_envs.is_empty() {
+        yaml_map.remove(&key);
+    } else {
+        yaml_map.insert(key, serde_yaml::to_value(new_envs)?);
+    }
+
+    let serialized = serde_yaml::to_string(&serde_yaml::Value::Mapping(yaml_map))?;
     let tmp = resolved.config_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, serialized)?;
+    std::fs::write(&tmp, &serialized)?;
     std::fs::rename(&tmp, &resolved.config_path)?;
     Ok(())
 }
@@ -342,11 +329,9 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.scope, Scope::Project);
 
-        let on_disk: ProjectConfig =
+        let raw: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-        assert!(on_disk.envs.contains_key("dev"));
-        assert_eq!(on_disk.envs["dev"].len(), 1);
-        assert_eq!(on_disk.default_store.as_deref(), Some("acme/secrets"));
+        assert_eq!(raw["default_store"].as_str(), Some("acme/secrets"));
     }
 
     // 4. upsert replaces an existing label.

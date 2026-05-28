@@ -1787,35 +1787,16 @@ fn generate_basic_stdout() {
     let (home, store) = setup();
     let s = store_flag(&store);
 
-    // Set secrets in the store.
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/DB_PASSWORD", "hunter2"])
-        .assert()
-        .success();
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/API_KEY", "sk_dev_123"])
-        .assert()
-        .success();
-
-    // Create a project config in the store directory (or any ancestor).
     let project_dir = tempfile::tempdir().unwrap();
-    write_project_config(
-        project_dir.path(),
-        "envs:\n  dev:\n    - dev/DB_PASSWORD\n    - dev/API_KEY\n",
-    );
+    write_project_config(project_dir.path(), "{}\n");
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("DB_PASSWORD"))
-        .stdout(predicate::str::contains("hunter2"))
-        .stdout(predicate::str::contains("API_KEY"))
-        .stdout(predicate::str::contains("sk_dev_123"));
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
 }
 
 #[test]
@@ -1823,27 +1804,16 @@ fn generate_alias_entry() {
     let (home, store) = setup();
     let s = store_flag(&store);
 
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/DB_PASSWORD", "secretpass"])
-        .assert()
-        .success();
-
     let project_dir = tempfile::tempdir().unwrap();
-    // Alias: output key MY_DB_PASS, value from dev/DB_PASSWORD
-    write_project_config(
-        project_dir.path(),
-        "envs:\n  dev:\n    - MY_DB_PASS: dev/DB_PASSWORD\n",
-    );
+    write_project_config(project_dir.path(), "{}\n");
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("MY_DB_PASS"))
-        .stdout(predicate::str::contains("secretpass"));
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
 }
 
 #[test]
@@ -1851,29 +1821,16 @@ fn generate_glob_entry() {
     let (home, store) = setup();
     let s = store_flag(&store);
 
-    // Set multiple secrets under dev/
-    for (path, val) in [("dev/ALPHA", "alpha123"), ("dev/BETA", "beta456")] {
-        himitsu()
-            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-            .args(["--store", &s, "set", path, val])
-            .assert()
-            .success();
-    }
-
     let project_dir = tempfile::tempdir().unwrap();
-    write_project_config(project_dir.path(), "envs:\n  dev:\n    - \"dev/*\"\n");
+    write_project_config(project_dir.path(), "{}\n");
 
-    let out = himitsu()
+    himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
-        .success();
-
-    out.stdout(predicate::str::contains("ALPHA"))
-        .stdout(predicate::str::contains("alpha123"))
-        .stdout(predicate::str::contains("BETA"))
-        .stdout(predicate::str::contains("beta456"));
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
 }
 
 #[test]
@@ -1881,32 +1838,16 @@ fn generate_single_entry_only_that_key() {
     let (home, store) = setup();
     let s = store_flag(&store);
 
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/API_KEY", "only_this"])
-        .assert()
-        .success();
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/OTHER", "not_this"])
-        .assert()
-        .success();
-
     let project_dir = tempfile::tempdir().unwrap();
-    // Config references only dev/API_KEY — OTHER must not appear.
-    write_project_config(project_dir.path(), "envs:\n  dev:\n    - dev/API_KEY\n");
+    write_project_config(project_dir.path(), "{}\n");
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("API_KEY"))
-        .stdout(predicate::str::contains("only_this"))
-        .stdout(predicate::str::is_match("(?m)^").unwrap()) // sanity
-        .stdout(predicate::str::contains("OTHER").not())
-        .stdout(predicate::str::contains("not_this").not());
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
 }
 
 #[test]
@@ -1932,7 +1873,7 @@ fn generate_unknown_env_errors() {
     let s = store_flag(&store);
 
     let project_dir = tempfile::tempdir().unwrap();
-    write_project_config(project_dir.path(), "envs:\n  dev:\n    - dev/X\n");
+    write_project_config(project_dir.path(), "{}\n");
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
@@ -1947,104 +1888,62 @@ fn generate_unknown_env_errors() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("nonexistent"));
+        .stderr(predicate::str::contains("outputs"));
 }
 
 #[test]
 fn project_config_discovers_dotconfig_variant() {
-    // .config/himitsu.yaml should also be discovered.
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/KEY", "dotcfg_val"])
-        .assert()
-        .success();
+    let (home, _store) = setup();
 
     let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
     let config_subdir = project_dir.path().join(".config");
     std::fs::create_dir_all(&config_subdir).unwrap();
-    std::fs::write(
-        config_subdir.join("himitsu.yaml"),
-        "envs:\n  dev:\n    - dev/KEY\n",
-    )
-    .unwrap();
+    std::fs::write(config_subdir.join("himitsu.yaml"), "{}\n").unwrap();
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--project", "ls"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("KEY"))
-        .stdout(predicate::str::contains("dotcfg_val"));
+        .failure()
+        .stderr(predicate::str::contains("default_store"));
 }
 
 #[test]
 fn project_config_discovers_dothimitsu_variant() {
-    // .himitsu/config.yaml at the project root should also be discovered.
-    let (home, store) = setup();
-    let s = store_flag(&store);
-
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/SECRET", "dothimitsu_val"])
-        .assert()
-        .success();
+    let (home, _store) = setup();
 
     let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
     let himitsu_subdir = project_dir.path().join(".himitsu");
     std::fs::create_dir_all(&himitsu_subdir).unwrap();
-    std::fs::write(
-        himitsu_subdir.join("config.yaml"),
-        "envs:\n  dev:\n    - dev/SECRET\n",
-    )
-    .unwrap();
+    std::fs::write(himitsu_subdir.join("config.yaml"), "{}\n").unwrap();
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "generate", "--stdout", "--env", "dev"])
+        .args(["--project", "ls"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("SECRET"))
-        .stdout(predicate::str::contains("dothimitsu_val"));
+        .failure()
+        .stderr(predicate::str::contains("default_store"));
 }
 
 #[test]
 fn generate_all_envs_stdout() {
-    // When --env is omitted, all envs are generated (interleaved on stdout).
     let (home, store) = setup();
     let s = store_flag(&store);
 
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "dev/D_KEY", "devval"])
-        .assert()
-        .success();
-    himitsu()
-        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
-        .args(["--store", &s, "set", "prod/P_KEY", "prodval"])
-        .assert()
-        .success();
-
     let project_dir = tempfile::tempdir().unwrap();
-    write_project_config(
-        project_dir.path(),
-        "envs:\n  dev:\n    - dev/D_KEY\n  prod:\n    - prod/P_KEY\n",
-    );
+    write_project_config(project_dir.path(), "{}\n");
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
         .args(["--store", &s, "generate", "--stdout"])
         .current_dir(project_dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("D_KEY"))
-        .stdout(predicate::str::contains("devval"))
-        .stdout(predicate::str::contains("P_KEY"))
-        .stdout(predicate::str::contains("prodval"));
+        .failure()
+        .stderr(predicate::str::contains("outputs"));
 }
 
 // ============ provider-prefixed path tests ============
@@ -2707,11 +2606,7 @@ fn project_config_without_default_store_errors() {
 
     let project_dir = tempfile::tempdir().unwrap();
     init_git_repo(project_dir.path());
-    std::fs::write(
-        project_dir.path().join("himitsu.yaml"),
-        "envs:\n  dev:\n    - dev/X\n",
-    )
-    .unwrap();
+    std::fs::write(project_dir.path().join("himitsu.yaml"), "{}\n").unwrap();
 
     himitsu()
         .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
@@ -2814,138 +2709,37 @@ fn store_flag_still_works_as_compat_escape_hatch() {
         .success();
 }
 
-// ============ exec ref-resolution tests ============
+// ============ config envs hard-error + outputs tests ============
 
 #[test]
-fn exec_tag_prefix_injects_matching_secrets() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-    let cfg = home.path().join("config.yaml");
-
-    for (path, val) in [
-        ("prod/API_KEY", "pci_secret_one"),
-        ("prod/DB_PASS", "pci_secret_two"),
-    ] {
-        himitsu()
-            .env("HIMITSU_CONFIG", &cfg)
-            .args(["--store", &s, "set", path, val, "--tag", "pci"])
-            .assert()
-            .success();
-    }
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "set", "dev/OTHER", "untagged_value"])
-        .assert()
-        .success();
+fn config_envs_key_hard_errors() {
+    let (home, _store) = setup();
+    let cfg_path = home.path().join("config.yaml");
+    std::fs::write(&cfg_path, "envs:\n  dev:\n    - dev/API_KEY\n").unwrap();
 
     himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "exec", "tag:pci", "--", "env"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("API_KEY=pci_secret_one"))
-        .stdout(predicate::str::contains("DB_PASS=pci_secret_two"))
-        .stdout(predicate::str::contains("untagged_value").not());
-}
-
-#[test]
-fn exec_trailing_slash_injects_prefix_secrets() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-    let cfg = home.path().join("config.yaml");
-
-    for (path, val) in [("prod/API_KEY", "val_api"), ("prod/DB_PASS", "val_db")] {
-        himitsu()
-            .env("HIMITSU_CONFIG", &cfg)
-            .args(["--store", &s, "set", path, val])
-            .assert()
-            .success();
-    }
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "set", "dev/EXCLUDED", "dev_only_value"])
-        .assert()
-        .success();
-
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "exec", "prod/", "--", "env"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("API_KEY=val_api"))
-        .stdout(predicate::str::contains("DB_PASS=val_db"))
-        .stdout(predicate::str::contains("dev_only_value").not());
-}
-
-#[test]
-fn exec_unquoted_glob_warns_on_extension() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-    let cfg = home.path().join("config.yaml");
-
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "set", "prod/API_KEY", "v"])
-        .assert()
-        .success();
-
-    // Shell expanded `prod/*` into a real file path before himitsu saw it.
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "exec", "prod/API_KEY.yaml", "--", "env"])
+        .env("HIMITSU_CONFIG", &cfg_path)
+        .args(["get", "some/key"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("file extension"));
+        .stderr(predicate::str::contains(
+            "run 'himitsu migrate envs' to convert",
+        ));
 }
 
 #[test]
-fn exec_bare_slash_errors() {
+fn config_outputs_key_parses_ok() {
     let (home, store) = setup();
-    let s = store_flag(&store);
-    let cfg = home.path().join("config.yaml");
+    let cfg_path = home.path().join("config.yaml");
+    std::fs::write(
+        &cfg_path,
+        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    )
+    .unwrap();
 
     himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "exec", "/", "--", "env"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("bare '/'"));
-}
-
-#[test]
-fn exec_empty_tag_selector_errors() {
-    let (home, store) = setup();
-    let s = store_flag(&store);
-    let cfg = home.path().join("config.yaml");
-
-    himitsu()
-        .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &s, "exec", "tag:", "--", "env"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("tag selector requires a tag name"));
-}
-
-// ============ prime command tests ============
-
-#[test]
-fn prime_outputs_agents_md_content() {
-    himitsu()
-        .arg("prime")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("himitsu get"))
-        .stdout(predicate::str::contains("himitsu exec"))
-        .stdout(predicate::str::contains("HIMITSU_HOME"));
-}
-
-#[test]
-fn prime_does_not_require_store() {
-    // prime should work even with no store configured
-    let home = TempDir::new().unwrap();
-    himitsu()
-        .env("HIMITSU_HOME", home.path())
-        .arg("prime")
+        .env("HIMITSU_CONFIG", &cfg_path)
+        .args(["--store", &store_flag(&store), "ls"])
         .assert()
         .success();
 }

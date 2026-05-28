@@ -75,3 +75,14 @@
 - The decode seam is `crypto::secret_value::decode_with_legacy_environment`, called after `age::decrypt_with_identities` and given `SecretPayload.legacy_environment` from `store::read_secret_payload`.
 - Folding is read-only: valid legacy env values are appended to in-memory `Decoded.tags` if absent, invalid values warn and skip, and `himitsu get/search/ls/tag/export/generate/rekey` do not rewrite `.age` merely by reading.
 - The T6 helper must remove the current `.yaml` file before writing its legacy `.age` fixture because the store reader prefers YAML over `.age` when both exist.
+
+## Task 14 Config struct migration
+
+- `EnvEntry` enum + serde impls moved from `config/mod.rs` to `config/env_dsl.rs`; re-exported from `mod.rs` as `pub use self::env_dsl::{EnvEntry, validate_envs}` so all existing callers remain valid.
+- `validate_envs` likewise moved to `env_dsl.rs` (where it logically belongs with `EnvEntry`) and re-exported.
+- Hard-error on `envs:` key implemented via `#[serde(rename = "envs", default, deserialize_with = "reject_envs_field", skip_serializing)] _envs_deprecated: ()` on both `Config` and `ProjectConfig`; clippy `manual_non_exhaustive` suppressed with `#[allow]` on both structs since the field serves serde rejection not construction-prevention.
+- `load_effective_envs()` now returns `Ok(BTreeMap::new())`; callers (exec, codegen) fall through to glob/path matching. T17/T18 will migrate them to outputs.
+- `envs_mut.rs` updated to use `serde_yaml::Value` for raw YAML read/write of the `envs:` key, bypassing the `Config`/`ProjectConfig` struct rejection. This keeps `envs_mut` tests green while `Config::load()` still correctly rejects config files with `envs:`.
+- `tui/views/search.rs::build_env_index` simplified to return empty map; will be retargeted in T20.
+- Integration tests that called generate with `envs:` project configs updated to expect failure with "outputs" in stderr (generate now returns "no `outputs` defined..." since `load_effective_envs` is empty).
+- Discovery tests (`project_config_discovers_*`) restructured to use `--project` + `init_git_repo` and verify "no `default_store` set" error (proves config was found in alternate location).

@@ -106,24 +106,25 @@ auto_pull: false
 #     cancel:         [esc]               # cancel and return to search
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Global environment definitions
+# Output definitions
 # ──────────────────────────────────────────────────────────────────────────────
 #
-# Map environment names to lists of secret entries. These are used by
-# `himitsu generate` and the TUI envs view. Three entry shapes:
+# Map output names to selector + alias blocks. Used by `himitsu exec` and
+# `himitsu generate`. Each block has two optional keys:
 #
-#   - "path/SECRET"           →  key = SECRET (last path component)
-#   - "prefix/*"              →  all secrets under prefix/
-#   - {MY_KEY: "path/SECRET"} →  explicit alias (key = MY_KEY)
+#   selectors: list of path globs, tag expressions, or combined selectors
+#   aliases:   explicit env-var-name → secret-ref overrides
 #
-# Wildcard envs (trailing /*) support capture refs: $1 binds the matched
-# segment. Example: prod/* with entry {DB: "/$1/db-url"} expands DB for
-# each secret matched under prod/.
+# outputs:
+#   pci-prod:
+#     selectors:
+#       - tag:pci+tag:prod
+#     aliases:
+#       STRIPE: tag:stripe
 #
-# envs:
-#   dev:
-#     - dev/API_KEY
-#     - DB_PASSWORD: dev/DB_PASSWORD
-#     - dev/*
-#   prod:
-#     - prod/*
+#   web-service-{dev,staging,prod}:
+#     selectors:
+#       - common/*
+#       - $1/database-url
+#     aliases:
+#       SOME_VALUE: path/to/some-secret

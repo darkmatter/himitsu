@@ -13,6 +13,8 @@ pub mod env_resolver;
 pub mod envs_mut;
 pub mod outputs;
 
+pub use self::env_dsl::{validate_envs, EnvEntry};
+
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -62,6 +64,7 @@ impl std::str::FromStr for KeyProvider {
 /// | `auto_pull`      | `HIMITSU_AUTO_PULL`       |
 /// | `tui.theme`      | `HIMITSU_TUI_THEME`       |
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(clippy::manual_non_exhaustive)]
 pub struct Config {
     /// Default remote store slug (e.g. `"myorg/secrets"`).
     /// Override: `HIMITSU_DEFAULT_STORE=org/repo`
@@ -104,23 +107,15 @@ pub struct Config {
     #[serde(default)]
     pub tui: TuiConfig,
 
-    /// Environment definitions at global scope: env name → list of entry
-    /// specs. Mirrors the `envs:` field on [`ProjectConfig`]; the two may
-    /// coexist and the TUI / codegen walk layers resolve which scope wins
-    /// for any given label.
-    #[serde(default)]
-    pub envs: BTreeMap<String, Vec<EnvEntry>>,
-
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
+
+    #[serde(rename = "envs", default, deserialize_with = "reject_envs_field", skip_serializing)]
+    _envs_deprecated: (),
 }
 
 impl Config {
-    /// Run cross-field validation that cannot be expressed in serde: currently
-    /// just env-label grammar and capture-ref legality on [`Config::envs`].
-    /// Called by consumers before writing the config back to disk.
     pub fn validate(&self) -> Result<()> {
-        validate_envs(&self.envs)?;
         Ok(())
     }
 }
@@ -167,138 +162,32 @@ fn default_tui_theme() -> String {
 /// `himitsu.yaml` in the current directory and each parent up to the
 /// home directory (max 20 levels).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(clippy::manual_non_exhaustive)]
 pub struct ProjectConfig {
     /// Default remote store slug for this project (e.g. `"acme/secrets"`).
     #[serde(default)]
     pub default_store: Option<String>,
 
-    /// Environment definitions: env name → list of entry specs.
-    #[serde(default)]
-    pub envs: BTreeMap<String, Vec<EnvEntry>>,
-
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
 
-    /// Generate output settings.
+    #[serde(rename = "envs", default, deserialize_with = "reject_envs_field", skip_serializing)]
+    _envs_deprecated: (),
+
     #[serde(default)]
     pub generate: Option<GenerateConfig>,
 
-    /// Recipients directory path override.
     #[serde(default)]
     pub recipients_path: Option<String>,
 }
 
-/// A single entry in an env's secret list.
-///
-/// YAML shapes:
-/// - `"dev/API_KEY"` → `Single("dev/API_KEY")` — key name = last path component
-/// - `"dev/*"` → `Glob("dev")` — all secrets under prefix
-/// - `{MY_KEY: "dev/DB_PASSWORD"}` → `Alias { key: "MY_KEY", path: "dev/DB_PASSWORD" }`
-/// - `"tag:pci"` or `{tag: pci}` → `Tag("pci")` — every secret carrying tag `pci`
-/// - `{STRIPE: "tag:stripe"}` → `AliasTag { key: "STRIPE", tag: "stripe" }`
-///
-/// Tag entries select secrets by their encrypted `SecretValue.tags` field;
-/// resolution requires decrypting candidate secrets (see
-/// [`super::env_resolver::resolve_with_tags`]). Capture-ref interpolation
-/// (`$1`) is **not** supported on tag entries — the tag string is opaque.
-#[derive(Debug, Clone)]
-pub enum EnvEntry {
-    /// Explicit alias: output key `key`, value from store path `path`.
-    Alias { key: String, path: String },
-    /// Single secret by path; output key = last path component.
-    Single(String),
-    /// All secrets whose path starts with `prefix/`.
-    Glob(String),
-    /// All secrets carrying the named tag. Output key per-secret = last path
-    /// component of the matched secret.
-    Tag(String),
-    /// Aliased tag selector: exactly one secret must carry the named tag,
-    /// and its value is bound to the explicit output key. Errors when zero
-    /// or more than one secret matches.
-    AliasTag { key: String, tag: String },
-}
-
-impl Serialize for EnvEntry {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        match self {
-            EnvEntry::Single(p) => s.serialize_str(p),
-            EnvEntry::Glob(prefix) => s.serialize_str(&format!("{prefix}/*")),
-            EnvEntry::Tag(name) => s.serialize_str(&format!("tag:{name}")),
-            EnvEntry::Alias { key, path } => {
-                let mut map = s.serialize_map(Some(1))?;
-                map.serialize_entry(key, path)?;
-                map.end()
-            }
-            EnvEntry::AliasTag { key, tag } => {
-                let mut map = s.serialize_map(Some(1))?;
-                map.serialize_entry(key, &format!("tag:{tag}"))?;
-                map.end()
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for EnvEntry {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        // Use an untagged intermediate to handle both string and map shapes.
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Str(String),
-            Map(BTreeMap<String, String>),
-        }
-
-        // Strip a leading `tag:` and validate the suffix against the shared
-        // tag grammar. Returns `Some(validated_tag)` on the prefix path, or
-        // `None` when the input was not a tag selector at all. Surfaces
-        // grammar errors as `serde::de::Error::custom` so YAML callers see
-        // a clean parse-time failure rather than a downstream resolver error.
-        fn parse_tag_selector<E: serde::de::Error>(
-            s: &str,
-        ) -> std::result::Result<Option<String>, E> {
-            let Some(rest) = s.strip_prefix("tag:") else {
-                return Ok(None);
-            };
-            crate::crypto::tags::validate_tag(rest).map_err(serde::de::Error::custom)?;
-            Ok(Some(rest.to_string()))
-        }
-
-        match Raw::deserialize(d)? {
-            Raw::Str(s) => {
-                // Order matters: `tag:` prefix must be checked before the
-                // path/glob branch, otherwise `tag:pci` would parse as a
-                // literal `Single` path.
-                if let Some(tag) = parse_tag_selector(&s)? {
-                    Ok(EnvEntry::Tag(tag))
-                } else if let Some(prefix) = s.strip_suffix("/*") {
-                    Ok(EnvEntry::Glob(prefix.to_string()))
-                } else {
-                    Ok(EnvEntry::Single(s))
-                }
-            }
-            Raw::Map(m) => {
-                if m.len() != 1 {
-                    return Err(serde::de::Error::custom(
-                        "alias entry must have exactly one key-value pair",
-                    ));
-                }
-                let (key, value) = m.into_iter().next().unwrap();
-                // Map form `{ tag: pci }` — the literal key is `tag` and the
-                // value is the tag name itself.
-                if key == "tag" {
-                    crate::crypto::tags::validate_tag(&value).map_err(serde::de::Error::custom)?;
-                    return Ok(EnvEntry::Tag(value));
-                }
-                // Map form `{ STRIPE: tag:stripe }` — alias whose value is
-                // a `tag:` selector rather than a path.
-                if let Some(tag) = parse_tag_selector(&value)? {
-                    return Ok(EnvEntry::AliasTag { key, tag });
-                }
-                Ok(EnvEntry::Alias { key, path: value })
-            }
-        }
-    }
+fn reject_envs_field<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<(), D::Error> {
+    use serde::de::IgnoredAny;
+    IgnoredAny::deserialize(d)?;
+    Err(serde::de::Error::custom(
+        "error: 'envs:' block has been replaced by 'outputs:' \
+         — run 'himitsu migrate envs' to convert",
+    ))
 }
 
 // ── Env label validation ──────────────────────────────────────────────────
@@ -402,51 +291,8 @@ pub fn parse_captures(s: &str) -> Vec<u32> {
     out
 }
 
-/// Validates every env label in a map and checks that capture references
-/// only appear inside wildcard envs. Concrete envs containing `$N` are
-/// rejected — captures have no segment to bind to.
-pub fn validate_envs(envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
-    for (label, entries) in envs {
-        validate_env_label(label)?;
-        let is_wild = is_wildcard_label(label);
-        for (idx, entry) in entries.iter().enumerate() {
-            // Tag selectors are opaque tag names, not paths — capture refs
-            // and `$1` checks don't apply. Tag grammar was enforced at
-            // deserialize time via `crate::crypto::tags::validate_tag`.
-            let path = match entry {
-                EnvEntry::Single(p) | EnvEntry::Glob(p) => p,
-                EnvEntry::Alias { path, .. } => path,
-                EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => continue,
-            };
-            let captures = parse_captures(path);
-            if !captures.is_empty() && !is_wild {
-                return Err(HimitsuError::InvalidConfig(format!(
-                    "env '{label}' entry #{idx} uses capture refs (`$N`) but the label is not a wildcard; captures are only valid in `<prefix>/*` envs"
-                )));
-            }
-            // In a wildcard env, a single `*` captures one segment — captures
-            // must be `$1`. Reject higher-index captures up front.
-            if is_wild {
-                for n in &captures {
-                    if *n != 1 {
-                        return Err(HimitsuError::InvalidConfig(format!(
-                            "env '{label}' entry #{idx} references $${n}, but a single-`*` wildcard only exposes $1"
-                        )));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 impl ProjectConfig {
-    /// Run all cross-field validation that cannot be expressed in serde:
-    /// env-label grammar, capture-ref legality. Called by consumers before
-    /// acting on the config; not invoked implicitly on deserialize so that
-    /// serde round-trips remain pure.
     pub fn validate(&self) -> Result<()> {
-        validate_envs(&self.envs)?;
         Ok(())
     }
 
@@ -761,14 +607,8 @@ pub fn merge_envs(
     merged
 }
 
-/// Load global + project env definitions for command resolution.
 pub fn load_effective_envs() -> Result<BTreeMap<String, Vec<EnvEntry>>> {
-    let global = Config::load(&config_path())?;
-    let project = load_project_config().map(|(cfg, _)| cfg);
-    Ok(merge_envs(
-        &global.envs,
-        project.as_ref().map(|cfg| &cfg.envs),
-    ))
+    Ok(BTreeMap::new())
 }
 
 // ── Store resolution ────────────────────────────────────────────────────────
@@ -1066,7 +906,6 @@ mod tests {
         assert_eq!(cfg.key_provider, KeyProvider::Disk);
         assert!(cfg.data_dir.is_none());
         assert!(!cfg.auto_pull);
-        assert!(cfg.envs.is_empty());
         cfg.validate().unwrap();
     }
 
@@ -1078,37 +917,13 @@ mod tests {
     }
 
     #[test]
-    fn config_envs_round_trip_serde() {
-        // YAML with envs at global scope should deserialize into Config and
-        // serialize back with the same shape (labels + entries preserved).
-        let yaml = r#"
-default_store: org/secrets
-envs:
-  dev:
-    - dev/API_KEY
-    - DB_PASS: dev/DB_PASSWORD
-  prod/*:
-    - POSTGRES: /$1/postgres-url
-"#;
-        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.default_store.as_deref(), Some("org/secrets"));
-        assert_eq!(cfg.envs.len(), 2);
-
-        let dev = cfg.envs.get("dev").unwrap();
-        assert_eq!(dev.len(), 2);
-        assert!(matches!(&dev[0], EnvEntry::Single(p) if p == "dev/API_KEY"));
+    fn config_envs_key_rejected_at_parse() {
+        let yaml = "default_store: org/secrets\nenvs:\n  dev:\n    - dev/API_KEY\n";
+        let err = serde_yaml::from_str::<Config>(yaml).unwrap_err();
         assert!(
-            matches!(&dev[1], EnvEntry::Alias { key, path } if key == "DB_PASS" && path == "dev/DB_PASSWORD")
+            err.to_string().contains("run 'himitsu migrate envs' to convert"),
+            "msg: {err}"
         );
-
-        cfg.validate().unwrap();
-
-        // Round-trip through YAML and back.
-        let serialized = serde_yaml::to_string(&cfg).unwrap();
-        let cfg2: Config = serde_yaml::from_str(&serialized).unwrap();
-        assert_eq!(cfg2.envs.len(), 2);
-        assert!(cfg2.envs.contains_key("dev"));
-        assert!(cfg2.envs.contains_key("prod/*"));
     }
 
     #[test]
@@ -1135,14 +950,6 @@ envs:
             EnvEntry::Single(path) if path == "project/SHARED"
         ));
         assert!(merged.contains_key("global-only"));
-    }
-
-    #[test]
-    fn config_validate_rejects_bad_env_label() {
-        let mut cfg = Config::default();
-        cfg.envs
-            .insert("foo/*/bar".into(), vec![EnvEntry::Single("x".into())]);
-        assert!(cfg.validate().is_err());
     }
 
     #[test]
@@ -1415,28 +1222,23 @@ envs:
     }
 
     #[test]
-    fn project_config_validate_surfaces_label_errors() {
-        let yaml = r#"
-envs:
-  "foo/*/bar":
-    - SECRET: x
-"#;
-        let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
-        // Deserialization succeeds — validation surfaces the grammar error.
-        assert!(cfg.validate().is_err());
+    fn project_config_envs_key_rejected_at_parse() {
+        let yaml = "envs:\n  dev:\n    - dev/API_KEY\n";
+        let err = serde_yaml::from_str::<ProjectConfig>(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("run 'himitsu migrate envs' to convert"),
+            "msg: {err}"
+        );
     }
 
     #[test]
     fn project_config_full_yaml_parses() {
         let yaml = r#"
 default_store: acme/secrets
-envs:
-  dev:
-    - dev/API_KEY
-    - DB_PASS: dev/DB_PASSWORD
-    - dev/*
-  prod:
-    - prod/*
+outputs:
+  pci-prod:
+    selectors:
+      - tag:pci
 generate:
   target: .generated
   format: sops
@@ -1447,15 +1249,7 @@ recipients_path: keys/recipients
 "#;
         let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
-        assert_eq!(cfg.envs.len(), 2);
-
-        let dev_entries = cfg.envs.get("dev").unwrap();
-        assert_eq!(dev_entries.len(), 3);
-        assert!(matches!(&dev_entries[0], EnvEntry::Single(p) if p == "dev/API_KEY"));
-        assert!(
-            matches!(&dev_entries[1], EnvEntry::Alias { key, path } if key == "DB_PASS" && path == "dev/DB_PASSWORD")
-        );
-        assert!(matches!(&dev_entries[2], EnvEntry::Glob(p) if p == "dev"));
+        assert!(cfg.outputs.contains_key("pci-prod"));
 
         let gen = cfg.generate.unwrap();
         assert_eq!(gen.target, ".generated");

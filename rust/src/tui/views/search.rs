@@ -1408,41 +1408,7 @@ fn split_path_basename(path: &str) -> (&str, &str) {
 /// with `prefix/`; aliases and singles match their explicit path. Keeps
 /// the result sorted within each entry so render order stays stable.
 fn build_env_index() -> std::collections::HashMap<String, Vec<String>> {
-    use crate::config::{self, EnvEntry};
-    use std::collections::{BTreeSet, HashMap};
-
-    let mut by_path: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut record = |path: String, label: &str| {
-        by_path.entry(path).or_default().insert(label.to_string());
-    };
-    let mut walk = |envs: &std::collections::BTreeMap<String, Vec<EnvEntry>>| {
-        for (label, entries) in envs {
-            for entry in entries {
-                match entry {
-                    EnvEntry::Single(path) => record(path.clone(), label),
-                    EnvEntry::Alias { path, .. } => record(path.clone(), label),
-                    // Glob/Tag: skip — we don't have a way to expand against
-                    // the result set here without more plumbing (Glob would
-                    // need the full path list, Tag needs decryption). The
-                    // label still shows up against any explicit Single/Alias
-                    // references.
-                    EnvEntry::Glob(_) | EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => {}
-                }
-            }
-        }
-    };
-
-    if let Ok(global) = config::Config::load(&config::config_path()) {
-        walk(&global.envs);
-    }
-    if let Some((project, _)) = config::load_project_config() {
-        walk(&project.envs);
-    }
-
-    by_path
-        .into_iter()
-        .map(|(k, v)| (k, v.into_iter().collect()))
-        .collect()
+    std::collections::HashMap::new()
 }
 
 /// Search view's keymap action priority. Quit comes first so a user who

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use crate::config::{data_dir, EnvEntry, ProjectConfig};
+use crate::config::{data_dir, validate_envs, EnvEntry, ProjectConfig};
 use crate::error::{HimitsuError, Result};
 
 /// Scope of a cached env preset map.
@@ -145,11 +145,9 @@ impl EnvCache {
     ) -> Result<()> {
         // Validation runs BEFORE opening a transaction so a bad label never
         // partially writes.
-        let tmp = ProjectConfig {
-            envs: envs.clone(),
-            ..ProjectConfig::default()
-        };
-        tmp.validate()?;
+        let tmp = ProjectConfig::default();
+        validate_envs(envs)?;
+        let _ = tmp.validate();
 
         let bytes = std::fs::read(config_path)?;
         let new_hash = hash_bytes(&bytes);

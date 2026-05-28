@@ -21,7 +21,126 @@
 
 use std::collections::BTreeMap;
 
-use super::EnvEntry;
+use serde::{Deserialize, Serialize};
+
+use crate::error::{HimitsuError, Result};
+
+/// A single entry in an env's secret list.
+///
+/// YAML shapes:
+/// - `"dev/API_KEY"` → `Single("dev/API_KEY")` — key name = last path component
+/// - `"dev/*"` → `Glob("dev")` — all secrets under prefix
+/// - `{MY_KEY: "dev/DB_PASSWORD"}` → `Alias { key: "MY_KEY", path: "dev/DB_PASSWORD" }`
+/// - `"tag:pci"` or `{tag: pci}` → `Tag("pci")` — every secret carrying tag `pci`
+/// - `{STRIPE: "tag:stripe"}` → `AliasTag { key: "STRIPE", tag: "stripe" }`
+#[derive(Debug, Clone)]
+pub enum EnvEntry {
+    Alias { key: String, path: String },
+    Single(String),
+    Glob(String),
+    Tag(String),
+    AliasTag { key: String, tag: String },
+}
+
+impl Serialize for EnvEntry {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            EnvEntry::Single(p) => s.serialize_str(p),
+            EnvEntry::Glob(prefix) => s.serialize_str(&format!("{prefix}/*")),
+            EnvEntry::Tag(name) => s.serialize_str(&format!("tag:{name}")),
+            EnvEntry::Alias { key, path } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(key, path)?;
+                map.end()
+            }
+            EnvEntry::AliasTag { key, tag } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(key, &format!("tag:{tag}"))?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Map(BTreeMap<String, String>),
+        }
+
+        fn parse_tag_selector<E: serde::de::Error>(
+            s: &str,
+        ) -> std::result::Result<Option<String>, E> {
+            let Some(rest) = s.strip_prefix("tag:") else {
+                return Ok(None);
+            };
+            crate::crypto::tags::validate_tag(rest).map_err(serde::de::Error::custom)?;
+            Ok(Some(rest.to_string()))
+        }
+
+        match Raw::deserialize(d)? {
+            Raw::Str(s) => {
+                if let Some(tag) = parse_tag_selector(&s)? {
+                    Ok(EnvEntry::Tag(tag))
+                } else if let Some(prefix) = s.strip_suffix("/*") {
+                    Ok(EnvEntry::Glob(prefix.to_string()))
+                } else {
+                    Ok(EnvEntry::Single(s))
+                }
+            }
+            Raw::Map(m) => {
+                if m.len() != 1 {
+                    return Err(serde::de::Error::custom(
+                        "alias entry must have exactly one key-value pair",
+                    ));
+                }
+                let (key, value) = m.into_iter().next().unwrap();
+                if key == "tag" {
+                    crate::crypto::tags::validate_tag(&value).map_err(serde::de::Error::custom)?;
+                    return Ok(EnvEntry::Tag(value));
+                }
+                if let Some(tag) = parse_tag_selector(&value)? {
+                    return Ok(EnvEntry::AliasTag { key, tag });
+                }
+                Ok(EnvEntry::Alias { key, path: value })
+            }
+        }
+    }
+}
+
+pub fn validate_envs(envs: &BTreeMap<String, Vec<EnvEntry>>) -> Result<()> {
+    for (label, entries) in envs {
+        super::validate_env_label(label)?;
+        let is_wild = super::is_wildcard_label(label);
+        for (idx, entry) in entries.iter().enumerate() {
+            let path = match entry {
+                EnvEntry::Single(p) | EnvEntry::Glob(p) => p,
+                EnvEntry::Alias { path, .. } => path,
+                EnvEntry::Tag(_) | EnvEntry::AliasTag { .. } => continue,
+            };
+            let captures = super::parse_captures(path);
+            if !captures.is_empty() && !is_wild {
+                return Err(HimitsuError::InvalidConfig(format!(
+                    "env '{label}' entry #{idx} uses capture refs (`$N`) but the label is not a wildcard; captures are only valid in `<prefix>/*` envs"
+                )));
+            }
+            if is_wild {
+                for n in &captures {
+                    if *n != 1 {
+                        return Err(HimitsuError::InvalidConfig(format!(
+                            "env '{label}' entry #{idx} references $${n}, but a single-`*` wildcard only exposes $1"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// One resolved KEY=item_path pair for the live preview.
 #[derive(Debug, Clone, PartialEq, Eq)]

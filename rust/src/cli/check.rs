@@ -128,53 +128,20 @@ fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
 }
 
 fn collect_stores_from_global_config(cfg: &config::Config) -> BTreeSet<String> {
-    collect_store_slugs(cfg.default_store.as_ref(), &cfg.envs)
+    collect_store_slugs(cfg.default_store.as_ref())
 }
 
-/// Extract unique store slugs referenced in a project config.
-///
-/// Sources:
-/// - `default_store` field
-/// - Paths inside `envs` entries that contain an `org/repo` prefix (e.g.
-///   `"myorg/secrets/prod/DB_PASS"` → slug `"myorg/secrets"`).
 fn collect_stores_from_project_config(cfg: &config::ProjectConfig) -> BTreeSet<String> {
-    collect_store_slugs(cfg.default_store.as_ref(), &cfg.envs)
+    collect_store_slugs(cfg.default_store.as_ref())
 }
 
-fn collect_store_slugs(
-    default_store: Option<&String>,
-    envs: &std::collections::BTreeMap<String, Vec<config::EnvEntry>>,
-) -> BTreeSet<String> {
+fn collect_store_slugs(default_store: Option<&String>) -> BTreeSet<String> {
     let mut slugs = BTreeSet::new();
-
     if let Some(s) = default_store {
         if config::validate_remote_slug(s).is_ok() {
             slugs.insert(s.clone());
         }
     }
-
-    for entries in envs.values() {
-        for entry in entries {
-            // Tag selectors don't carry a path — they expand at resolve time
-            // against whatever store the caller already chose. They cannot
-            // contribute a slug to the auto-discovery list.
-            let path = match entry {
-                config::EnvEntry::Single(p) | config::EnvEntry::Glob(p) => p.as_str(),
-                config::EnvEntry::Alias { path, .. } => path.as_str(),
-                config::EnvEntry::Tag(_) | config::EnvEntry::AliasTag { .. } => continue,
-            };
-            // A qualified path looks like "org/repo/env/KEY" — at least 3 segments.
-            // Extract the first two segments as the slug.
-            let parts: Vec<&str> = path.splitn(3, '/').collect();
-            if parts.len() >= 3 {
-                let candidate = format!("{}/{}", parts[0], parts[1]);
-                if config::validate_remote_slug(&candidate).is_ok() {
-                    slugs.insert(candidate);
-                }
-            }
-        }
-    }
-
     slugs
 }
 

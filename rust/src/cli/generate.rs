@@ -34,7 +34,9 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
 
     if envs.is_empty() {
         return Err(HimitsuError::GenerateError(
-            "no `envs` defined in global or project config".into(),
+            "no `outputs` defined in project config — \
+             define outputs: blocks in himitsu.yaml or use `himitsu codegen`"
+                .into(),
         ));
     }
 
