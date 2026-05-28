@@ -57,6 +57,10 @@ pub enum HimitsuError {
     #[error("invalid reference: {0}")]
     InvalidReference(String),
 
+    /// A tag-selector string failed to parse.
+    #[error("invalid selector: {0}")]
+    InvalidSelector(String),
+
     #[error("keychain error: {0}")]
     Keychain(String),
 

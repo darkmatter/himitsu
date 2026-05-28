@@ -11,6 +11,7 @@ pub mod env_cache;
 pub mod env_dsl;
 pub mod env_resolver;
 pub mod envs_mut;
+pub mod outputs;
 
 /// How age private keys are stored and retrieved.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
