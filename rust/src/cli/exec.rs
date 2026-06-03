@@ -58,6 +58,10 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         })?;
     }
 
+    if let Some(warning) = warn_if_shell_expanded(&args.r#ref) {
+        eprintln!("{warning}");
+    }
+
     let (cmd, cmd_args) = args
         .command
         .split_first()
@@ -90,6 +94,37 @@ struct ResolvedRef {
 }
 
 fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
+    // Check for `tag:` prefix — intercept before `SecretRef::parse` treats
+    // ':' as a provider separator. Env labels can't contain ':' so this
+    // never collides with the env-label namespace.
+    if let Some(tag_name) = ref_str.strip_prefix("tag:") {
+        if tag_name.is_empty() {
+            return Err(HimitsuError::InvalidReference(
+                "tag selector requires a tag name after 'tag:' (e.g. tag:pci)".into(),
+            ));
+        }
+        tag_grammar::validate_tag(tag_name).map_err(|reason| {
+            HimitsuError::InvalidReference(format!("invalid tag in selector: {reason}"))
+        })?;
+        let available = store::list_secrets(&ctx.store, None)?;
+        let identities = ctx.load_identities()?;
+        return Ok(available
+            .into_iter()
+            .filter_map(|secret_path| {
+                let decoded =
+                    super::get::get_decoded_with_identities(ctx, &secret_path, &identities).ok()?;
+                if decoded.tags.iter().any(|t| t == tag_name) {
+                    Some(ResolvedRef {
+                        secret_path,
+                        explicit_key: None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect());
+    }
+
     // Env labels live in their own namespace and always win when they match
     // exactly: project authoring intent beats path coincidence.
     let envs = config::load_effective_envs()?;
@@ -122,6 +157,26 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
         if prefix.is_empty() {
             return Err(HimitsuError::InvalidReference(
                 "bare `/*` is not a valid ref; specify a prefix (e.g. `prod/*`)".into(),
+            ));
+        }
+        let needle = format!("{prefix}/");
+        let available = store::list_secrets(&ctx.store, None)?;
+        return Ok(available
+            .into_iter()
+            .filter(|s| s.starts_with(&needle))
+            .map(|secret_path| ResolvedRef {
+                secret_path,
+                explicit_key: None,
+            })
+            .collect());
+    }
+
+    // Trailing slash = prefix glob (same as `prefix/*` but without the star).
+    if ref_str.ends_with('/') {
+        let prefix = ref_str.trim_end_matches('/');
+        if prefix.is_empty() {
+            return Err(HimitsuError::InvalidReference(
+                "bare '/' is not a valid ref; specify a prefix (e.g. 'prod/')".into(),
             ));
         }
         let needle = format!("{prefix}/");
@@ -297,6 +352,38 @@ fn spawn_and_wait(
     }
 }
 
+/// Detect refs that look like shell-expanded filesystem paths and return a
+/// warning message if so. When the user types `himitsu exec prod/*` without
+/// quoting, the shell expands the glob before himitsu sees it. We can't fix
+/// this but we can warn before the inevitable "secret not found" error.
+fn warn_if_shell_expanded(ref_str: &str) -> Option<String> {
+    // Absolute paths are never valid himitsu refs (they're always relative
+    // store paths).
+    if ref_str.starts_with('/') || ref_str.starts_with('~') {
+        return Some(format!(
+            "warning: ref {ref_str:?} looks like an absolute filesystem path — \
+             the shell likely expanded a glob before himitsu saw it.\n  \
+             Hint: quote the glob (e.g. 'prod/*') or just use the prefix (e.g. 'prod/' or 'prod')"
+        ));
+    }
+    // Paths with common file extensions are almost certainly shell-expanded
+    // filesystem paths, not secret store paths.
+    let lowered = ref_str.to_ascii_lowercase();
+    let has_ext = [
+        ".yaml", ".age", ".json", ".yml", ".txt", ".env", ".toml", ".cfg", ".conf",
+    ]
+    .iter()
+    .any(|ext| lowered.ends_with(ext));
+    if has_ext {
+        return Some(format!(
+            "warning: ref {ref_str:?} has a file extension — the shell likely expanded \
+             a glob before himitsu saw it.\n  \
+             Hint: quote the glob (e.g. 'prod/*') or just use the prefix (e.g. 'prod/' or 'prod')"
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +552,32 @@ mod tests {
 
         let res = Cli::try_parse_from(["test", "prod/API_KEY"]);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn warn_if_shell_expanded_absolute_path() {
+        let w = warn_if_shell_expanded("/home/user/.himitsu/secrets/prod/API_KEY.yaml")
+            .expect("absolute path should warn");
+        assert!(w.contains("absolute filesystem path"), "got: {w}");
+    }
+
+    #[test]
+    fn warn_if_shell_expanded_tilde_path() {
+        let w = warn_if_shell_expanded("~/secrets/prod").expect("tilde path should warn");
+        assert!(w.contains("absolute filesystem path"), "got: {w}");
+    }
+
+    #[test]
+    fn warn_if_shell_expanded_file_extension() {
+        let w = warn_if_shell_expanded("prod/API_KEY.yaml").expect("extension should warn");
+        assert!(w.contains("file extension"), "got: {w}");
+    }
+
+    #[test]
+    fn warn_if_shell_expanded_normal_ref_silent() {
+        assert!(warn_if_shell_expanded("prod/API_KEY").is_none());
+        assert!(warn_if_shell_expanded("prod/*").is_none());
+        assert!(warn_if_shell_expanded("prod/").is_none());
+        assert!(warn_if_shell_expanded("tag:pci").is_none());
     }
 }

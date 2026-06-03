@@ -7,11 +7,19 @@ use clap_complete::{generate, Shell};
 use crate::error::Result;
 use crate::remote::store;
 
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+
 /// Subcommands whose positional `<PATH>` argument should be completed with
 /// secret paths from the active store rather than with files from the CWD.
 ///
 /// Keep this list in sync with the subcommand names in [`super::Command`].
-const SECRET_PATH_SUBCOMMANDS: &[&str] = &["get", "read", "set", "write", "ls", "rekey"];
+const SECRET_PATH_SUBCOMMANDS: &[&str] = &["get", "read", "set", "write", "ls", "rekey", "exec"];
+
+/// Subcommands whose `<REF>` argument should use FUZZY completion.
+/// These benefit from subsequence matching because the ref format
+/// is flexible (env label, tag selector, glob prefix, or path).
+const FUZZY_PATH_SUBCOMMANDS: &[&str] = &["exec"];
 
 /// Generate shell completion script and print it to stdout.
 #[derive(Debug, Args)]
@@ -70,14 +78,35 @@ pub struct CompletePathsArgs {
     /// are emitted. Empty string matches everything.
     #[arg(default_value = "")]
     pub prefix: String,
+
+    /// Use fuzzy matching instead of exact prefix matching.
+    /// Candidates are scored by subsequence similarity and returned
+    /// in descending score order.
+    #[arg(long)]
+    pub fuzzy: bool,
 }
+
+/// Cap on fuzzy completion results. Prevents dumping the entire store for an
+/// empty query while still offering plenty of candidates for a real one.
+const FUZZY_LIMIT: usize = 50;
 
 pub fn run_complete_paths(args: CompletePathsArgs, ctx: &super::Context) -> Result<()> {
     let stores = resolve_completion_stores(ctx);
 
     // Fast path: serve from the SQLite cache when warm.
     if crate::completions_cache::is_warm(&ctx.state_dir, &stores) {
-        if let Ok(paths) = crate::completions_cache::lookup(&ctx.state_dir, &stores, &args.prefix) {
+        if args.fuzzy {
+            // Pull every cached path (no prefix filter) and score it.
+            if let Ok(paths) = crate::completions_cache::lookup(&ctx.state_dir, &stores, "") {
+                let mut out = io::stdout().lock();
+                for p in fuzzy_score_paths(&paths, &args.prefix, FUZZY_LIMIT) {
+                    let _ = writeln!(out, "{p}");
+                }
+                return Ok(());
+            }
+        } else if let Ok(paths) =
+            crate::completions_cache::lookup(&ctx.state_dir, &stores, &args.prefix)
+        {
             let mut out = io::stdout().lock();
             for p in paths {
                 let _ = writeln!(out, "{p}");
@@ -87,6 +116,20 @@ pub fn run_complete_paths(args: CompletePathsArgs, ctx: &super::Context) -> Resu
     }
 
     // Slow path fallback: live filesystem scan (cache absent, empty, or corrupt).
+    if args.fuzzy {
+        let mut all: Vec<String> = Vec::new();
+        for store_path in &stores {
+            if let Ok(paths) = store::list_secrets(store_path, None) {
+                all.extend(paths);
+            }
+        }
+        let mut out = io::stdout().lock();
+        for p in fuzzy_score_paths(&all, &args.prefix, FUZZY_LIMIT) {
+            let _ = writeln!(out, "{p}");
+        }
+        return Ok(());
+    }
+
     let mut out = io::stdout().lock();
     for store_path in stores {
         let Ok(paths) = store::list_secrets(&store_path, None) else {
@@ -99,6 +142,27 @@ pub fn run_complete_paths(args: CompletePathsArgs, ctx: &super::Context) -> Resu
         }
     }
     Ok(())
+}
+
+/// Score paths against a fuzzy query using subsequence matching.
+/// Returns up to `limit` results sorted by descending score with
+/// alphabetical tie-breaking.
+fn fuzzy_score_paths(paths: &[String], query: &str, limit: usize) -> Vec<String> {
+    if query.is_empty() {
+        return paths.iter().take(limit).cloned().collect();
+    }
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut scored: Vec<(u32, String)> = paths
+        .iter()
+        .filter_map(|p| {
+            let mut buf = Vec::new();
+            let h = Utf32Str::new(p.as_str(), &mut buf);
+            pattern.score(h, &mut matcher).map(|s| (s, p.clone()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().take(limit).map(|(_, s)| s).collect()
 }
 
 /// Collect every store path we should search for completion candidates.
@@ -186,9 +250,15 @@ fn patch_bash(script: &str) -> String {
         let needle = "COMPREPLY=()\n                    ;;";
         if let Some(rel) = block.find(needle) {
             let abs = block_start + rel;
-            let replacement =
-                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths \"${cur}\" 2>/dev/null)\" -- \"${cur}\") )\n                    return 0\n                    ;;";
-            patched.replace_range(abs..abs + needle.len(), replacement);
+            let fuzzy_flag = if FUZZY_PATH_SUBCOMMANDS.contains(sub) {
+                "--fuzzy "
+            } else {
+                ""
+            };
+            let replacement = format!(
+                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths {fuzzy_flag}\"${{cur}}\" 2>/dev/null)\" -- \"${{cur}}\") )\n                    return 0\n                    ;;"
+            );
+            patched.replace_range(abs..abs + needle.len(), &replacement);
         }
     }
     patched
@@ -216,8 +286,13 @@ fn patch_zsh(script: &str) -> String {
         let is_path_positional = (trimmed.starts_with("':path -- ")
             || trimmed.starts_with("'::path -- "))
             && line.trim_end().ends_with(":_default' \\");
+        let is_ref_positional = (trimmed.starts_with("':ref -- ")
+            || trimmed.starts_with("'::ref -- "))
+            && line.trim_end().ends_with(":_default' \\");
         if is_path_positional {
             out.push_str(&line.replace(":_default'", ":_himitsu_secrets'"));
+        } else if is_ref_positional {
+            out.push_str(&line.replace(":_default'", ":_himitsu_secrets_fuzzy'"));
         } else {
             out.push_str(line);
         }
@@ -230,6 +305,15 @@ const ZSH_HELPER: &str = r#"# himitsu: dynamic completion helper
 _himitsu_secrets() {
     local -a secrets
     secrets=(${(f)"$(himitsu __complete-paths "${words[CURRENT]}" 2>/dev/null)"})
+    if (( ${#secrets} )); then
+        compadd -a secrets
+    else
+        _default
+    fi
+}
+_himitsu_secrets_fuzzy() {
+    local -a secrets
+    secrets=(${(f)"$(himitsu __complete-paths --fuzzy "${words[CURRENT]}" 2>/dev/null)"})
     if (( ${#secrets} )); then
         compadd -a secrets
     else
@@ -250,8 +334,13 @@ fn patch_fish(script: &str) -> String {
     }
     out.push_str("# himitsu: dynamic completion for secret-path positionals\n");
     for sub in SECRET_PATH_SUBCOMMANDS {
+        let fuzzy_flag = if FUZZY_PATH_SUBCOMMANDS.contains(sub) {
+            "--fuzzy "
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths 2>/dev/null)\"\n"
+            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths {fuzzy_flag}2>/dev/null)\"\n"
         ));
     }
     out
@@ -334,5 +423,105 @@ mod tests {
             );
         }
         assert!(text.contains("himitsu __complete-paths"));
+    }
+
+    #[test]
+    fn bash_completions_exec_uses_fuzzy() {
+        let text = generate_for(Shell::Bash);
+        let marker = "himitsu__subcmd__exec)\n";
+        let start = text
+            .find(marker)
+            .expect("exec subcommand arm present in generated bash script");
+        let rest = &text[start + marker.len()..];
+        let end = rest.find("        himitsu__subcmd__").unwrap_or(rest.len());
+        let exec_block = &rest[..end];
+        assert!(
+            exec_block.contains("himitsu __complete-paths --fuzzy"),
+            "expected exec block to call __complete-paths --fuzzy, got:\n{exec_block}"
+        );
+    }
+
+    #[test]
+    fn zsh_completions_exec_uses_fuzzy_helper() {
+        let text = generate_for(Shell::Zsh);
+        assert!(
+            text.contains("_himitsu_secrets_fuzzy"),
+            "fuzzy helper definition missing"
+        );
+        let ref_line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("':ref -- "))
+            .expect("exec ref positional present in generated zsh script");
+        assert!(
+            ref_line.trim_end().ends_with(":_himitsu_secrets_fuzzy' \\"),
+            "expected exec ref positional to use fuzzy helper, got:\n{ref_line}"
+        );
+    }
+
+    #[test]
+    fn fish_completions_exec_uses_fuzzy() {
+        let text = generate_for(Shell::Fish);
+        let line = text
+            .lines()
+            .find(|l| l.contains("__fish_seen_subcommand_from exec"))
+            .expect("fish directive for exec present");
+        assert!(
+            line.contains("himitsu __complete-paths --fuzzy"),
+            "expected exec fish directive to use --fuzzy, got:\n{line}"
+        );
+    }
+
+    #[test]
+    fn non_fuzzy_subcommands_dont_use_fuzzy() {
+        let text = generate_for(Shell::Bash);
+        for sub in ["get", "read"] {
+            let marker = format!("himitsu__subcmd__{sub})\n");
+            let start = text
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{sub} subcommand arm present"));
+            let rest = &text[start + marker.len()..];
+            let end = rest.find("        himitsu__subcmd__").unwrap_or(rest.len());
+            let block = &rest[..end];
+            assert!(
+                block.contains("himitsu __complete-paths"),
+                "{sub} block should call __complete-paths"
+            );
+            assert!(
+                !block.contains("--fuzzy"),
+                "{sub} block should NOT use --fuzzy, got:\n{block}"
+            );
+        }
+    }
+
+    #[test]
+    fn fuzzy_score_paths_returns_matching_results() {
+        let paths = vec![
+            "prod/cloudflare-api-token".to_string(),
+            "prod/database-url".to_string(),
+            "dev/stripe-key".to_string(),
+        ];
+        let results = fuzzy_score_paths(&paths, "clf", 50);
+        assert!(
+            results.contains(&"prod/cloudflare-api-token".to_string()),
+            "expected cloudflare-api-token to match 'clf', got: {results:?}"
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_paths_empty_query_returns_first_n() {
+        let paths = vec![
+            "a/one".to_string(),
+            "b/two".to_string(),
+            "c/three".to_string(),
+        ];
+        let results = fuzzy_score_paths(&paths, "", 2);
+        assert_eq!(results, vec!["a/one".to_string(), "b/two".to_string()]);
+    }
+
+    #[test]
+    fn fuzzy_score_paths_no_match_returns_empty() {
+        let paths = vec!["prod/api-key".to_string(), "dev/db-url".to_string()];
+        let results = fuzzy_score_paths(&paths, "zzzzz", 50);
+        assert!(results.is_empty(), "expected no matches, got: {results:?}");
     }
 }

@@ -2657,3 +2657,115 @@ fn store_flag_still_works_as_compat_escape_hatch() {
         .assert()
         .success();
 }
+
+// ============ exec ref-resolution tests ============
+
+#[test]
+fn exec_tag_prefix_injects_matching_secrets() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let cfg = home.path().join("config.yaml");
+
+    for (path, val) in [
+        ("prod/API_KEY", "pci_secret_one"),
+        ("prod/DB_PASS", "pci_secret_two"),
+    ] {
+        himitsu()
+            .env("HIMITSU_CONFIG", &cfg)
+            .args(["--store", &s, "set", path, val, "--tag", "pci"])
+            .assert()
+            .success();
+    }
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "set", "dev/OTHER", "untagged_value"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "exec", "tag:pci", "--", "env"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=pci_secret_one"))
+        .stdout(predicate::str::contains("DB_PASS=pci_secret_two"))
+        .stdout(predicate::str::contains("untagged_value").not());
+}
+
+#[test]
+fn exec_trailing_slash_injects_prefix_secrets() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let cfg = home.path().join("config.yaml");
+
+    for (path, val) in [("prod/API_KEY", "val_api"), ("prod/DB_PASS", "val_db")] {
+        himitsu()
+            .env("HIMITSU_CONFIG", &cfg)
+            .args(["--store", &s, "set", path, val])
+            .assert()
+            .success();
+    }
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "set", "dev/EXCLUDED", "dev_only_value"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "exec", "prod/", "--", "env"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY=val_api"))
+        .stdout(predicate::str::contains("DB_PASS=val_db"))
+        .stdout(predicate::str::contains("dev_only_value").not());
+}
+
+#[test]
+fn exec_unquoted_glob_warns_on_extension() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "set", "prod/API_KEY", "v"])
+        .assert()
+        .success();
+
+    // Shell expanded `prod/*` into a real file path before himitsu saw it.
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "exec", "prod/API_KEY.yaml", "--", "env"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file extension"));
+}
+
+#[test]
+fn exec_bare_slash_errors() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "exec", "/", "--", "env"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("bare '/'"));
+}
+
+#[test]
+fn exec_empty_tag_selector_errors() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &s, "exec", "tag:", "--", "env"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tag selector requires a tag name"));
+}
