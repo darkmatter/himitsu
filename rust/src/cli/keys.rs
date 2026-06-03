@@ -25,10 +25,7 @@ pub enum KeysCommand {
 }
 
 fn is_self_ref(r: Option<&str>) -> bool {
-    match r {
-        None | Some("self") | Some("me") => true,
-        _ => false,
-    }
+    matches!(r, None | Some("self") | Some("me"))
 }
 
 pub fn run(args: KeysArgs, ctx: &Context) -> Result<()> {

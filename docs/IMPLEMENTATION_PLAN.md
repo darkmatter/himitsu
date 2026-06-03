@@ -307,6 +307,12 @@ cargo test --test '*'             # Integration tests only
 - [x] Store-internal `.himitsu/config.yaml` `recipients_path` overrides default recipients directory
 - [x] `set` / `rekey` / `recipient add|rm|show|ls` / `group` all respect custom `recipients_path`
 - [ ] Golden fixture parity: outputs match captured shell fixtures
+- [x] `exec <REF> -- <CMD>` injects resolved secrets as env vars into child process
+- [x] `exec tag:NAME` injects all secrets carrying that tag
+- [x] `exec foo/` (trailing slash) equivalent to `exec foo/*`
+- [x] `exec` warns when ref looks like a shell-expanded filesystem path
+- [x] Fuzzy tab completion for `exec` subcommand via `nucleo_matcher`
+- [x] `exec` bare `/` and empty `tag:` produce InvalidReference errors
 
 ### Acceptance Criteria
 

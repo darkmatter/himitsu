@@ -165,6 +165,7 @@ pub fn load_identities(
 /// Recursively probe `*.pub` files in `dir` and load any matching keychain
 /// entries into `identities`.  Files whose public key matches `primary_pubkey`
 /// are skipped (already loaded by the primary key path above).
+#[allow(clippy::only_used_in_recursion)]
 fn probe_recipient_pubkeys(
     base: &Path,
     dir: &Path,

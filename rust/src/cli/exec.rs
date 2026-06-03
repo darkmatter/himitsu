@@ -2,13 +2,17 @@
 //! into its environment.
 //!
 //! `<REF>` resolves to one or more secrets:
-//!   1. an env label from `.himitsu.yaml` `envs:` (e.g. `pci-prod`) — uses the
+//!   1. `tag:NAME` — inject all secrets carrying that tag (e.g. `tag:pci`).
+//!      Tag names are validated by [`crypto::tags::validate_tag`].
+//!   2. an env label from `.himitsu.yaml` `envs:` (e.g. `pci-prod`) — uses the
 //!      env DSL resolver; the env-DSL alias key (or path-derived key) becomes
 //!      the env-var name.
-//!   2. a path glob ending in `/*` (e.g. `prod/*`) — every secret under the
+//!   3. a path glob ending in `/*` (e.g. `prod/*`) — every secret under the
 //!      prefix; env-var name comes from `SecretValue.env_key` if set, else
 //!      derived from the path's last segment via [`config::env_dsl::derive_env_key`].
-//!   3. a concrete secret path (e.g. `prod/API_KEY`, optionally
+//!   4. a trailing-slash prefix (e.g. `prod/`) — equivalent to `prod/*` but
+//!      avoids the shell glob-expansion pitfall.
+//!   5. a concrete secret path (e.g. `prod/API_KEY`, optionally
 //!      `github:org/repo/prod/API_KEY`).
 //!
 //! Conflicts (two secrets resolving to the same env-var name) are a hard
@@ -29,8 +33,10 @@ use crate::remote::store;
 #[derive(Debug, Args)]
 pub struct ExecArgs {
     /// Secret reference. One of:
+    ///   * tag selector (e.g. `tag:pci`) — inject all secrets with that tag
     ///   * env label from project `envs:` map (e.g. `pci-prod`)
     ///   * path glob ending in `/*` (e.g. `prod/*`)
+    ///   * trailing-slash prefix (e.g. `prod/`) — equivalent to `prod/*`
     ///   * concrete secret path (e.g. `prod/API_KEY`)
     #[arg(value_name = "REF")]
     pub r#ref: String,

@@ -354,6 +354,34 @@ Keep existing semantics where possible:
 - `schema refresh`, `codegen`
 - `import --sops|--op`
 
+### 8.4 `exec` reference resolution
+
+`himitsu exec <REF> -- <CMD>...` injects resolved secrets as environment
+variables into a child process. `<REF>` supports five formats:
+
+| Format | Example | Behavior |
+|--------|---------|----------|
+| Tag selector | `tag:pci` | Inject all secrets carrying the `pci` tag |
+| Env label | `pci-prod` | Resolve via project `.himitsu.yaml` `envs:` map |
+| Prefix glob | `prod/*` | Inject every secret under the `prod/` prefix |
+| Trailing-slash | `prod/` | Same as `prod/*` — avoids shell glob expansion |
+| Concrete path | `prod/API_KEY` | Inject a single secret |
+
+Tag selectors are intercepted before `SecretRef::parse` to prevent the
+`tag:` prefix being misread as a provider qualifier.
+
+When a ref looks like a shell-expanded filesystem path (absolute path,
+tilde prefix, or file extension like `.yaml`), himitsu emits a diagnostic
+warning before the inevitable "secret not found" error. This helps users
+who forgot to quote their glob (`prod/*` expanded by the shell into real
+filesystem paths).
+
+Conflicts (two secrets resolving to the same env-var name) are a hard
+error: a half-injected environment is more confusing than a clear failure.
+
+Tab completion for `exec` uses fuzzy subsequence matching via
+`nucleo_matcher` (`--fuzzy` flag on `__complete-paths`); other subcommands
+retain exact-prefix matching.
 ## 9) Security Model
 
 Trust boundaries:

@@ -260,9 +260,9 @@ mod tests {
 
         let n = refresh_store(&state_dir, &store).unwrap();
         assert_eq!(n, 2);
-        assert!(is_warm(&state_dir, &[store.clone()]));
+        assert!(is_warm(&state_dir, std::slice::from_ref(&store)));
 
-        let paths = lookup(&state_dir, &[store.clone()], "").unwrap();
+        let paths = lookup(&state_dir, std::slice::from_ref(&store), "").unwrap();
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&"prod/API_KEY".to_string()));
         assert!(paths.contains(&"prod/DB_PASS".to_string()));
@@ -275,10 +275,10 @@ mod tests {
         let state_dir = state(tmp.path());
         refresh_store(&state_dir, &store).unwrap();
 
-        let prod = lookup(&state_dir, &[store.clone()], "prod").unwrap();
+        let prod = lookup(&state_dir, std::slice::from_ref(&store), "prod").unwrap();
         assert_eq!(prod.len(), 2);
 
-        let dev = lookup(&state_dir, &[store.clone()], "dev").unwrap();
+        let dev = lookup(&state_dir, std::slice::from_ref(&store), "dev").unwrap();
         assert!(dev.is_empty());
     }
 
