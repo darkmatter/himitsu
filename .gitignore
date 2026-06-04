@@ -21,3 +21,6 @@ amp
 .cursor
 .mux
 .claude
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/
