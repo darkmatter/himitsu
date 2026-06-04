@@ -19,6 +19,7 @@ pub mod init;
 pub mod join;
 pub mod keys;
 pub mod ls;
+pub mod prime;
 pub mod read;
 pub mod recipient;
 pub mod rekey;
@@ -440,6 +441,9 @@ pub enum Command {
     /// Show the himitsu documentation (renders README).
     Docs,
 
+    /// Output an AGENTS.md snippet that teaches AI agents how to use himitsu.
+    Prime,
+
     /// Print version information.
     Version,
 
@@ -490,6 +494,7 @@ impl Cli {
         let is_git = matches!(&command, Command::Git(_));
         let is_version = matches!(&command, Command::Version);
         let is_docs = matches!(&command, Command::Docs);
+        let is_prime = matches!(&command, Command::Prime);
         let is_completions = matches!(&command, Command::Completions(_));
         let is_complete_paths = matches!(&command, Command::CompletePaths(_));
         let is_ci = matches!(&command, Command::Ci(_));
@@ -498,6 +503,7 @@ impl Cli {
             && !is_git
             && !is_version
             && !is_docs
+            && !is_prime
             && !is_completions
             && !is_complete_paths
             && !is_ci
@@ -637,6 +643,7 @@ impl Cli {
             Command::Check(args) => check::run(args, &ctx),
             Command::Ci(args) => ci::run(args),
             Command::Docs => docs::run(),
+            Command::Prime => prime::run(),
             Command::Version => {
                 println!("{}", crate::build_info::VERSION_LINE);
                 Ok(())

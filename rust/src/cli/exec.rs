@@ -19,6 +19,7 @@
 //! error: a half-injected env is more confusing than a clear failure.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use clap::Args;
 
@@ -75,8 +76,13 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
 
     let resolved = resolve_ref(&args.r#ref, ctx)?;
     if resolved.is_empty() {
+        let hint = if args.r#ref.ends_with("/*") || args.r#ref.ends_with('/') {
+            "\n  Hint: use a trailing slash without quotes (e.g. 'prod/') to avoid shell glob expansion,\n  or pass --remote <slug> to select a specific store."
+        } else {
+            "\n  Hint: pass --remote <slug> to select a specific store, or check 'himitsu ls' for available secrets."
+        };
         return Err(HimitsuError::SecretNotFound(format!(
-            "ref {:?} matched no secrets",
+            "ref {:?} matched no secrets{hint}",
             args.r#ref
         )));
     }
@@ -94,9 +100,47 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
 /// name carried in by the env DSL.
 struct ResolvedRef {
     secret_path: String,
+    /// The store checkout path that holds this secret. Needed because glob/tag
+    /// resolution searches ALL known stores, not just the active one.
+    store_path: PathBuf,
     /// `Some` when the env DSL pinned the name (alias or resolver-derived);
     /// `None` for glob/concrete refs — name picked post-decrypt.
     explicit_key: Option<String>,
+}
+
+/// Collect all known store paths. The active store comes first, then any
+/// additional stores discovered in the XDG state directory. Mirrors the
+/// logic in `ls::collect_stores` but returns only `PathBuf` (no labels).
+fn collect_stores(ctx: &Context) -> Vec<PathBuf> {
+    let mut stores = Vec::new();
+
+    if !ctx.store.as_os_str().is_empty() && ctx.store.exists() {
+        stores.push(ctx.store.clone());
+    }
+
+    let stores_dir = ctx.stores_dir();
+    if stores_dir.exists() {
+        if let Ok(org_entries) = std::fs::read_dir(&stores_dir) {
+            for org_entry in org_entries.flatten() {
+                if !org_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                if let Ok(repo_entries) = std::fs::read_dir(org_entry.path()) {
+                    for repo_entry in repo_entries.flatten() {
+                        if !repo_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            continue;
+                        }
+                        let path = repo_entry.path();
+                        if path != ctx.store {
+                            stores.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    stores
 }
 
 fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
@@ -112,23 +156,33 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
         tag_grammar::validate_tag(tag_name).map_err(|reason| {
             HimitsuError::InvalidReference(format!("invalid tag in selector: {reason}"))
         })?;
-        let available = store::list_secrets(&ctx.store, None)?;
+        let stores = collect_stores(ctx);
         let identities = ctx.load_identities()?;
-        return Ok(available
-            .into_iter()
-            .filter_map(|secret_path| {
-                let decoded =
-                    super::get::get_decoded_with_identities(ctx, &secret_path, &identities).ok()?;
-                if decoded.tags.iter().any(|t| t == tag_name) {
-                    Some(ResolvedRef {
-                        secret_path,
-                        explicit_key: None,
-                    })
-                } else {
-                    None
+        let mut results = Vec::new();
+        for store_path in &stores {
+            let available = match store::list_secrets(store_path, None) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            for secret_path in available {
+                let store_ctx = Context {
+                    store: store_path.clone(),
+                    ..ctx.clone()
+                };
+                if let Ok(decoded) =
+                    super::get::get_decoded_with_identities(&store_ctx, &secret_path, &identities)
+                {
+                    if decoded.tags.iter().any(|t| t == tag_name) {
+                        results.push(ResolvedRef {
+                            secret_path,
+                            store_path: store_path.clone(),
+                            explicit_key: None,
+                        });
+                    }
                 }
-            })
-            .collect());
+            }
+        }
+        return Ok(results);
     }
 
     // Env labels live in their own namespace and always win when they match
@@ -154,11 +208,15 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
             .into_iter()
             .map(|(key, secret_path)| ResolvedRef {
                 secret_path,
+                store_path: ctx.store.clone(),
                 explicit_key: Some(key),
             })
             .collect());
     }
 
+    // Glob and prefix branches search ALL known stores, not just the active
+    // one. This matches `ls` behavior and fixes the case where secrets live
+    // in a non-default store.
     if let Some(prefix) = ref_str.strip_suffix("/*") {
         if prefix.is_empty() {
             return Err(HimitsuError::InvalidReference(
@@ -166,15 +224,24 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
             ));
         }
         let needle = format!("{prefix}/");
-        let available = store::list_secrets(&ctx.store, None)?;
-        return Ok(available
-            .into_iter()
-            .filter(|s| s.starts_with(&needle))
-            .map(|secret_path| ResolvedRef {
-                secret_path,
-                explicit_key: None,
-            })
-            .collect());
+        let stores = collect_stores(ctx);
+        let mut results = Vec::new();
+        for store_path in &stores {
+            let available = match store::list_secrets(store_path, None) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            for secret_path in available {
+                if secret_path.starts_with(&needle) {
+                    results.push(ResolvedRef {
+                        secret_path,
+                        store_path: store_path.clone(),
+                        explicit_key: None,
+                    });
+                }
+            }
+        }
+        return Ok(results);
     }
 
     // Trailing slash = prefix glob (same as `prefix/*` but without the star).
@@ -186,15 +253,24 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
             ));
         }
         let needle = format!("{prefix}/");
-        let available = store::list_secrets(&ctx.store, None)?;
-        return Ok(available
-            .into_iter()
-            .filter(|s| s.starts_with(&needle))
-            .map(|secret_path| ResolvedRef {
-                secret_path,
-                explicit_key: None,
-            })
-            .collect());
+        let stores = collect_stores(ctx);
+        let mut results = Vec::new();
+        for store_path in &stores {
+            let available = match store::list_secrets(store_path, None) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            for secret_path in available {
+                if secret_path.starts_with(&needle) {
+                    results.push(ResolvedRef {
+                        secret_path,
+                        store_path: store_path.clone(),
+                        explicit_key: None,
+                    });
+                }
+            }
+        }
+        return Ok(results);
     }
 
     let parsed = SecretRef::parse(ref_str)?;
@@ -205,6 +281,7 @@ fn resolve_ref(ref_str: &str, ctx: &Context) -> Result<Vec<ResolvedRef>> {
     }
     Ok(vec![ResolvedRef {
         secret_path: ref_str.to_string(),
+        store_path: ctx.store.clone(),
         explicit_key: None,
     }])
 }
@@ -242,7 +319,14 @@ fn decrypt_resolved(
 ) -> Result<Vec<(ResolvedRef, secret_value::Decoded)>> {
     refs.into_iter()
         .map(|r| {
-            let decoded = super::get::get_decoded_with_identities(ctx, &r.secret_path, identities)?;
+            // Use the per-ref store_path so secrets found in non-active
+            // stores decrypt correctly.
+            let ref_ctx = Context {
+                store: r.store_path.clone(),
+                ..ctx.clone()
+            };
+            let decoded =
+                super::get::get_decoded_with_identities(&ref_ctx, &r.secret_path, identities)?;
             super::get::warn_if_expired(&r.secret_path, &decoded);
             Ok((r, decoded))
         })
@@ -407,6 +491,7 @@ mod tests {
     fn rref(path: &str, explicit: Option<&str>) -> ResolvedRef {
         ResolvedRef {
             secret_path: path.to_string(),
+            store_path: PathBuf::new(),
             explicit_key: explicit.map(String::from),
         }
     }

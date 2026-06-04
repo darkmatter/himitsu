@@ -2769,3 +2769,27 @@ fn exec_empty_tag_selector_errors() {
         .failure()
         .stderr(predicate::str::contains("tag selector requires a tag name"));
 }
+
+// ============ prime command tests ============
+
+#[test]
+fn prime_outputs_agents_md_content() {
+    himitsu()
+        .arg("prime")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("himitsu get"))
+        .stdout(predicate::str::contains("himitsu exec"))
+        .stdout(predicate::str::contains("HIMITSU_HOME"));
+}
+
+#[test]
+fn prime_does_not_require_store() {
+    // prime should work even with no store configured
+    let home = TempDir::new().unwrap();
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .arg("prime")
+        .assert()
+        .success();
+}
