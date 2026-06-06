@@ -884,6 +884,7 @@ mod tests {
             store: std::path::PathBuf::new(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -911,6 +912,7 @@ mod tests {
             store: std::path::PathBuf::new(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -939,6 +941,7 @@ mod tests {
             store: std::path::PathBuf::new(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(

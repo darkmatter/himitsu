@@ -505,6 +505,10 @@ pub enum KeyAction {
     /// In the search view: copy `himitsu read <ref>` for the selected row.
     CopyRefSelected,
     Outputs,
+    /// In the search view: collapse all secret paths to top-level folders.
+    CollapsePaths,
+    /// In the search view: expand all secret paths back to full depth.
+    ExpandPaths,
 
     Reveal,
     CopyValue,
@@ -562,6 +566,12 @@ pub struct KeyMap {
     /// (Shift+y) — symmetric with the viewer.
     pub copy_ref_selected: Vec<KeyChord>,
     pub envs: Vec<KeyChord>,
+    /// Collapse all secret paths to top-level folders (default: `Ctrl+-`,
+    /// leader fallback `Ctrl+x -`).
+    pub collapse_paths: Vec<KeyChord>,
+    /// Expand all secret paths to full depth (default: `Ctrl++` / `Ctrl+=`,
+    /// leader fallback `Ctrl+x +`).
+    pub expand_paths: Vec<KeyChord>,
 
     // ── Secret viewer ────────────────────────────────────────────────
     pub reveal: Vec<KeyChord>,
@@ -588,6 +598,15 @@ impl Default for KeyMap {
         let bare = |c: KeyCode| single(KeyBinding::bare(c));
         let ctrl = |c: char| single(KeyBinding::ctrl(c));
         let shift_char = |c: char| single(KeyBinding::new(KeyCode::Char(c), KeyModifiers::SHIFT));
+        // Leader chord `Ctrl+x` then a bare character — gives every fold
+        // command a discoverable two-step fallback (e.g. `Ctrl+x +`).
+        let leader_x = |c: char| {
+            KeyChord::try_new(vec![
+                KeyBinding::ctrl('x'),
+                KeyBinding::bare(KeyCode::Char(c)),
+            ])
+            .expect("two-step leader chord is non-empty")
+        };
 
         Self {
             quit: vec![bare(KeyCode::Esc), ctrl('c')],
@@ -599,6 +618,8 @@ impl Default for KeyMap {
             copy_selected: vec![ctrl('y')],
             copy_ref_selected: vec![shift_char('y')],
             envs: vec![shift_char('e')],
+            collapse_paths: vec![ctrl('-'), leader_x('-')],
+            expand_paths: vec![ctrl('+'), ctrl('='), leader_x('+')],
 
             reveal: vec![bare(KeyCode::Char('r'))],
             copy_value: vec![bare(KeyCode::Char('y'))],
@@ -621,7 +642,7 @@ impl KeyMap {
     /// so the dispatcher (called per keystroke) doesn't churn the heap.
     /// When you add a new `KeyAction`, append it here and bump the array
     /// length.
-    fn entries(&self) -> [(KeyAction, &Vec<KeyChord>); 19] {
+    fn entries(&self) -> [(KeyAction, &Vec<KeyChord>); 21] {
         [
             (KeyAction::Quit, &self.quit),
             (KeyAction::Help, &self.help),
@@ -631,6 +652,8 @@ impl KeyMap {
             (KeyAction::CopySelected, &self.copy_selected),
             (KeyAction::CopyRefSelected, &self.copy_ref_selected),
             (KeyAction::Outputs, &self.envs),
+            (KeyAction::CollapsePaths, &self.collapse_paths),
+            (KeyAction::ExpandPaths, &self.expand_paths),
             (KeyAction::Reveal, &self.reveal),
             (KeyAction::CopyValue, &self.copy_value),
             (KeyAction::CopyRef, &self.copy_ref),
@@ -760,6 +783,92 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn entries_cover_every_key_action_variant() {
+        // entries() returns a fixed-size array; chords_for() relies on it
+        // covering every KeyAction. If a variant is added without being
+        // appended to entries(), chords_for() would hit its unreachable!()
+        // arm. Exercise every variant through chords_for to guarantee
+        // coverage and catch drift at test time rather than runtime.
+        let km = KeyMap::default();
+        for action in [
+            KeyAction::Quit,
+            KeyAction::Help,
+            KeyAction::CommandPalette,
+            KeyAction::NewSecret,
+            KeyAction::SwitchStore,
+            KeyAction::CopySelected,
+            KeyAction::CopyRefSelected,
+            KeyAction::Outputs,
+            KeyAction::CollapsePaths,
+            KeyAction::ExpandPaths,
+            KeyAction::Reveal,
+            KeyAction::CopyValue,
+            KeyAction::CopyRef,
+            KeyAction::Rekey,
+            KeyAction::Edit,
+            KeyAction::Delete,
+            KeyAction::Back,
+            KeyAction::SaveSecret,
+            KeyAction::NextField,
+            KeyAction::PrevField,
+            KeyAction::Cancel,
+        ] {
+            // Must not panic (chords_for has an unreachable! for missing
+            // variants) — every action is registered in entries().
+            let _ = km.chords_for(action);
+        }
+        assert_eq!(
+            km.entries().len(),
+            21,
+            "entries array length tracks variants"
+        );
+    }
+
+    #[test]
+    fn fold_actions_have_default_and_leader_bindings() {
+        let km = KeyMap::default();
+
+        // Collapse: Ctrl+- as single-step, plus the Ctrl+x - leader chord.
+        let collapse_single = key(KeyCode::Char('-'), KeyModifiers::CONTROL);
+        assert_eq!(
+            km.action_for_key(&collapse_single),
+            Some(KeyAction::CollapsePaths)
+        );
+
+        // Expand: Ctrl++ and Ctrl+= as single-step.
+        let expand_plus = key(KeyCode::Char('+'), KeyModifiers::CONTROL);
+        let expand_eq = key(KeyCode::Char('='), KeyModifiers::CONTROL);
+        assert_eq!(
+            km.action_for_key(&expand_plus),
+            Some(KeyAction::ExpandPaths)
+        );
+        assert_eq!(km.action_for_key(&expand_eq), Some(KeyAction::ExpandPaths));
+    }
+
+    #[test]
+    fn leader_chord_resolves_fold_actions() {
+        let km = KeyMap::default();
+        let ctrl_x = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+
+        // Ctrl+x is a prefix of the fold leader chords — pending, not a match.
+        assert_eq!(km.dispatch(&[], &ctrl_x), Dispatch::Pending);
+
+        // Ctrl+x then bare + completes the expand chord.
+        let plus = key(KeyCode::Char('+'), KeyModifiers::NONE);
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &plus),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+
+        // Ctrl+x then bare - completes the collapse chord.
+        let minus = key(KeyCode::Char('-'), KeyModifiers::NONE);
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &minus),
+            Dispatch::Match(KeyAction::CollapsePaths)
+        );
     }
 
     #[test]

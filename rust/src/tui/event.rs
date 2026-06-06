@@ -1,6 +1,6 @@
 //! Poll-based event loop.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -103,26 +103,46 @@ fn run_editor(plaintext: &str) -> std::result::Result<Option<String>, String> {
 /// with mode `0o600` on unix. Fails if the file already exists, so a
 /// racing attacker can't preseed it.
 fn create_temp_file() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir();
-    // Cheap randomness: nanos + pid is enough for a local tempfile name.
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let name = format!("himitsu-edit-{pid}-{nanos}.txt");
-    let path = dir.join(name);
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+    // Per-process monotonic counter so two calls in the same nanosecond (or
+    // under parallel test runs sharing a pid) never collide on the name.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+
+    // Retry on collision: with create_new(true) an AlreadyExists is racy/
+    // duplicate, not fatal — bump the counter and try a fresh name.
+    for _ in 0..64 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!("himitsu-edit-{pid}-{nanos}-{seq}.txt");
+        let path = dir.join(name);
+
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(_file) => {
+                // Close the handle; the editor will reopen the path.
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
-    let _: File = opts.open(&path)?;
-    // Close the handle; the editor will reopen the path.
-    Ok(path)
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not create a unique temp file after 64 attempts",
+    ))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────

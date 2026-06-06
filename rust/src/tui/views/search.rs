@@ -48,6 +48,12 @@ pub enum SearchAction {
     /// protobuf-driven add-remote form.
     AddRemote,
     OpenOutputs,
+    /// User picked "list recipients" from the command palette — open the
+    /// recipient list view.
+    OpenRecipientList,
+    /// User picked "add recipient" from the command palette — open the
+    /// add-recipient form.
+    OpenRecipientAdd,
     /// User picked a new active store via the embedded picker overlay.
     SwitchStore(PathBuf),
     /// User picked "show help" from the command palette — the router
@@ -261,6 +267,7 @@ impl SearchView {
             store: ctx.store.clone(),
             recipients_path: ctx.recipients_path.clone(),
             key_provider: ctx.key_provider.clone(),
+            project_root: ctx.project_root.clone(),
         };
         let (global_health, project_health) = check_store_health_pair(&ctx_owned);
         let mut view = Self {
@@ -324,7 +331,7 @@ impl SearchView {
         // All matches route through `dispatch_action` so leader-key chord
         // completions (resolved at the App layer) take the same code path.
         if let Some(action) = match_keymap_action(keymap, &key) {
-            if let Some(outcome) = self.dispatch_action(action) {
+            if let Some(outcome) = self.dispatch_action(action, keymap) {
                 return outcome;
             }
         }
@@ -344,16 +351,9 @@ impl SearchView {
             self.sort_by_selected_column();
             return SearchAction::None;
         }
-        if matches!(key.code, KeyCode::Char('-')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.set_folded(true);
-            return SearchAction::None;
-        }
-        if matches!(key.code, KeyCode::Char('+') | KeyCode::Char('='))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-        {
-            self.set_folded(false);
-            return SearchAction::None;
-        }
+        // Ctrl+- / Ctrl++ (collapse/expand paths) are keymap-driven actions
+        // routed through `dispatch_action` above (and reachable via the leader
+        // chord `Ctrl+x -` / `Ctrl+x +`), so no hardcoded handling here.
         // Esc closes the popup before falling through to the view's own
         // cancel/quit semantics.
         if key.code == KeyCode::Esc && self.autocomplete.is_open() {
@@ -436,11 +436,11 @@ impl SearchView {
     ///
     /// Used both by the single-key matcher in `on_key` and by the leader-
     /// key dispatcher in `App::on_key` when a multi-step chord completes.
-    pub fn dispatch_action(&mut self, action: KeyAction) -> Option<SearchAction> {
+    pub fn dispatch_action(&mut self, action: KeyAction, keymap: &KeyMap) -> Option<SearchAction> {
         match action {
             KeyAction::Quit => Some(SearchAction::Quit),
             KeyAction::CommandPalette => {
-                self.palette = Some(CommandPalette::new());
+                self.palette = Some(CommandPalette::new(keymap));
                 Some(SearchAction::None)
             }
             KeyAction::NewSecret => Some(SearchAction::NewSecret),
@@ -454,6 +454,14 @@ impl SearchView {
             }
             KeyAction::CopySelected => Some(self.copy_selected_to_clipboard()),
             KeyAction::CopyRefSelected => Some(self.copy_selected_ref_to_clipboard()),
+            KeyAction::CollapsePaths => {
+                self.set_folded(true);
+                Some(SearchAction::None)
+            }
+            KeyAction::ExpandPaths => {
+                self.set_folded(false);
+                Some(SearchAction::None)
+            }
             _ => None,
         }
     }
@@ -794,6 +802,8 @@ impl SearchView {
                 return SearchAction::None;
             }
             Command::Outputs => return SearchAction::OpenOutputs,
+            Command::RecipientLs => return SearchAction::OpenRecipientList,
+            Command::RecipientAdd => return SearchAction::OpenRecipientAdd,
             Command::Help => return SearchAction::ShowHelp,
             Command::Quit => return SearchAction::Quit,
             _ => {}
@@ -1406,6 +1416,8 @@ const SEARCH_ACTION_PRIORITY: &[KeyAction] = &[
     KeyAction::SwitchStore,
     KeyAction::CopyRefSelected,
     KeyAction::CopySelected,
+    KeyAction::CollapsePaths,
+    KeyAction::ExpandPaths,
 ];
 
 fn match_keymap_action(keymap: &KeyMap, key: &crossterm::event::KeyEvent) -> Option<KeyAction> {
@@ -1888,6 +1900,7 @@ mod tests {
             store: store.to_path_buf(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 
@@ -2466,6 +2479,7 @@ mod tests {
             store: state.join("empty"),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 
@@ -2569,6 +2583,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         (dir, ctx)
     }

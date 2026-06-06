@@ -6,9 +6,7 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, SecretCandidate,
-};
+use crate::config::outputs::resolver::{resolve_outputs, Context as ResolverContext};
 use crate::config::{self, load_project_config, ProjectConfig};
 use crate::crypto::{age as crypto, secret_value};
 use crate::error::{HimitsuError, Result};
@@ -56,11 +54,10 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let available_secrets = store::list_secrets(&ctx.store, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| SecretCandidate { path, tags: vec![] })
-        .collect();
+    // Build candidates with real tags so `tag:` selectors and selector-valued
+    // aliases inside outputs: blocks resolve (empty tags made them match
+    // nothing).
+    let available_secrets = super::resolver_candidates_with_tags(ctx);
     let resolver_ctx = ResolverContext { available_secrets };
 
     let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;

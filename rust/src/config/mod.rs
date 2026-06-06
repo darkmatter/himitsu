@@ -103,13 +103,11 @@ pub struct Config {
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
 
-    #[serde(
-        rename = "envs",
-        default,
-        deserialize_with = "reject_envs_field",
-        skip_serializing
-    )]
-    _envs_deprecated: (),
+    /// Captures a legacy `envs:` block if present so callers can warn the
+    /// user to run `himitsu migrate envs`. `None` when absent — checked via
+    /// [`warn_legacy_envs`] after load. Never re-serialized.
+    #[serde(rename = "envs", default, skip_serializing)]
+    envs_legacy: Option<serde_yaml::Value>,
 }
 
 impl Config {
@@ -169,13 +167,11 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub outputs: outputs::OutputsMap,
 
-    #[serde(
-        rename = "envs",
-        default,
-        deserialize_with = "reject_envs_field",
-        skip_serializing
-    )]
-    _envs_deprecated: (),
+    /// Captures a legacy `envs:` block if present so callers can warn the
+    /// user to run `himitsu migrate envs`. `None` when absent. Never
+    /// re-serialized.
+    #[serde(rename = "envs", default, skip_serializing)]
+    envs_legacy: Option<serde_yaml::Value>,
 
     #[serde(default)]
     pub generate: Option<GenerateConfig>,
@@ -184,14 +180,29 @@ pub struct ProjectConfig {
     pub recipients_path: Option<String>,
 }
 
-fn reject_envs_field<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<(), D::Error> {
-    use serde::de::IgnoredAny;
-    IgnoredAny::deserialize(d)?;
-    eprintln!(
-        "warning: 'envs:' block has been replaced by 'outputs:' \
-         — run 'himitsu migrate envs' to convert"
-    );
-    Ok(())
+/// Print the legacy-`envs:` migration warning to stderr if the captured value
+/// carries real content. Called only at the canonical config-load sites (not
+/// the best-effort `data_dir()`/`state_dir()` reads), so a single command
+/// emits it at most once per canonical load. Shared by [`Config`] and
+/// [`ProjectConfig`] so the message stays identical.
+fn warn_legacy_envs(envs_legacy: &Option<serde_yaml::Value>) {
+    // Only warn when the `envs:` block has actual content to migrate. An
+    // absent key (`None`), an explicit `envs: null` (`Some(Null)`), or an
+    // empty block (`envs: {}` / `envs: []`) all mean "nothing to migrate" and
+    // must stay silent — otherwise every config lacking a real envs block
+    // would warn spuriously.
+    let has_content = match envs_legacy {
+        Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
+        Some(serde_yaml::Value::Sequence(s)) => !s.is_empty(),
+        Some(v) => !v.is_null(),
+        None => false,
+    };
+    if has_content {
+        eprintln!(
+            "warning: 'envs:' block has been replaced by 'outputs:' \
+             — run 'himitsu migrate envs' to convert"
+        );
+    }
 }
 
 // ── Env label validation ──────────────────────────────────────────────────
@@ -353,7 +364,9 @@ impl Config {
         // Read the file first (best-effort; fall back to defaults if absent).
         let from_file: Config = if path.exists() {
             let contents = std::fs::read_to_string(path)?;
-            serde_yaml::from_str(&contents)?
+            let cfg: Config = serde_yaml::from_str(&contents)?;
+            warn_legacy_envs(&cfg.envs_legacy);
+            cfg
         } else {
             Config::default()
         };
@@ -577,13 +590,15 @@ pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
 ///
 /// Returns `Ok(Some((config, path)))` if a config file exists and parses
 /// successfully, `Ok(None)` if no config file is found, or `Err` if a config
-/// file exists but fails to parse (e.g. contains the deprecated `envs:` key).
+/// file exists but is malformed YAML. A legacy `envs:` key is tolerated (it is
+/// captured and a migration warning is emitted), not a parse error.
 pub fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> {
     let Some(path) = find_project_config() else {
         return Ok(None);
     };
     let contents = std::fs::read_to_string(&path)?;
     let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
+    warn_legacy_envs(&cfg.envs_legacy);
     Ok(Some((cfg, path)))
 }
 
@@ -597,6 +612,7 @@ pub fn load_project_config_from(start: &Path) -> Result<Option<(ProjectConfig, P
     };
     let contents = std::fs::read_to_string(&path)?;
     let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
+    warn_legacy_envs(&cfg.envs_legacy);
     Ok(Some((cfg, path)))
 }
 
@@ -907,12 +923,16 @@ mod tests {
 
     #[test]
     fn config_envs_key_tolerated_at_parse() {
-        // The `envs:` key now deserializes successfully (emitting a stderr
-        // warning) so `himitsu migrate envs` can run on an existing config.
+        // The `envs:` key now deserializes successfully (captured into
+        // `envs_legacy` so callers can warn) so `himitsu migrate envs` can run
+        // on an existing config instead of hard-failing at load.
         let yaml = "default_store: org/secrets\nenvs:\n  dev:\n    - dev/API_KEY\n";
         let cfg = serde_yaml::from_str::<Config>(yaml).expect("envs key must not be fatal");
         assert_eq!(cfg.default_store.as_deref(), Some("org/secrets"));
-        assert_eq!(cfg._envs_deprecated, ());
+        assert!(
+            cfg.envs_legacy.is_some(),
+            "legacy envs block must be captured"
+        );
         assert!(cfg.outputs.is_empty());
     }
 
@@ -996,10 +1016,13 @@ mod tests {
     #[test]
     fn project_config_envs_key_tolerated_at_parse() {
         // Same as above for the per-project config: the legacy `envs:` block
-        // is tolerated (with a warning) instead of hard-rejected.
+        // is captured (and warned about) instead of hard-rejected.
         let yaml = "envs:\n  dev:\n    - dev/API_KEY\n";
         let cfg = serde_yaml::from_str::<ProjectConfig>(yaml).expect("envs key must not be fatal");
-        assert_eq!(cfg._envs_deprecated, ());
+        assert!(
+            cfg.envs_legacy.is_some(),
+            "legacy envs block must be captured"
+        );
         assert!(cfg.outputs.is_empty());
     }
 

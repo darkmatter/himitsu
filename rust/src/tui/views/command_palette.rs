@@ -17,6 +17,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::keymap::{KeyAction, KeyMap};
+#[cfg(test)]
+use crate::tui::keymap::{KeyBinding, KeyChord};
 use crate::tui::layout::{PALETTE_HEIGHT_PCT, PALETTE_WIDTH_PCT};
 use crate::tui::theme;
 
@@ -93,15 +96,37 @@ impl Command {
         }
     }
 
-    pub fn shortcut(&self) -> &'static str {
+    /// The [`KeyAction`] this command shares with the keymap, if any. This is
+    /// the single link between the palette and the live keybindings: the
+    /// displayed shortcut is derived from whatever the user has bound to this
+    /// action, so the palette can never drift out of sync with the keymap.
+    /// Returns `None` for commands that have no direct key binding (they are
+    /// only reachable through the palette itself).
+    pub fn key_action(&self) -> Option<KeyAction> {
         match self {
-            Command::NewSecret => "ctrl-n",
-            Command::SwitchStore => "ctrl-s",
-            Command::Outputs => "shift-e",
-            Command::Help => "?",
-            Command::Quit => "esc",
-            _ => "",
+            Command::NewSecret => Some(KeyAction::NewSecret),
+            Command::SwitchStore => Some(KeyAction::SwitchStore),
+            Command::Outputs => Some(KeyAction::Outputs),
+            Command::Help => Some(KeyAction::Help),
+            Command::Quit => Some(KeyAction::Quit),
+            _ => None,
         }
+    }
+
+    /// Human-facing shortcut string derived from the live keymap (e.g.
+    /// `ctrl-n`, `shift-e`). Empty when the command has no bound key. The
+    /// keymap's `+` separator is rendered as `-` to match the palette's
+    /// established visual style.
+    pub fn shortcut(&self, keymap: &KeyMap) -> String {
+        let Some(action) = self.key_action() else {
+            return String::new();
+        };
+        keymap
+            .chords_for(action)
+            .iter()
+            .find(|c| c.is_single_step())
+            .map(|c| c.to_string().replace('+', "-"))
+            .unwrap_or_default()
     }
 
     pub fn description(&self) -> &'static str {
@@ -149,11 +174,11 @@ impl Command {
             | Command::SwitchStore
             | Command::ToggleStoreColumn
             | Command::Outputs
+            | Command::RecipientLs
+            | Command::RecipientAdd
             | Command::Help
             | Command::Quit => None,
 
-            Command::RecipientLs => Some("himitsu recipient ls"),
-            Command::RecipientAdd => Some("himitsu recipient add <name> --age-key <key>"),
             Command::RecipientRm => Some("himitsu recipient rm <name>"),
             Command::RecipientShow => Some("himitsu recipient show <name>"),
             Command::RemoteList => Some("himitsu remote list"),
@@ -193,6 +218,10 @@ pub struct CommandPalette {
     query: String,
     filtered: Vec<Command>,
     list_state: ListState,
+    /// Snapshot of the live keymap so displayed shortcuts reflect the user's
+    /// actual bindings (and can never drift from the keymap). Boxed to keep
+    /// `CommandPalette` — and the `View::Search` variant that owns it — small.
+    keymap: Box<KeyMap>,
 }
 
 const COMMANDS: &[Command] = &[
@@ -238,11 +267,12 @@ fn display_label(cmd: &Command) -> String {
 }
 
 impl CommandPalette {
-    pub fn new() -> Self {
+    pub fn new(keymap: &KeyMap) -> Self {
         let mut palette = Self {
             query: String::new(),
             filtered: COMMANDS.to_vec(),
             list_state: ListState::default(),
+            keymap: Box::new(keymap.clone()),
         };
         palette.list_state.select(Some(0));
         palette
@@ -313,7 +343,7 @@ impl CommandPalette {
                 }
                 cmd.label().to_ascii_lowercase().contains(&q)
                     || cmd.description().to_ascii_lowercase().contains(&q)
-                    || cmd.shortcut().to_ascii_lowercase().contains(&q)
+                    || cmd.shortcut(&self.keymap).to_ascii_lowercase().contains(&q)
             })
             .collect();
         if self.filtered.is_empty() {
@@ -373,7 +403,7 @@ impl CommandPalette {
             let shortcut_w = self
                 .filtered
                 .iter()
-                .map(|c| c.shortcut().len())
+                .map(|c| c.shortcut(&self.keymap).len())
                 .max()
                 .unwrap_or(0);
             let label_w = self
@@ -398,7 +428,7 @@ impl CommandPalette {
                     let line = Line::from(vec![
                         Span::raw(" "),
                         Span::styled(
-                            format!("{:<shortcut_w$}", cmd.shortcut()),
+                            format!("{:<shortcut_w$}", cmd.shortcut(&self.keymap)),
                             Style::default().fg(theme::accent()),
                         ),
                         Span::raw("  "),
@@ -463,7 +493,7 @@ mod tests {
 
     #[test]
     fn esc_cancels() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         assert_eq!(
             p.on_key(press(KeyCode::Esc)),
             CommandPaletteOutcome::Cancelled
@@ -472,7 +502,7 @@ mod tests {
 
     #[test]
     fn enter_returns_selected_command() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         // Default selection is the first command.
         assert_eq!(
             p.on_key(press(KeyCode::Enter)),
@@ -482,7 +512,7 @@ mod tests {
 
     #[test]
     fn typing_filters_the_list() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         for ch in "browse".chars() {
             p.on_key(press(KeyCode::Char(ch)));
         }
@@ -495,7 +525,7 @@ mod tests {
 
     #[test]
     fn down_arrow_advances_selection() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         p.on_key(press(KeyCode::Down));
         // Second command in the list (after NewSecret).
         assert_eq!(
@@ -506,7 +536,7 @@ mod tests {
 
     #[test]
     fn add_remote_filters_by_keyword() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         for ch in "remote".chars() {
             p.on_key(press(KeyCode::Char(ch)));
         }
@@ -531,6 +561,8 @@ mod tests {
                 | Command::SwitchStore
                 | Command::ToggleStoreColumn
                 | Command::Outputs
+                | Command::RecipientLs
+                | Command::RecipientAdd
                 | Command::Help
                 | Command::Quit => assert!(hint.is_none(), "{:?} should be wired", cmd),
                 _ => {
@@ -554,7 +586,7 @@ mod tests {
 
     #[test]
     fn empty_filter_disables_enter() {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&KeyMap::default());
         for ch in "zzz".chars() {
             p.on_key(press(KeyCode::Char(ch)));
         }
@@ -563,5 +595,49 @@ mod tests {
             p.on_key(press(KeyCode::Enter)),
             CommandPaletteOutcome::Pending,
         );
+    }
+
+    #[test]
+    fn outputs_command_is_present_and_keymapped() {
+        // The envs/outputs view must be reachable from the palette (the
+        // original drift bug: `E` was missing). Assert both the command's
+        // presence in the catalog and its link to the live KeyAction.
+        assert!(
+            COMMANDS.contains(&Command::Outputs),
+            "outputs/envs command must appear in the palette"
+        );
+        assert_eq!(Command::Outputs.key_action(), Some(KeyAction::Outputs));
+    }
+
+    #[test]
+    fn shortcut_is_derived_from_live_keymap_not_hardcoded() {
+        // Default keymap binds envs to Shift+E — displayed as `shift-e`.
+        let default_km = KeyMap::default();
+        assert_eq!(Command::Outputs.shortcut(&default_km), "shift-e");
+
+        // Remap envs to Ctrl+L and confirm the palette shortcut tracks the
+        // change. If shortcut() were still hardcoded this would fail — this
+        // is the regression guard against palette/keymap drift.
+        let remapped = KeyMap {
+            envs: vec![KeyChord::single(KeyBinding::ctrl('l'))],
+            ..KeyMap::default()
+        };
+        assert_eq!(Command::Outputs.shortcut(&remapped), "ctrl-l");
+    }
+
+    #[test]
+    fn every_keymapped_command_resolves_a_shortcut() {
+        // Any command that declares a key_action() must produce a non-empty
+        // shortcut from the default keymap — catches a command pointing at an
+        // action that has no default binding.
+        let km = KeyMap::default();
+        for cmd in COMMANDS {
+            if cmd.key_action().is_some() {
+                assert!(
+                    !cmd.shortcut(&km).is_empty(),
+                    "{cmd:?} maps to a KeyAction but has no derived shortcut"
+                );
+            }
+        }
     }
 }

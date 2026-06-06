@@ -1566,6 +1566,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         store: ctx.store.clone(),
         recipients_path: ctx.recipients_path.clone(),
         key_provider: ctx.key_provider.clone(),
+        project_root: ctx.project_root.clone(),
     }
 }
 
@@ -1651,6 +1652,7 @@ mod tests {
             store: store.to_path_buf(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 

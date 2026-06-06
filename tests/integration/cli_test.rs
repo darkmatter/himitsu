@@ -326,6 +326,98 @@ fn migrate_envs_rewrites_project_config() {
 }
 
 #[test]
+fn migrate_envs_rewrites_project_config_in_project_mode() {
+    // Regression test for the bug where `migrate envs` did nothing when run
+    // inside a project: the migrator only looked at `<store>/.himitsu.yaml`,
+    // but in project mode the legacy `envs:` block lives in the repo's own
+    // project config (himitsu.yaml), discovered by walking up from cwd.
+    let (home, store) = setup();
+
+    // Write a project config in the store root with a legacy `envs:` block.
+    // The migrator must find and rewrite THIS file via project-config
+    // discovery, with the process cwd set inside the repo.
+    let config_path = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &config_path,
+        "default_store: org/repo\nenvs:\n  dev:\n    - dev/*\n    - DB_PASSWORD\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output blocks rewritten: 1"));
+
+    let migrated = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        !migrated.contains("envs:"),
+        "envs: should be gone from project config: {migrated}"
+    );
+    assert!(
+        migrated.contains("outputs:"),
+        "outputs: missing from project config: {migrated}"
+    );
+    assert!(
+        migrated.contains("dev/*"),
+        "selector dev/* missing: {migrated}"
+    );
+    // A backup of the original is written next to it, preserving the name.
+    assert!(
+        store.path().join("himitsu.yaml.bak").exists(),
+        "expected himitsu.yaml.bak backup beside the migrated config"
+    );
+}
+
+#[test]
+fn migrate_envs_rewrites_project_config_via_explicit_project_flag() {
+    // hm-j3s: `--project=<path>` invoked from a DIFFERENT cwd must still find
+    // and rewrite the repo's project config (via Context.project_root), not
+    // rely on a cwd walk. This exercises the explicit project-root path.
+    let home = TempDir::new().unwrap();
+    let slug = "myorg/migrated";
+    create_remote_store(&home, slug);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!("default_store: \"{slug}\"\nenvs:\n  dev:\n    - dev/*\n"),
+    )
+    .unwrap();
+
+    // Run from an UNRELATED cwd, pointing at the project with --project=<path>.
+    let elsewhere = tempfile::tempdir().unwrap();
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(elsewhere.path())
+        .args([
+            &format!("--project={}", project_dir.path().to_string_lossy()),
+            "migrate",
+            "envs",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output blocks rewritten: 1"));
+
+    let migrated = std::fs::read_to_string(project_dir.path().join("himitsu.yaml")).unwrap();
+    assert!(
+        !migrated.contains("envs:"),
+        "envs: should be gone: {migrated}"
+    );
+    assert!(
+        migrated.contains("outputs:"),
+        "outputs: missing: {migrated}"
+    );
+    assert!(
+        migrated.contains("dev/*"),
+        "selector dev/* missing: {migrated}"
+    );
+}
+
+#[test]
 fn setup_helper_creates_envelope_with_env_field() {
     let (_home, store, path) = setup_with_legacy_env_field("prod", None);
     let envelope_path = store
@@ -2322,6 +2414,81 @@ fn generate_output_flag_works() {
 }
 
 #[test]
+fn generate_tag_selector_output_resolves() {
+    // hm-5i3 / Oracle: `generate` must resolve `tag:` selectors in outputs:.
+    // Previously generate built candidates with empty tags, so tag selectors
+    // matched nothing and produced empty output.
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &s,
+            "set",
+            "prod/STRIPE_KEY",
+            "sk_live_gen",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(
+        project_dir.path(),
+        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store", &s, "generate", "--stdout", "--output", "pci-prod",
+        ])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY"));
+}
+
+#[test]
+fn generate_tag_selector_alias_resolves() {
+    // hm-5i3 / Oracle: `generate` must resolve a selector-valued alias
+    // (`STRIPE: tag:stripe`) to its single matching secret under the alias key.
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &s,
+            "set",
+            "prod/stripe-key",
+            "sk_gen_alias",
+            "--tag",
+            "stripe",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    write_project_config(
+        project_dir.path(),
+        "outputs:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
+    );
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "generate", "--stdout", "--output", "app"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE"));
+}
+
+#[test]
 fn generate_env_flag_hard_errors() {
     let (home, store) = setup();
     let s = store_flag(&store);
@@ -3204,6 +3371,339 @@ fn exec_tag_selector_injects_tagged_secrets_only() {
         .stdout(predicate::str::contains("API_KEY=sk_prod_123"))
         .stdout(predicate::str::contains("DB_PASS").not())
         .stdout(predicate::str::contains("TOKEN=dev_tok_456").not());
+}
+
+#[test]
+fn exec_output_label_resolves_tag_selector() {
+    // Regression for hm-5i3: `himitsu exec <output-label>` is documented
+    // (README) but exec previously parsed the label as a concrete path and
+    // matched nothing. exec must resolve an `outputs:` label from project
+    // config, including tag selectors inside it.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_live_pci",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // Define a `pci-prod` output whose selector is `tag:pci`, in a project
+    // config at the store root. exec loads it via load_project_config(), so
+    // we run with cwd set to the store root.
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &project_cfg,
+        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "pci-prod",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY=sk_live_pci"));
+}
+
+#[test]
+fn exec_output_label_resolves_via_explicit_project_flag() {
+    // hm-5i3 / Oracle: `--project=<path> exec <output-label>` invoked from an
+    // UNRELATED cwd must resolve the label from the project root (via
+    // Context.project_root), not a cwd walk. Regression for exec ignoring
+    // ctx.project_root when loading the outputs: map.
+    let home = TempDir::new().unwrap();
+    let slug = "acme/secrets";
+    let store_path = create_remote_store(&home, slug);
+
+    // Tag a secret in the managed store.
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_path.to_string_lossy(),
+            "set",
+            "prod/stripe-key",
+            "sk_live_proj",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // Project repo: default_store points at the managed store; outputs:
+    // defines the pci-prod label.
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!(
+            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+        ),
+    )
+    .unwrap();
+
+    // Run from an UNRELATED cwd with --project=<path>.
+    let elsewhere = tempfile::tempdir().unwrap();
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(elsewhere.path())
+        .args([
+            &format!("--project={}", project_dir.path().to_string_lossy()),
+            "exec",
+            "pci-prod",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY=sk_live_proj"));
+}
+
+#[test]
+fn exec_output_label_resolves_alias() {
+    // An `outputs:` block with an alias must inject under the alias env-var
+    // name when the label is exec'd.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_live_alias",
+        ])
+        .assert()
+        .success();
+
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &project_cfg,
+        "outputs:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "exec", "app", "--", "env"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MY_STRIPE=sk_live_alias"));
+}
+
+#[test]
+fn exec_output_label_resolves_tag_selector_alias() {
+    // hm-5i3 / Oracle: an `outputs:` alias whose VALUE is a tag selector
+    // (e.g. `STRIPE: tag:stripe`, as documented and produced by migration)
+    // must resolve the selector to its single matching secret and inject it
+    // under the alias key. Previously this failed because alias values were
+    // parsed as concrete refs, so `tag:stripe` errored as an invalid ref.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_live_tag_alias",
+            "--tag",
+            "stripe",
+        ])
+        .assert()
+        .success();
+
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &project_cfg,
+        "outputs:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "exec", "app", "--", "env"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE=sk_live_tag_alias"));
+}
+
+#[test]
+fn migrate_envs_preserves_executable_tag_alias() {
+    // Roundtrip: a legacy `envs:` block with a tag-selector alias migrates to
+    // `outputs:` and the migrated alias is still executable via `exec`.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_migrated",
+            "--tag",
+            "stripe",
+        ])
+        .assert()
+        .success();
+
+    // Legacy envs: block with an alias entry whose value is a tag selector.
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(&project_cfg, "envs:\n  app:\n    - STRIPE: tag:stripe\n").unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success();
+
+    // The migrated config must execute the alias correctly.
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "exec", "app", "--", "env"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE=sk_migrated"));
+}
+
+#[test]
+fn exec_unknown_label_falls_through_to_selector_and_fails() {
+    // A ref that is not a defined output AND not a matching selector must
+    // still produce the clear "matched no secrets" error (no panic, no hang).
+    // Crucially: an `outputs:` block IS configured here but does NOT define
+    // the requested label, so this exercises the "outputs configured but
+    // unknown label" fall-through (not just the no-outputs path).
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "sk_prod",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    // outputs: defines `pci-prod`, but we exec a DIFFERENT, undefined label.
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &project_cfg,
+        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "not-a-real-label",
+            "--",
+            "env",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("matched no secrets"));
+}
+
+#[test]
+fn exec_cross_store_ref_is_rejected_clearly() {
+    // hm-5i3 / Oracle: a documented-but-unsupported cross-store ref
+    // (github:org/repo/path) must error with a clear "not supported" message,
+    // NOT be silently parsed as a local path and reported as "matched no
+    // secrets".
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "github:org/repo/prod/api-key",
+            "--",
+            "env",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cross-store exec ref"))
+        .stderr(predicate::str::contains("matched no secrets").not());
+}
+
+#[test]
+fn exec_cross_store_output_alias_is_rejected_without_impossible_workaround() {
+    // Oracle: an `outputs:` alias that points at a cross-store secret must
+    // fail clearly (cross-store exec is not supported) and must NOT suggest
+    // the impossible "define a local outputs: alias" workaround.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/local-key",
+            "local_value",
+        ])
+        .assert()
+        .success();
+
+    // outputs: with an alias referencing a cross-store secret.
+    let project_cfg = store.path().join("himitsu.yaml");
+    std::fs::write(
+        &project_cfg,
+        "outputs:\n  app:\n    selectors: []\n    aliases:\n      REMOTE_STRIPE: github:acme/secrets#prod/stripe-key\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "exec", "app", "--", "env"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cross-store"))
+        // Must NOT suggest the impossible outputs:-alias workaround.
+        .stderr(predicate::str::contains("define a local").not())
+        .stderr(predicate::str::contains("outputs:` alias").not());
 }
 
 #[test]

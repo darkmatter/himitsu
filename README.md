@@ -108,7 +108,7 @@ himitsu -r org/secrets set staging/API_KEY "sk_test_..."
   - [exec](#himitsu-exec-ref----cmd)
   - [recipient](#himitsu-recipient-addrmlsshow)
   - [remote](#himitsu-remote-addremovelistdefault)
-  - [sync](#himitsu-sync-env)
+  - [sync](#himitsu-sync-store)
   - [import](#himitsu-import)
   - [export](#himitsu-export)
   - [generate](#himitsu-generate)
@@ -135,7 +135,7 @@ himitsu solves duplication and eases maintenance, and is made for the following 
 - Any orgs/teams you are part of have a store at `org/secrets` - team secrets go here.
 - Access-control is path-based - configure who can access `prod/*` in `.himitsu.yaml`
 - Store secrets, organizing using plain directories, and tag them for crosscutting groupings (`pci`, `mobile`, `rotate-2026-q1`)
-- Map secrets to environments by path *or* tag:
+- Map secrets to outputs by path *or* tag:
 
 ```yaml
 # .himitsu.yaml
@@ -147,6 +147,8 @@ outputs:
       - $1/database-url
     aliases:
       SOME_VALUE: path/to/some-secret
+      # Cross-store alias (another store via `github:org/repo#path`). Resolved
+      # by `generate`; `exec` does not yet support cross-store secrets.
       SHARED_SECRET: github:org/secrets#prod/api-key
 
   pci-prod:
@@ -156,7 +158,7 @@ outputs:
       STRIPE: tag:stripe
 ```
 
-With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory, or `himitsu exec <env> -- <cmd>` to launch a process with the resolved secrets injected as environment variables.
+With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory, or `himitsu exec <output-label> -- <cmd>` to launch a process with the resolved secrets injected as environment variables. Note: `exec` resolves only local-store secrets; outputs whose aliases reference another store (`github:org/repo#path`) are supported by `generate` but not yet by `exec`.
 
 ### Migrating from `envs:` to `outputs:`
 
@@ -170,8 +172,8 @@ Existing stores: run `himitsu migrate envs` once. See [migration guide](docs/mig
 - **Path-based recipients** -- organize keys into directories (e.g. `ops/alice`, `team/*`); re-encrypt for all with `rekey`.
 - **Typed codegen** -- generate TypeScript, Go, Python, or Rust type stubs from your secret store.
 - **Cross-store search** -- `himitsu search` reads every known store directly; results are live, no index to rebuild.
-- **Tags** -- attach free-form labels to secrets (`pci`, `stripe`, `rotate-2026-q1`); filter with `--tag` on `set`, `search`, `ls`, and `exec`, or compose envs with `tag:foo` entries.
-- **Run with secrets** -- `himitsu exec <ref> -- <cmd>` resolves an env, glob, or single secret and launches a process with the values injected as environment variables.
+- **Tags** -- attach free-form labels to secrets (`pci`, `stripe`, `rotate-2026-q1`); filter with `--tag` on `set`, `search`, `ls`, and `exec`, or compose outputs with `tag:foo` entries.
+- **Run with secrets** -- `himitsu exec <ref> -- <cmd>` resolves an output label, glob, or single secret and launches a process with the values injected as environment variables.
 - **TUI** -- in-terminal dashboard with fuzzy search, secret viewer, inline editing, and store health.
 - **Import / Export** -- bulk import from 1Password (`op`) or SOPS files; export as SOPS-encrypted YAML/JSON.
 - **Nix integration** -- flake library for devShell injection, secret packaging, and container entrypoints.
@@ -234,7 +236,7 @@ himitsu search "" --tag pci # all secrets carrying tag `pci`
 
 # Run a command with secrets in its environment
 himitsu exec prod/* -- node app.js                     # inject every prod secret
-himitsu exec pci-prod --tag rotate -- ./run-checks.sh  # env label + tag filter
+himitsu exec pci-prod --tag rotate -- ./run-checks.sh  # output label + tag filter
 ```
 
 Override the active store with `-s` (path) or `-r` (slug):
@@ -269,7 +271,7 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 | `ctrl-s` | switch store |
 | `ctrl-y` | copy selected value |
 | `Y` (`shift-y`) | copy `himitsu read <ref>` for the selected row |
-| `shift-e` | browse env presets |
+| `shift-e` | browse output presets |
 | `?` | help |
 | `esc` / `ctrl-c` | quit |
 
@@ -444,12 +446,17 @@ is validated up front for both `add` and `rm`.
 Run a command with secrets injected as environment variables. `<REF>` is
 one of:
 
-1. **Env label** from `.himitsu.yaml` (e.g. `pci-prod`) -- uses the env
-   DSL alias key (or path-derived key) as the variable name.
+1. **Output label** from project config `outputs:` (e.g. `pci-prod`) -- uses
+   the output's alias key (or path-derived key) as the variable name. Resolves
+   local-store secrets only.
 2. **Path glob** ending in `/*` (e.g. `prod/*`).
-3. **Concrete secret path** (e.g. `prod/API_KEY`, optionally
-   `github:org/repo/prod/API_KEY`).
+3. **Concrete secret path** (e.g. `prod/API_KEY`).
 4. **Tag selector** (e.g. `tag:pci+tag:prod`).
+
+Cross-store / provider-qualified refs (e.g. `github:org/repo/prod/API_KEY`)
+are not yet supported by `exec` and return a clear error -- run from the owning
+store with `-r <org/repo> exec <local-ref>`. Output (`outputs:`) entries that
+reference a cross-store secret are likewise not yet supported by `exec`.
 
 ```bash
 himitsu exec pci-prod -- node app.js
@@ -458,8 +465,8 @@ himitsu exec prod/*+tag:pci -- ./run-checks.sh
 himitsu exec prod/API_KEY -i -- env | grep API_KEY    # `-i` = clean env
 ```
 
-The variable name for each secret comes from (in priority order): the env
-DSL alias → `SecretValue.env_key` → `derive_env_key(path tail)` (e.g.
+The variable name for each secret comes from (in priority order): the output
+alias key → `SecretValue.env_key` → `derive_env_key(path tail)` (e.g.
 `api-key` → `API_KEY`, `group/item-name` → `GROUP__ITEM_NAME`). Two
 secrets resolving to the same env-var name is a hard error naming both
 source paths.
@@ -495,13 +502,13 @@ himitsu remote list
 himitsu remote remove org/repo
 ```
 
-### `himitsu sync [env]`
+### `himitsu sync [store]`
 
 Pull from the git remote and optionally rekey drifted secrets.
 
 ```bash
-himitsu sync          # all environments
-himitsu sync prod     # one environment
+himitsu sync          # all stores
+himitsu sync org/repo # one store
 ```
 
 See [Sync & Store Health](#sync--store-health) for the auto-commit / auto-push
@@ -535,16 +542,16 @@ himitsu export "prod/*" -o prod.sops.yaml
 
 ### `himitsu generate`
 
-Generate SOPS-encrypted output files from env definitions in project config.
+Generate SOPS-encrypted output files from `outputs:` definitions in project
 Also requires `sops` on `PATH` -- same pipe-through-stdin contract as
 `export`.
 
 ```bash
-himitsu generate           # all envs defined in himitsu.yaml
+himitsu generate           # all outputs defined in himitsu.yaml
 himitsu generate --output prod
 ```
 
-Note: the `--env` flag has been removed; use `--output` to specify which environment to generate.
+Note: the `--env` flag has been removed; use `--output` to specify which output to generate.
 
 ### `himitsu join`
 

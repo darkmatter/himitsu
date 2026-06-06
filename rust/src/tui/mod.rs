@@ -95,6 +95,7 @@ pub fn run_init_flow() -> Result<()> {
                 store: PathBuf::new(),
                 recipients_path: None,
                 key_provider: crate::config::KeyProvider::default(),
+                project_root: None,
             };
             let result = init::run(args, &ctx);
 
@@ -130,6 +131,7 @@ pub fn run_init_flow() -> Result<()> {
         store: crate::config::resolve_store(None).unwrap_or_default(),
         recipients_path: None,
         key_provider: cfg.key_provider,
+        project_root: None,
     };
     if !should_continue_to_dashboard_after_init(&ctx.store) {
         return Ok(());
@@ -184,6 +186,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 

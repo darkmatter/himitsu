@@ -89,9 +89,58 @@ fn resolve_output_def(
     }
     for (env_key, secret_ref) in &def.aliases {
         let secret_ref = secret_ref.replace("$1", capture);
-        entries.push(entry_from_ref(env_key.clone(), &secret_ref)?);
+        entries.push(resolve_alias_entry(env_key.clone(), &secret_ref, ctx)?);
     }
     Ok(entries)
+}
+
+/// Resolve a single alias `MY_KEY: <ref>` into exactly one [`ResolvedEntry`]
+/// bound to `env_key`.
+///
+/// The value may be a concrete ref (`prod/api-key`, `github:org/repo#path`) OR
+/// a selector (`tag:stripe`, `prod/*`). Because an alias names a single env
+/// var, a selector value must match EXACTLY ONE local secret — zero or
+/// multiple matches are a hard error so the binding is never ambiguous.
+fn resolve_alias_entry(
+    env_key: String,
+    secret_ref: &str,
+    ctx: &Context,
+) -> Result<ResolvedEntry, HimitsuError> {
+    if is_concrete_ref(secret_ref) {
+        // Concrete path or cross-store ref — keep the alias's env_key.
+        let (store_slug, secret_path) = split_store_ref(secret_ref)?;
+        return Ok(ResolvedEntry {
+            env_key,
+            secret_path,
+            store_slug,
+        });
+    }
+
+    // Selector-valued alias (tag:/glob): resolve against local candidates.
+    let parsed = Selector::parse(secret_ref)?;
+    let mut matches = ctx.available_secrets.iter().filter(|candidate| {
+        parsed.matches(&SecretMatch {
+            path: &candidate.path,
+            tags: &candidate.tags,
+        })
+    });
+    let first = matches.next().ok_or_else(|| {
+        HimitsuError::InvalidReference(format!(
+            "alias {env_key:?} selector {secret_ref:?} matched no secrets"
+        ))
+    })?;
+    if let Some(second) = matches.next() {
+        return Err(HimitsuError::InvalidReference(format!(
+            "alias {env_key:?} selector {secret_ref:?} matched multiple secrets \
+             ({:?} and {:?}); an alias must resolve to exactly one secret",
+            first.path, second.path
+        )));
+    }
+    Ok(ResolvedEntry {
+        env_key,
+        secret_path: first.path.clone(),
+        store_slug: None,
+    })
 }
 
 fn resolve_selector_entry(
@@ -260,15 +309,60 @@ mod tests {
     }
 
     #[test]
-    fn alias_map_uses_alias_key_as_env_key() {
+    fn alias_concrete_ref_uses_alias_key_as_env_key() {
+        // A concrete-path alias keeps the alias key as the env-var name and
+        // the literal path as the secret path.
         let resolved = resolve_outputs(
-            &outputs(vec![("stripe", aliased(&[("STRIPE", "tag:stripe")]))]),
+            &outputs(vec![("app", aliased(&[("STRIPE", "prod/stripe-key")]))]),
             &ctx(&[]),
         )
         .unwrap();
 
         assert_eq!(resolved[0].entries[0].env_key, "STRIPE");
-        assert_eq!(resolved[0].entries[0].secret_path, "tag:stripe");
+        assert_eq!(resolved[0].entries[0].secret_path, "prod/stripe-key");
+    }
+
+    #[test]
+    fn alias_tag_selector_resolves_to_matching_secret() {
+        // A selector-valued alias (tag:stripe) resolves against candidates and
+        // binds the single match to the alias key.
+        let resolved = resolve_outputs(
+            &outputs(vec![("app", aliased(&[("STRIPE", "tag:stripe")]))]),
+            &ctx(&[("prod/stripe-key", &["stripe"])]),
+        )
+        .unwrap();
+
+        assert_eq!(resolved[0].entries.len(), 1);
+        assert_eq!(resolved[0].entries[0].env_key, "STRIPE");
+        assert_eq!(resolved[0].entries[0].secret_path, "prod/stripe-key");
+    }
+
+    #[test]
+    fn alias_selector_matching_no_secret_errors() {
+        let err = resolve_outputs(
+            &outputs(vec![("app", aliased(&[("STRIPE", "tag:stripe")]))]),
+            &ctx(&[("prod/other", &["pci"])]),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("matched no secrets"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn alias_selector_matching_multiple_secrets_errors() {
+        // An alias must resolve to exactly one secret; multiple matches are a
+        // hard error so the env-var binding is never ambiguous.
+        let err = resolve_outputs(
+            &outputs(vec![("app", aliased(&[("STRIPE", "tag:stripe")]))]),
+            &ctx(&[("prod/a", &["stripe"]), ("prod/b", &["stripe"])]),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("matched multiple secrets"),
+            "unexpected: {err}"
+        );
     }
 
     #[test]

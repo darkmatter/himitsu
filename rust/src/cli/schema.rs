@@ -248,6 +248,7 @@ mod tests {
             store: store.clone(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
 
         cmd_refresh(&ctx).unwrap();

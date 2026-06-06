@@ -1042,6 +1042,7 @@ mod tests {
             store: PathBuf::new(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 

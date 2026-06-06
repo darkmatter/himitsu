@@ -71,6 +71,30 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         .split_first()
         .expect("clap enforces required = true on `command`");
 
+    // Reject documented-but-unsupported cross-store refs up front with a clear
+    // error, rather than silently parsing them as a local path and reporting
+    // "matched no secrets". A provider-qualified ref (e.g.
+    // `github:org/repo/prod/API_KEY`) has a colon-prefixed provider that is NOT
+    // the `tag:` selector prefix.
+    if is_cross_store_ref(&args.r#ref) {
+        return Err(HimitsuError::NotSupported(format!(
+            "cross-store exec ref {:?} is not supported yet — run from the owning \
+             store with `-r <org/repo> exec <local-ref>`",
+            args.r#ref
+        )));
+    }
+
+    // 1. Try to resolve the ref as an `outputs:` label from project config
+    //    (e.g. `himitsu exec pci-prod`). Falls through to selector/glob/path
+    //    parsing when the ref is not a defined output name.
+    if let Some(env_map) = try_resolve_output_label(ctx, &args.r#ref, &args.tags)? {
+        if env_map.is_empty() {
+            return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
+        }
+        return spawn_and_wait(cmd, cmd_args, env_map, args.clean);
+    }
+
+    // 2. Selector grammar: tag:/glob/concrete-path.
     let selector = Selector::parse(&args.r#ref)?;
 
     let all_paths = store::list_secrets(&ctx.store, None)?;
@@ -92,6 +116,144 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
     }
 
     spawn_and_wait(cmd, cmd_args, env_map, args.clean)
+}
+
+/// Returns `true` when `ref_str` is a provider-qualified cross-store ref
+/// (e.g. `github:org/repo/prod/API_KEY`). Such refs carry a colon-prefixed
+/// provider that is NOT the `tag:` selector prefix. exec does not yet support
+/// resolving secrets from a different store than the active one.
+fn is_cross_store_ref(ref_str: &str) -> bool {
+    let Some((provider, _)) = ref_str.split_once(':') else {
+        return false;
+    };
+    // `tag:` is the selector prefix, not a cross-store provider.
+    if provider == "tag" || provider.is_empty() {
+        return false;
+    }
+    // A real provider token is a leading identifier with no path or selector
+    // separators before the colon. A ref like `prod/*+tag:pci` splits on the
+    // colon inside `tag:pci`, leaving `prod/*+tag` as the candidate provider —
+    // the `/`, `+`, `*` characters disqualify it (it's a selector, not a
+    // provider).
+    provider
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Attempt to resolve `ref_str` as a named `outputs:` label from the project
+/// config. Returns:
+/// - `Ok(Some(env_map))` when the ref matches a defined output (the map may be
+///   empty if the output's selectors matched no secrets);
+/// - `Ok(None)` when the ref is NOT a defined output name (caller falls back to
+///   selector parsing);
+/// - `Err(..)` on a resolution/decryption failure.
+///
+/// Unlike `codegen`, candidates are built WITH real tags (by decrypting each
+/// secret) so `tag:` selectors inside an output block resolve correctly.
+fn try_resolve_output_label(
+    ctx: &Context,
+    ref_str: &str,
+    want_tags: &[String],
+) -> Result<Option<BTreeMap<String, String>>> {
+    use crate::config::outputs::resolver::{
+        resolve_outputs, Context as ResolverContext, SecretCandidate,
+    };
+
+    // Load the project config from the explicit project root when one was
+    // selected (`--project[=<path>]`), so output labels resolve even when exec
+    // is invoked from a different cwd. Fall back to a cwd walk otherwise.
+    let project_config = match ctx.project_root.as_deref() {
+        Some(root) => config::load_project_config_from(root)?,
+        None => config::load_project_config()?,
+    };
+    let outputs_map = project_config
+        .map(|(cfg, _)| cfg.outputs)
+        .unwrap_or_default();
+    if outputs_map.is_empty() {
+        return Ok(None);
+    }
+
+    // Build candidates with real tags so tag-selectors resolve. We decrypt
+    // every secret once; identities that can't decrypt a secret yield no tags
+    // for it (it simply won't match tag selectors), mirroring `ls --tag`.
+    let identities = ctx.load_identities()?;
+    let all_paths = store::list_secrets(&ctx.store, None)?;
+    let mut decoded_by_path: BTreeMap<String, secret_value::Decoded> = BTreeMap::new();
+    let mut candidates = Vec::with_capacity(all_paths.len());
+    for path in all_paths {
+        let tags = match super::get::get_decoded_with_identities(ctx, &path, &identities) {
+            Ok(decoded) => {
+                let tags = decoded.tags.clone();
+                decoded_by_path.insert(path.clone(), decoded);
+                tags
+            }
+            Err(_) => Vec::new(),
+        };
+        candidates.push(SecretCandidate { path, tags });
+    }
+
+    let resolver_ctx = ResolverContext {
+        available_secrets: candidates,
+    };
+    let resolved = resolve_outputs(&outputs_map, &resolver_ctx)?;
+
+    let Some(output) = resolved.into_iter().find(|o| o.name == ref_str) else {
+        return Ok(None);
+    };
+
+    // Build the env map from resolved entries. Cross-store entries
+    // (`store_slug.is_some()`) are not supported by exec yet — surface a clear
+    // error rather than silently dropping them.
+    let mut env_map: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for entry in output.entries {
+        if entry.store_slug.is_some() {
+            return Err(HimitsuError::NotSupported(format!(
+                "output {ref_str:?} references a cross-store secret ({}); \
+                 cross-store exec is not supported yet",
+                entry.secret_path
+            )));
+        }
+
+        // Decode the secret: reuse the already-decrypted value when available,
+        // otherwise decrypt now (an alias may point at a path not in the tag
+        // scan, though it usually is).
+        let decoded = match decoded_by_path.remove(&entry.secret_path) {
+            Some(d) => d,
+            None => super::get::get_decoded_with_identities(ctx, &entry.secret_path, &identities)?,
+        };
+
+        // Apply the `--tag` AND filter on top of the resolved selection.
+        if !want_tags.is_empty()
+            && !want_tags
+                .iter()
+                .all(|t| decoded.tags.iter().any(|d| d == t))
+        {
+            continue;
+        }
+
+        let key = entry.env_key;
+        super::set::validate_env_key(&key).map_err(|e| {
+            HimitsuError::InvalidReference(format!("{e} (from {:?})", entry.secret_path))
+        })?;
+        if let Some((_, prev_path)) = env_map.get(&key) {
+            return Err(HimitsuError::InvalidConfig(format!(
+                "env-var {key:?} would be set by both {prev_path:?} and {:?}; \
+                 rename one via `set --env-key` or a selector alias",
+                entry.secret_path
+            )));
+        }
+        let value = String::from_utf8(decoded.data).map_err(|e| {
+            HimitsuError::InvalidReference(format!(
+                "secret {:?} contains non-UTF-8 bytes — exec can only inject text values: {e}",
+                entry.secret_path
+            ))
+        })?;
+        env_map.insert(key, (value, entry.secret_path));
+    }
+
+    Ok(Some(
+        env_map.into_iter().map(|(k, (v, _))| (k, v)).collect(),
+    ))
 }
 
 /// Returns true if the path could match any group in the selector based on

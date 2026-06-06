@@ -33,7 +33,7 @@ pub fn run(args: MigrateArgs, ctx: &super::Context) -> Result<()> {
 
 fn migrate_envs(ctx: &super::Context, dry_run: bool) -> Result<()> {
     let secrets_migrated = migrate_secret_environments(ctx, dry_run)?;
-    let output_blocks_rewritten = migrate_project_config(&ctx.store, dry_run)?;
+    let output_blocks_rewritten = migrate_all_project_configs(ctx, dry_run)?;
     let cache_path = ctx.state_dir.join("envs.db");
     let cache_deleted = cache_path.exists();
     if cache_deleted && !dry_run {
@@ -149,13 +149,55 @@ fn collect_age_files(store: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn migrate_project_config(store: &Path, dry_run: bool) -> Result<usize> {
-    let path = store.join(".himitsu.yaml");
+/// Migrate every config file that might carry a legacy `envs:` block.
+///
+/// In project mode `ctx.store` is the managed checkout under
+/// `state_dir/stores/<org>/<repo>`, NOT the repo the user is standing in — so
+/// the legacy `envs:` block lives in the repo's project config
+/// (`himitsu.yaml` / `.himitsu/config.yaml` / `.config/himitsu.yaml`). When the
+/// invocation selected an explicit project (`--project[=<path>]`) we resolve
+/// that config from the project root; otherwise we walk up from the current
+/// directory. We rewrite both the store's `.himitsu.yaml` (legacy in-store
+/// layout) and the discovered project config, deduplicating by canonical path
+/// so a single file is never rewritten twice.
+fn migrate_all_project_configs(ctx: &super::Context, dry_run: bool) -> Result<usize> {
+    let mut candidates: Vec<PathBuf> = vec![ctx.store.join(".himitsu.yaml")];
+    // Discover the repo's project config from the explicit project root when
+    // one was selected (`--project[=<path>]`), so migration works even when
+    // invoked from a different cwd. Fall back to a cwd walk otherwise, which
+    // covers the common "run inside the project" case.
+    let project_cfg = match &ctx.project_root {
+        Some(root) => crate::config::find_project_config_from(root),
+        None => crate::config::find_project_config(),
+    };
+    if let Some(path) = project_cfg {
+        candidates.push(path);
+    }
+
+    // Deduplicate by canonical path so we don't rewrite the same file twice
+    // (and so the `.bak` isn't clobbered). Fall back to the raw path when a
+    // file doesn't exist yet (canonicalize fails on missing paths).
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut total = 0;
+    for path in candidates {
+        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        total += migrate_project_config(&path, dry_run)?;
+    }
+    Ok(total)
+}
+
+/// Rewrite a single config file's `envs:` block to `outputs:`. No-op (returns
+/// 0) when the file is absent or carries no `envs:` block.
+fn migrate_project_config(path: &Path, dry_run: bool) -> Result<usize> {
     if !path.exists() {
         return Ok(0);
     }
 
-    let contents = std::fs::read_to_string(&path)?;
+    let contents = std::fs::read_to_string(path)?;
     let mut root: Value = if contents.trim().is_empty() {
         Value::Mapping(Mapping::new())
     } else {
@@ -176,9 +218,25 @@ fn migrate_project_config(store: &Path, dry_run: bool) -> Result<usize> {
     root_map.insert(Value::String("outputs".to_string()), outputs);
 
     if !dry_run {
-        let backup_path = path.with_file_name(".himitsu.yaml.bak");
+        // Back up alongside the original, preserving its real filename
+        // (e.g. himitsu.yaml -> himitsu.yaml.bak) rather than assuming a
+        // fixed name — the config may be himitsu.yaml or .himitsu/config.yaml.
+        let backup_name = match path.file_name() {
+            Some(name) => {
+                let mut n = name.to_os_string();
+                n.push(".bak");
+                n
+            }
+            None => {
+                return Err(HimitsuError::InvalidReference(format!(
+                    "{} has no file name",
+                    path.display()
+                )))
+            }
+        };
+        let backup_path = path.with_file_name(backup_name);
         atomic_write(&backup_path, contents.as_bytes())?;
-        atomic_write(&path, serde_yaml::to_string(&root)?.as_bytes())?;
+        atomic_write(path, serde_yaml::to_string(&root)?.as_bytes())?;
     }
 
     Ok(rewritten)

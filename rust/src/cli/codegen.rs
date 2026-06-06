@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use super::Context;
 use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate,
+    resolve_outputs, Context as ResolverContext, ResolvedOutput,
 };
 use crate::config::{self, load_project_config, validate_env_label};
 use crate::error::{HimitsuError, Result};
@@ -102,11 +102,7 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let available_secrets = crate::remote::store::list_secrets(&ctx.store, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| SecretCandidate { path, tags: vec![] })
-        .collect();
+    let available_secrets = super::resolver_candidates_with_tags(ctx);
     let resolver_ctx = ResolverContext { available_secrets };
     let resolved_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
 
@@ -166,11 +162,7 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
         ));
     }
 
-    let available_secrets = crate::remote::store::list_secrets(&ctx.store, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| SecretCandidate { path, tags: vec![] })
-        .collect();
+    let available_secrets = super::resolver_candidates_with_tags(ctx);
     let resolver_ctx = ResolverContext { available_secrets };
     let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
 
@@ -1021,6 +1013,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
 
         let args = CodegenArgs {
@@ -1048,6 +1041,7 @@ mod tests {
             store: tmp.path().to_path_buf(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         let args = CodegenArgs {
             env_positional: None,
@@ -1075,6 +1069,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
 
         let args = CodegenArgs {
@@ -1106,6 +1101,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
 
         let args = CodegenArgs {
@@ -1171,6 +1167,7 @@ mod tests {
             store: project.clone(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         let result = run_sops("ghost", None, &ctx);
 

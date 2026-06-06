@@ -120,6 +120,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 

@@ -15,7 +15,7 @@ himitsu migrate envs             # apply changes
 
 | Old | New |
 |-----|-----|
-| `envs:` key in `.himitsu.yaml` | `outputs:` key (hard error if `envs:` present) |
+| `envs:` key in `.himitsu.yaml` | `outputs:` key (a legacy `envs:` block is tolerated with a warning; run `himitsu migrate envs` to convert) |
 | `himitsu exec pci-prod -- cmd` | `himitsu exec tag:pci+tag:prod -- cmd` |
 | `himitsu generate --env prod` | `himitsu generate --output prod` |
 | `exec` silently launches with 0 secrets | `exec` exits 1 with error if selector matches nothing |

@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (BREAKING)
 
-- **Removed `envs:` block** from `.himitsu.yaml`. The `envs:` key now produces a hard error directing users to run `himitsu migrate envs`. See [Migration Guide](docs/migrating-envs-to-tags.md).
+- **Replaced `envs:` block** in `.himitsu.yaml` with a tag-based `outputs:` block. A legacy `envs:` key is tolerated on load (emitting a warning) so `himitsu migrate envs` can convert it; run that command to migrate. See [Migration Guide](docs/migrating-envs-to-tags.md).
 - **`himitsu exec`** now accepts a tag-selector grammar for the `<REF>` argument:
   - `tag:NAME`: all secrets tagged "NAME"
   - `tag:A+tag:B`: secrets tagged A AND B
   - `prod/*+tag:pci`: secrets under prod/* AND tagged pci
   - `tag:A,tag:B`: secrets tagged A OR B (OR via comma)
-  - Old named-env dispatch (e.g. `exec pci-prod`) is removed; use `exec tag:pci+tag:prod` instead.
+  - Output labels: `exec <output-label>` resolves a named `outputs:` block from project config (local-store secrets only). Tag selectors may also be used directly, e.g. `exec tag:pci+tag:prod`.
 - **`himitsu exec`** exits 1 with `error: selector 'X' matched no secrets` when no secrets match (previously silently launched subprocess).
 - **`himitsu generate --env`** flag removed; use `--output` instead. Passing `--env` now errors.
 - **`outputs:` block** replaces `envs:` in `.himitsu.yaml`. Migration tool: `himitsu migrate envs`.

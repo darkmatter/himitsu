@@ -290,6 +290,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: KeyProvider::Disk,
+            project_root: None,
         }
     }
 

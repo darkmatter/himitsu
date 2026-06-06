@@ -89,6 +89,76 @@ pub fn run(args: RecipientArgs, ctx: &Context) -> Result<()> {
     }
 }
 
+// ── Public TUI entry points ─────────────────────────────────────
+//
+// Thin wrappers over the private CLI handlers so the TUI's recipient
+// screens drive the exact same logic as `himitsu recipient ...` and the two
+// surfaces can't drift. The CLI's `run()` path is untouched.
+
+/// A recipient as surfaced to the TUI list view.
+#[derive(Debug, Clone)]
+pub struct RecipientEntry {
+    pub name: String,
+    pub description: String,
+    /// Short fingerprint (trailing chars) of the age public key.
+    pub short_key: String,
+}
+
+/// Add a recipient by explicit age public key (the `--age-key` path). Mirrors
+/// `himitsu recipient add <name> --age-key <key>`, but never prompts and never
+/// prints — safe to call from the TUI where stdin/stdout drive ratatui.
+pub fn add_recipient(
+    ctx: &Context,
+    name: &str,
+    age_key: &str,
+    description: Option<String>,
+) -> Result<()> {
+    // Normalise an empty description to `None` so the silent core never
+    // writes an empty sidecar. The TUI must NOT reach the interactive prompt
+    // path in `add`, so we call the core directly.
+    let description = description.and_then(|d| {
+        let t = d.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+    add_core(ctx, name, Some(age_key), description).map(|_missing| ())
+}
+
+/// Remove a recipient by name. Mirrors `himitsu recipient rm <name>`, but
+/// never prints — safe to call from the TUI.
+pub fn remove_recipient(ctx: &Context, name: &str) -> Result<()> {
+    rm_core(ctx, name)
+}
+
+/// List recipients in the current store, sorted by name. Live read — no
+/// caching — so the TUI always reflects the on-disk state.
+pub fn list_recipients(ctx: &Context) -> Result<Vec<RecipientEntry>> {
+    let recipients_dir = flat_recipients_dir(ctx);
+    if !recipients_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::new();
+    collect_pub_entries(&recipients_dir, &recipients_dir, &mut rows)?;
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(rows
+        .into_iter()
+        .map(|r| RecipientEntry {
+            name: r.name,
+            description: r.description,
+            short_key: r.short_key,
+        })
+        .collect())
+}
+
+/// Validate a recipient name for the TUI form, returning a human-readable
+/// error string suitable for a form status line.
+pub fn validate_recipient_name(name: &str) -> std::result::Result<(), String> {
+    validate_name(name).map_err(|e| format!("{e}"))
+}
+
 // ── add ─────────────────────────────────────────────────────────────────────
 
 fn add(
@@ -98,21 +168,89 @@ fn add(
     age_key: Option<&str>,
     description: Option<String>,
 ) -> Result<()> {
-    validate_name(name)?;
-
-    let pubkey = if self_ {
+    // Resolve the pubkey source first so name/key validation can fail fast
+    // BEFORE we prompt for a description — otherwise an invalid or duplicate
+    // add would ask the user for a description only to error out afterward.
+    let pubkey_source = if self_ {
         let key_path = ctx.key_path();
         let contents = std::fs::read_to_string(&key_path)?;
-        extract_public_key(&contents).ok_or_else(|| {
+        Some(extract_public_key(&contents).ok_or_else(|| {
             HimitsuError::Recipient("cannot extract public key from key file".into())
-        })?
-    } else if let Some(key) = age_key {
+        })?)
+    } else {
+        None
+    };
+    let age_key_owned = pubkey_source.as_deref().or(age_key);
+
+    // Validate name + key and check for a duplicate up front (the core also
+    // re-checks, but doing it here means we don't prompt before failing).
+    validate_name(name)?;
+    if let Some(key) = age_key_owned {
         age::parse_recipient(key)?;
-        key.to_string()
     } else {
         return Err(HimitsuError::Recipient(
             "either --self or --age-key must be provided".into(),
         ));
+    }
+    let pub_file = flat_recipients_dir(ctx).join(format!("{name}.pub"));
+    if pub_file.exists() {
+        return Err(HimitsuError::Recipient(format!(
+            "recipient '{name}' already exists at {}",
+            pub_file.display()
+        )));
+    }
+
+    // Resolve description: explicit flag wins, otherwise prompt if interactive.
+    // Prompting lives here (the CLI presentation layer), NOT in the silent
+    // core, so the TUI never blocks on stdin.
+    let final_description = match description {
+        Some(d) => {
+            let trimmed = d.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        None if std::io::stdin().is_terminal() => prompt_description()?,
+        None => None,
+    };
+
+    let missing = add_core(ctx, name, age_key_owned, final_description)?;
+
+    println!("Added recipient '{name}'");
+    if missing > 0 {
+        println!(
+            "note: {missing} secrets in this store do not yet include '{name}'. Run: himitsu rekey"
+        );
+    }
+    Ok(())
+}
+
+/// Silent mutation core for adding a recipient. Validates inputs, writes the
+/// `.pub` (and a sidecar when a non-empty description is given), and returns
+/// the count of secrets in the store that do not yet include the new key.
+///
+/// Does NOT prompt and does NOT print — callers own presentation. The CLI's
+/// `add` adds prompting + stdout messages; the TUI calls this directly.
+fn add_core(
+    ctx: &Context,
+    name: &str,
+    age_key: Option<&str>,
+    description: Option<String>,
+) -> Result<usize> {
+    validate_name(name)?;
+
+    let pubkey = match age_key {
+        Some(key) => {
+            age::parse_recipient(key)?;
+            key.to_string()
+        }
+        None => {
+            return Err(HimitsuError::Recipient(
+                "either --self or --age-key must be provided".into(),
+            ))
+        }
     };
 
     let recipients_dir = flat_recipients_dir(ctx);
@@ -131,39 +269,25 @@ fn add(
     }
     std::fs::write(&pub_file, format!("{pubkey}\n"))?;
 
-    // Resolve description: explicit flag wins, otherwise prompt if interactive.
-    let final_description = match description {
-        Some(d) => {
-            let trimmed = d.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
+    // Only write a sidecar for a non-empty description.
+    let final_description = description.and_then(|d| {
+        let t = d.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
         }
-        None if std::io::stdin().is_terminal() => prompt_description()?,
-        None => None,
-    };
-
+    });
     if final_description.is_some() {
         let sidecar_path = recipients_dir.join(format!("{name}.yaml"));
         let meta = RecipientMeta {
-            description: final_description.clone(),
+            description: final_description,
             added_at: Some(now_iso8601()),
         };
         std::fs::write(&sidecar_path, serde_yaml::to_string(&meta)?)?;
     }
 
-    println!("Added recipient '{name}'");
-
-    let missing = count_secrets_missing_key(&ctx.store, &pubkey);
-    if missing > 0 {
-        println!(
-            "note: {missing} secrets in this store do not yet include '{name}'. Run: himitsu rekey"
-        );
-    }
-
-    Ok(())
+    Ok(count_secrets_missing_key(&ctx.store, &pubkey))
 }
 
 fn prompt_description() -> Result<Option<String>> {
@@ -182,6 +306,18 @@ fn prompt_description() -> Result<Option<String>> {
 // ── rm ──────────────────────────────────────────────────────────────────────
 
 fn rm(ctx: &Context, name: &str) -> Result<()> {
+    rm_core(ctx, name)?;
+    println!("Removed recipient '{name}'");
+    println!(
+        "note: previously-encrypted secrets remain accessible to '{name}' via git history. \
+         To revoke access, rotate any sensitive values."
+    );
+    Ok(())
+}
+
+/// Silent mutation core for removing a recipient. Deletes the `.pub` and any
+/// sidecar. Does NOT print — callers own presentation.
+fn rm_core(ctx: &Context, name: &str) -> Result<()> {
     let recipients_dir = flat_recipients_dir(ctx);
 
     let pub_file = recipients_dir.join(format!("{name}.pub"));
@@ -195,12 +331,6 @@ fn rm(ctx: &Context, name: &str) -> Result<()> {
     if sidecar.exists() {
         std::fs::remove_file(&sidecar)?;
     }
-
-    println!("Removed recipient '{name}'");
-    println!(
-        "note: previously-encrypted secrets remain accessible to '{name}' via git history. \
-         To revoke access, rotate any sensitive values."
-    );
     Ok(())
 }
 
@@ -486,6 +616,7 @@ mod tests {
             store,
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         };
         (tmp, ctx)
     }
@@ -632,5 +763,58 @@ mod tests {
         assert!(colored.contains('\u{1b}'));
         assert!(colored.contains("alice"));
         assert!(colored.contains("bot"));
+    }
+
+    #[test]
+    fn add_recipient_wrapper_with_empty_description_writes_no_sidecar() {
+        // Regression for the TUI hang: add_recipient (the TUI-facing wrapper)
+        // must NOT reach the interactive prompt path in `add`. An empty/None
+        // description must be normalised to no sidecar via the silent core.
+        let (_tmp, ctx) = mk_ctx();
+        add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        let rdir = rstore::recipients_dir(&ctx.store);
+        assert!(rdir.join("alice.pub").exists());
+        assert!(
+            !rdir.join("alice.yaml").exists(),
+            "empty description must not write a sidecar"
+        );
+
+        // A whitespace-only description is also treated as empty.
+        add_recipient(&ctx, "bob", AGE_KEY_2, Some("   ".into())).unwrap();
+        assert!(rdir.join("bob.pub").exists());
+        assert!(!rdir.join("bob.yaml").exists());
+    }
+
+    #[test]
+    fn add_recipient_wrapper_with_description_writes_sidecar() {
+        let (_tmp, ctx) = mk_ctx();
+        add_recipient(&ctx, "alice", AGE_KEY_1, Some("Platform lead".into())).unwrap();
+        let sidecar = rstore::recipients_dir(&ctx.store).join("alice.yaml");
+        assert!(sidecar.exists());
+        let meta: RecipientMeta =
+            serde_yaml::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(meta.description.as_deref(), Some("Platform lead"));
+    }
+
+    #[test]
+    fn list_recipients_wrapper_returns_sorted_entries() {
+        let (_tmp, ctx) = mk_ctx();
+        add_recipient(&ctx, "bob", AGE_KEY_2, None).unwrap();
+        add_recipient(&ctx, "alice", AGE_KEY_1, Some("A".into())).unwrap();
+        let entries = list_recipients(&ctx).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "alice");
+        assert_eq!(entries[1].name, "bob");
+        assert_eq!(entries[0].description, "A");
+    }
+
+    #[test]
+    fn remove_recipient_wrapper_deletes_entry() {
+        let (_tmp, ctx) = mk_ctx();
+        add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        remove_recipient(&ctx, "alice").unwrap();
+        assert!(!rstore::recipients_dir(&ctx.store)
+            .join("alice.pub")
+            .exists());
     }
 }

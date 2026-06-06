@@ -59,6 +59,10 @@ pub struct Context {
     /// Where the age private key lives. Resolved from `Config.key_provider`
     /// at dispatcher boot so callers don't each re-read the config.
     pub key_provider: crate::config::KeyProvider,
+    /// The explicit project root when the invocation used `--project[=<path>]`.
+    /// `None` for store/remote/global selectors. Lets commands like `migrate`
+    /// locate the repo's project config even when run from a different cwd.
+    pub project_root: Option<PathBuf>,
 }
 
 impl Context {
@@ -520,6 +524,7 @@ impl Cli {
                 store: PathBuf::new(),
                 recipients_path: None,
                 key_provider: crate::config::KeyProvider::default(),
+                project_root: None,
             };
             init::run(
                 init::InitArgs {
@@ -587,12 +592,17 @@ impl Cli {
         let key_provider = crate::config::Config::load(&crate::config::config_path())
             .map(|c| c.key_provider)
             .unwrap_or_default();
+        let project_root = match &selector {
+            ContextSelector::Project(root) => Some(root.clone()),
+            _ => None,
+        };
         let ctx = Context {
             data_dir,
             state_dir,
             store,
             recipients_path,
             key_provider,
+            project_root,
         };
 
         // Pre-dispatch: when `auto_pull` is on, fetch + fast-forward the
@@ -714,6 +724,7 @@ impl Cli {
             store,
             recipients_path,
             key_provider,
+            project_root: None,
         };
         crate::tui::run(&ctx)
     }
@@ -855,6 +866,32 @@ fn load_recipients_path_override(
     }
 
     None
+}
+
+/// Build resolver candidates for the store with REAL tags, by decrypting each
+/// secret. Tag selectors and selector-valued aliases inside `outputs:` blocks
+/// only resolve when candidates carry their tags, so `exec`, `generate`, and
+/// `codegen` share this builder instead of passing `tags: vec![]` (which made
+/// every `tag:` selector silently match nothing).
+///
+/// Secrets the current identity cannot decrypt contribute no tags (they simply
+/// won't match tag selectors), mirroring `ls --tag`.
+pub(crate) fn resolver_candidates_with_tags(
+    ctx: &Context,
+) -> Vec<crate::config::outputs::resolver::SecretCandidate> {
+    use crate::config::outputs::resolver::SecretCandidate;
+
+    let identities = ctx.load_identities().unwrap_or_default();
+    crate::remote::store::list_secrets(&ctx.store, None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| {
+            let tags = get::get_decoded_with_identities(ctx, &path, &identities)
+                .map(|decoded| decoded.tags)
+                .unwrap_or_default();
+            SecretCandidate { path, tags }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1004,6 +1041,7 @@ mod tests {
             store: store.to_path_buf(),
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
+            project_root: None,
         }
     }
 

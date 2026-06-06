@@ -21,6 +21,8 @@ pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::help::{HelpAction, HelpView};
 use crate::tui::views::new_secret::{NewSecretAction, NewSecretView};
 use crate::tui::views::outputs::{OutputsAction, OutputsView};
+use crate::tui::views::recipient_add::{RecipientAddAction, RecipientAddView};
+use crate::tui::views::recipient_list::{RecipientListAction, RecipientListView};
 use crate::tui::views::remote_add::{RemoteAddAction, RemoteAddView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
@@ -31,6 +33,8 @@ enum View {
     NewSecret(NewSecretView),
     Outputs(OutputsView),
     RemoteAdd(RemoteAddView),
+    RecipientList(RecipientListView),
+    RecipientAdd(RecipientAddView),
 }
 
 /// Intent emitted by [`App::on_key`] when a view needs the outer event
@@ -183,6 +187,14 @@ impl App {
                 let action = form.on_key(key, &self.keymap);
                 self.handle_remote_add_action(action)
             }
+            View::RecipientList(list) => {
+                let action = list.on_key(key, &self.keymap);
+                self.handle_recipient_list_action(action)
+            }
+            View::RecipientAdd(form) => {
+                let action = form.on_key(key, &self.keymap);
+                self.handle_recipient_add_action(action)
+            }
         }
     }
 
@@ -203,9 +215,12 @@ impl App {
             _ => {}
         }
 
+        // Clone the keymap up front: the per-view dispatch below borrows
+        // `self.view` mutably, so it can't also hold `&self.keymap`.
+        let keymap = self.keymap.clone();
         match &mut self.view {
             View::Search(search) => {
-                if let Some(action) = search.dispatch_action(action) {
+                if let Some(action) = search.dispatch_action(action, &keymap) {
                     return self.handle_search_action(action);
                 }
             }
@@ -219,12 +234,14 @@ impl App {
                     return self.handle_new_secret_action(action);
                 }
             }
-            // Envs and RemoteAdd don't yet expose an action dispatcher;
-            // their keymap-driven behaviour stays inside their `on_key`
-            // for now. Falling through is fine — chord completion in
-            // those views just no-ops, since none of their bindings are
-            // multi-step by default.
-            View::Outputs(_) | View::RemoteAdd(_) => {}
+            // These views don't expose an action dispatcher; their
+            // keymap-driven behaviour stays inside their `on_key` for now.
+            // Falling through is fine — chord completion in those views just
+            // no-ops, since none of their bindings are multi-step by default.
+            View::Outputs(_)
+            | View::RemoteAdd(_)
+            | View::RecipientList(_)
+            | View::RecipientAdd(_) => {}
         }
         None
     }
@@ -257,6 +274,12 @@ impl App {
             }
             SearchAction::OpenOutputs => {
                 self.view = View::Outputs(OutputsView::new(&self.ctx));
+            }
+            SearchAction::OpenRecipientList => {
+                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+            }
+            SearchAction::OpenRecipientAdd => {
+                self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
             }
             SearchAction::SwitchStore(path) => {
                 let label = path
@@ -401,6 +424,48 @@ impl App {
         None
     }
 
+    fn handle_recipient_list_action(&mut self, action: RecipientListAction) -> Option<AppIntent> {
+        match action {
+            RecipientListAction::None => {}
+            RecipientListAction::Quit => self.should_quit = true,
+            RecipientListAction::Back => {
+                self.view = View::Search(SearchView::new(&self.ctx));
+            }
+            RecipientListAction::OpenAdd => {
+                self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
+            }
+            RecipientListAction::Removed(name) => {
+                // Stay in the list view (it reloaded itself) and confirm.
+                self.push_toast(format!("removed recipient {name}"), ToastKind::Success);
+            }
+            RecipientListAction::Failed(err) => {
+                self.push_toast(format!("remove recipient failed: {err}"), ToastKind::Error);
+            }
+        }
+        None
+    }
+
+    fn handle_recipient_add_action(&mut self, action: RecipientAddAction) -> Option<AppIntent> {
+        match action {
+            RecipientAddAction::None => {}
+            RecipientAddAction::Quit => self.should_quit = true,
+            RecipientAddAction::Cancel => {
+                // Return to the recipient list so the user stays in context.
+                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.push_toast("add recipient cancelled", ToastKind::Info);
+            }
+            RecipientAddAction::Created(name) => {
+                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.push_toast(format!("added recipient {name}"), ToastKind::Success);
+            }
+            RecipientAddAction::Failed(err) => {
+                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.push_toast(format!("add recipient failed: {err}"), ToastKind::Error);
+            }
+        }
+        None
+    }
+
     fn show_chord_breadcrumb(&mut self) {
         let summary = format_pending(&self.pending_chord);
         // Set the toast directly (don't go through `push_toast`, which
@@ -466,6 +531,8 @@ impl App {
             View::NewSecret(_) => "new_secret",
             View::Outputs(_) => "envs",
             View::RemoteAdd(_) => "remote_add",
+            View::RecipientList(_) => "recipient_list",
+            View::RecipientAdd(_) => "recipient_add",
         }
     }
 
@@ -490,6 +557,8 @@ impl App {
             View::NewSecret(form) => form.draw(frame),
             View::Outputs(envs) => envs.draw(frame),
             View::RemoteAdd(form) => form.draw(frame),
+            View::RecipientList(list) => list.draw(frame),
+            View::RecipientAdd(form) => form.draw(frame),
         }
         // Expire-then-paint the toast. Eviction happens lazily at draw time
         // so we don't need a background tick — any `draw` call (triggered by
@@ -554,6 +623,14 @@ impl App {
             View::RemoteAdd(_) => {
                 HelpView::new(RemoteAddView::help_entries(), RemoteAddView::help_title())
             }
+            View::RecipientList(_) => HelpView::new(
+                RecipientListView::help_entries(),
+                RecipientListView::help_title(),
+            ),
+            View::RecipientAdd(_) => HelpView::new(
+                RecipientAddView::help_entries(),
+                RecipientAddView::help_title(),
+            ),
         }
     }
 }
@@ -575,6 +652,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         store: ctx.store.clone(),
         recipients_path: ctx.recipients_path.clone(),
         key_provider: ctx.key_provider.clone(),
+        project_root: ctx.project_root.clone(),
     }
 }
 

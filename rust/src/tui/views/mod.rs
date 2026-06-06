@@ -14,6 +14,8 @@ pub mod new_secret;
 pub mod outputs;
 pub mod outputs_dsl_editor;
 pub mod outputs_text;
+pub mod recipient_add;
+pub mod recipient_list;
 pub mod remote_add;
 pub mod search;
 pub mod secret_viewer;

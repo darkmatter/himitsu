@@ -295,7 +295,7 @@ Index maintenance:
   file listings from remotes the user has access to but has not cloned locally
   (via GitHub API or git ls-remote). This allows discovering secrets in remotes
   you're a recipient of without needing a full local clone.
-- **No plaintext**: the index stores only metadata (key names, paths, envs,
+- **No plaintext**: the index stores only metadata (key names, paths, tags,
   remotes). Secret values are never indexed.
 
 ## 8) Implementation
@@ -350,7 +350,7 @@ variables into a child process. `<REF>` supports five formats:
 | Format | Example | Behavior |
 |--------|---------|----------|
 | Tag selector | `tag:pci` | Inject all secrets carrying the `pci` tag |
-| Env label | `pci-prod` | Resolve via project `.himitsu.yaml` `envs:` map |
+| Output label | `pci-prod` | Resolve via project config `outputs:` map (local-store secrets only) |
 | Prefix glob | `prod/*` | Inject every secret under the `prod/` prefix |
 | Trailing-slash | `prod/` | Same as `prod/*` — avoids shell glob expansion |
 | Concrete path | `prod/API_KEY` | Inject a single secret |
