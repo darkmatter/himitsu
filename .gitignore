@@ -25,3 +25,5 @@ amp
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
 .omo
+.beads/issues.jsonl
+.beads/interactions.jsonl

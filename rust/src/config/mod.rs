@@ -187,10 +187,11 @@ pub struct ProjectConfig {
 fn reject_envs_field<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<(), D::Error> {
     use serde::de::IgnoredAny;
     IgnoredAny::deserialize(d)?;
-    Err(serde::de::Error::custom(
-        "error: 'envs:' block has been replaced by 'outputs:' \
-         — run 'himitsu migrate envs' to convert",
-    ))
+    eprintln!(
+        "warning: 'envs:' block has been replaced by 'outputs:' \
+         — run 'himitsu migrate envs' to convert"
+    );
+    Ok(())
 }
 
 // ── Env label validation ──────────────────────────────────────────────────
@@ -905,14 +906,14 @@ mod tests {
     }
 
     #[test]
-    fn config_envs_key_rejected_at_parse() {
+    fn config_envs_key_tolerated_at_parse() {
+        // The `envs:` key now deserializes successfully (emitting a stderr
+        // warning) so `himitsu migrate envs` can run on an existing config.
         let yaml = "default_store: org/secrets\nenvs:\n  dev:\n    - dev/API_KEY\n";
-        let err = serde_yaml::from_str::<Config>(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("run 'himitsu migrate envs' to convert"),
-            "msg: {err}"
-        );
+        let cfg = serde_yaml::from_str::<Config>(yaml).expect("envs key must not be fatal");
+        assert_eq!(cfg.default_store.as_deref(), Some("org/secrets"));
+        assert_eq!(cfg._envs_deprecated, ());
+        assert!(cfg.outputs.is_empty());
     }
 
     // ── Env label grammar ──────────────────────────────────────────────
@@ -993,14 +994,13 @@ mod tests {
     }
 
     #[test]
-    fn project_config_envs_key_rejected_at_parse() {
+    fn project_config_envs_key_tolerated_at_parse() {
+        // Same as above for the per-project config: the legacy `envs:` block
+        // is tolerated (with a warning) instead of hard-rejected.
         let yaml = "envs:\n  dev:\n    - dev/API_KEY\n";
-        let err = serde_yaml::from_str::<ProjectConfig>(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("run 'himitsu migrate envs' to convert"),
-            "msg: {err}"
-        );
+        let cfg = serde_yaml::from_str::<ProjectConfig>(yaml).expect("envs key must not be fatal");
+        assert_eq!(cfg._envs_deprecated, ());
+        assert!(cfg.outputs.is_empty());
     }
 
     #[test]

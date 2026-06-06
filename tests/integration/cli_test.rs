@@ -281,6 +281,51 @@ fn migrate_envs_is_idempotent() {
 }
 
 #[test]
+fn migrate_envs_rewrites_project_config() {
+    let (home, store) = setup();
+
+    // Write a project config carrying a legacy `envs:` block. Before the fix,
+    // config deserialization hard-rejected this key, so `migrate envs` could
+    // never run (chicken-and-egg). Now it deserializes with a warning.
+    let config_path = store.path().join(".himitsu.yaml");
+    std::fs::write(
+        &config_path,
+        "envs:\n  dev:\n    - dev/*\n    - DB_PASSWORD\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output blocks rewritten: 1"));
+
+    let migrated = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        !migrated.contains("envs:"),
+        "envs: should be gone: {migrated}"
+    );
+    assert!(
+        migrated.contains("outputs:"),
+        "outputs: missing: {migrated}"
+    );
+    assert!(migrated.contains("dev:"), "dev env missing: {migrated}");
+    assert!(
+        migrated.contains("selectors:"),
+        "selectors missing: {migrated}"
+    );
+    assert!(
+        migrated.contains("dev/*"),
+        "selector dev/* missing: {migrated}"
+    );
+    assert!(
+        migrated.contains("DB_PASSWORD"),
+        "selector DB_PASSWORD missing: {migrated}"
+    );
+}
+
+#[test]
 fn setup_helper_creates_envelope_with_env_field() {
     let (_home, store, path) = setup_with_legacy_env_field("prod", None);
     let envelope_path = store
@@ -3059,16 +3104,18 @@ fn store_flag_still_works_as_compat_escape_hatch() {
 // ============ config envs hard-error + outputs tests ============
 
 #[test]
-fn config_envs_key_hard_errors() {
-    let (home, _store) = setup();
+fn config_envs_key_warns_but_does_not_hard_error() {
+    let (home, store) = setup();
     let cfg_path = home.path().join("config.yaml");
     std::fs::write(&cfg_path, "envs:\n  dev:\n    - dev/API_KEY\n").unwrap();
 
+    // The legacy `envs:` key now deserializes successfully (emitting a stderr
+    // warning) instead of hard-rejecting, so the migrate command can run.
     himitsu()
         .env("HIMITSU_CONFIG", &cfg_path)
-        .args(["get", "some/key"])
+        .args(["--store", &store_flag(&store), "ls"])
         .assert()
-        .failure()
+        .success()
         .stderr(predicate::str::contains(
             "run 'himitsu migrate envs' to convert",
         ));
