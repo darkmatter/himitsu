@@ -20,6 +20,7 @@ pub mod join;
 pub mod keys;
 pub mod ls;
 pub mod migrate;
+pub mod prime;
 pub mod read;
 pub mod recipient;
 pub mod rekey;
