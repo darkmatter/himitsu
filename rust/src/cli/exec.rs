@@ -16,7 +16,6 @@
 //! error: a half-injected env is more confusing than a clear failure.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use clap::Args;
 
