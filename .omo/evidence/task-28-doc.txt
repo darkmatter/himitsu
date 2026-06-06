@@ -1,1 +1,0 @@
-/// use for bare secret paths (`path/KEY`) that don't include an explicit

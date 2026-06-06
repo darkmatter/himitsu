@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
-     Running tests/integration/cli_test.rs (target/debug/deps/cli_test-4d263ab41dc28e59)
-
-running 1 test
-test fold_does_not_mutate_disk ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 116 filtered out; finished in 0.80s
-
