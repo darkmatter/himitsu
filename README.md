@@ -42,8 +42,9 @@ Use himitsu when you want:
   One encrypted file per secret keeps diffs, renames, deletes, and reviews understandable.
 
 - **Git-based collaboration**<br/>
-  A store is just a Git repo. Pull, push, branch, recover, and audit with tools your team already uses.
-- **Path-based recipient control**<br/>
+  A store is just a Git repo, and supports multiple repos at once. Your own secrets stay separate without affecting your workflow.
+  
+- **Tag-based control**<br/>
   Organize recipients and secrets by directory, then rekey only the subtree that changed.
 - **Fast local workflows**<br/>
   Use the TUI for browsing and editing, or the CLI for scripts, CI, and shell automation.
