@@ -4,10 +4,8 @@ use clap::Args;
 
 use super::duration::{self, ExpirySeverity};
 use super::Context;
-use crate::crypto::{age, secret_value};
-use crate::error::{HimitsuError, Result};
-use crate::reference::SecretRef;
-use crate::remote::store;
+use crate::crypto::secret_value;
+use crate::error::Result;
 
 // ANSI color escape sequences used when stderr is a tty.
 const ANSI_RESET: &str = "\x1b[0m";
@@ -39,8 +37,7 @@ pub fn get_plaintext(ctx: &Context, path: &str) -> Result<Vec<u8>> {
 
 /// Decrypt and return the full decoded SecretValue for a secret reference.
 pub(crate) fn get_decoded(ctx: &Context, path: &str) -> Result<secret_value::Decoded> {
-    let identities = ctx.load_identities()?;
-    get_decoded_with_identities(ctx, path, &identities)
+    super::resolver::SecretResolver::resolve(ctx, path)
 }
 
 /// Same as [`get_decoded`] but reuses pre-loaded identities. Use this when
@@ -51,60 +48,11 @@ pub(crate) fn get_decoded_with_identities(
     path: &str,
     identities: &[::age::x25519::Identity],
 ) -> Result<secret_value::Decoded> {
-    let secret_ref = SecretRef::parse(path)?;
-
-    let (effective_store, secret_path) = if secret_ref.is_qualified() {
-        let resolved = secret_ref.resolve_store()?;
-        let path = secret_ref.path.ok_or_else(|| {
-            HimitsuError::InvalidReference(
-                "qualified reference must include a secret path after org/repo".into(),
-            )
-        })?;
-        (resolved, path)
-    } else {
-        let path = secret_ref.path.expect("bare SecretRef always has a path");
-        (ctx.store.clone(), path)
-    };
-
-    let meta = store::read_secret_meta(&effective_store, &secret_path)?;
-    let payload = store::read_secret_payload(&effective_store, &secret_path)?;
-
-    match age::decrypt_with_identities(&payload.ciphertext, identities) {
-        Ok(plaintext) => Ok(secret_value::decode_with_legacy_environment(
-            &plaintext,
-            payload.legacy_environment.as_deref(),
-        )),
-        Err(_) if payload.legacy_proto_envelope => {
-            Ok(secret_value::decode_with_legacy_environment(
-                &payload.ciphertext,
-                payload.legacy_environment.as_deref(),
-            ))
-        }
-        Err(_) => {
-            let named = named_recipients(&effective_store, &meta.recipients);
-            let loaded: Vec<String> = identities
-                .iter()
-                .map(|id| id.to_public().to_string())
-                .collect();
-            let mut msg = String::from("no matching key\n  encrypted for:\n");
-            for n in &named {
-                msg.push_str(&format!("    {n}\n"));
-            }
-            msg.push_str("  loaded identities:\n");
-            if loaded.is_empty() {
-                msg.push_str("    (none)\n");
-            }
-            for id in &loaded {
-                msg.push_str(&format!("    {id}\n"));
-            }
-            msg.push_str("  hint: run 'himitsu rekey' if your current identity should have access");
-            Err(HimitsuError::DecryptionFailed(msg))
-        }
-    }
+    super::resolver::SecretResolver::resolve_with_identities(ctx, path, identities)
 }
 
 /// Map file pubkeys to named recipients using the store's recipients directory.
-fn named_recipients(store: &std::path::Path, file_pubkeys: &[String]) -> Vec<String> {
+pub(crate) fn named_recipients(store: &std::path::Path, file_pubkeys: &[String]) -> Vec<String> {
     use crate::remote::store as rstore;
     let rdir = rstore::recipients_dir(store);
     let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -122,7 +70,7 @@ fn named_recipients(store: &std::path::Path, file_pubkeys: &[String]) -> Vec<Str
         .collect()
 }
 
-fn collect_recipient_map(
+pub(crate) fn collect_recipient_map(
     base: &std::path::Path,
     dir: &std::path::Path,
     map: &mut std::collections::HashMap<String, String>,
@@ -152,7 +100,7 @@ fn collect_recipient_map(
     }
 }
 
-fn short_key(pk: &str) -> String {
+pub(crate) fn short_key(pk: &str) -> String {
     let s = pk.trim();
     if s.len() <= 12 {
         s.to_string()

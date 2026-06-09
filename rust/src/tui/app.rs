@@ -653,6 +653,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         recipients_path: ctx.recipients_path.clone(),
         key_provider: ctx.key_provider.clone(),
         project_root: ctx.project_root.clone(),
+        git: ctx.git.clone(),
     }
 }
 

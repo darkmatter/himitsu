@@ -291,6 +291,7 @@ mod tests {
             recipients_path: None,
             key_provider: KeyProvider::Disk,
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         }
     }
 

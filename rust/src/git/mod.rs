@@ -1,3 +1,11 @@
+pub mod adapter;
+pub mod cli_adapter;
+pub mod in_memory;
+
+pub use adapter::GitAdapter;
+pub use cli_adapter::CliGitAdapter;
+pub use in_memory::InMemoryGitAdapter;
+
 use std::path::Path;
 use std::process::Command;
 

@@ -969,6 +969,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         };
         (dir, ctx, "prod/API_KEY".to_string())
     }

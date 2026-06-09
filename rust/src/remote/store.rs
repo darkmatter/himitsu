@@ -566,6 +566,96 @@ fn civil_date(epoch_secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+// ── SecretStore ────────────────────────────────────────────────────────────
+
+/// A resolved secret store with pre-computed directory paths.
+///
+/// Constructed via [`SecretStore::open`] which resolves the recipients directory
+/// once from the store path and optional override. All methods use the resolved
+/// paths instead of re-computing `recipients_dir_with_override` on every call.
+pub struct SecretStore {
+    /// The store root path (e.g. `/path/to/.himitsu`).
+    root: PathBuf,
+    /// Pre-computed secrets directory.
+    secrets: PathBuf,
+    /// Pre-computed recipients directory (respecting override).
+    recipients: PathBuf,
+}
+
+impl SecretStore {
+    /// Open a secret store, resolving directory paths once.
+    ///
+    /// `recipients_path_override` comes from `Context.recipients_path` (which
+    /// itself was loaded from store config or project config at dispatch time).
+    pub fn open(store: &Path, recipients_path_override: Option<&str>) -> Self {
+        Self {
+            root: store.to_path_buf(),
+            secrets: secrets_dir(store),
+            recipients: recipients_dir_with_override(store, recipients_path_override),
+        }
+    }
+
+    /// The store root path.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Pre-computed secrets directory.
+    pub fn secrets_dir(&self) -> &Path {
+        &self.secrets
+    }
+
+    /// Pre-computed recipients directory (with override applied).
+    pub fn recipients_dir(&self) -> &Path {
+        &self.recipients
+    }
+
+    /// Read a secret's raw ciphertext bytes.
+    pub fn read_secret(&self, secret_path: &str) -> Result<Vec<u8>> {
+        read_secret(&self.root, secret_path)
+    }
+
+    /// Read a secret's parsed payload (envelope + metadata).
+    pub fn read_secret_payload(&self, secret_path: &str) -> Result<SecretPayload> {
+        read_secret_payload(&self.root, secret_path)
+    }
+
+    /// Read a secret's metadata only (no ciphertext).
+    pub fn read_secret_meta(&self, secret_path: &str) -> Result<SecretMeta> {
+        read_secret_meta(&self.root, secret_path)
+    }
+
+    /// Write (encrypt) a secret to the store.
+    pub fn write_secret(&self, secret_path: &str, ciphertext: &[u8]) -> Result<()> {
+        write_secret(&self.root, secret_path, ciphertext)
+    }
+
+    /// Delete a secret from the store.
+    pub fn delete_secret(&self, secret_path: &str) -> Result<()> {
+        delete_secret(&self.root, secret_path)
+    }
+
+    /// Rename a secret within the store.
+    pub fn rename_secret(&self, from: &str, to: &str) -> Result<()> {
+        rename_secret(&self.root, from, to)
+    }
+
+    /// List secret paths under an optional prefix.
+    pub fn list_secrets(&self, prefix: Option<&str>) -> Result<Vec<String>> {
+        list_secrets(&self.root, prefix)
+    }
+
+    /// Load the store's internal config.yaml.
+    pub fn load_config(&self) -> Result<StoreFileConfig> {
+        load_store_config(&self.root)
+    }
+
+    /// Save the store's internal config.yaml.
+    pub fn save_config(&self, cfg: &StoreFileConfig) -> Result<()> {
+        save_store_config(&self.root, cfg)
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

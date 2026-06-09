@@ -25,6 +25,7 @@ pub mod read;
 pub mod recipient;
 pub mod rekey;
 pub mod remote;
+pub mod resolver;
 pub mod schema;
 pub mod search;
 pub mod set;
@@ -35,6 +36,7 @@ pub mod write;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tracing::debug;
@@ -63,6 +65,9 @@ pub struct Context {
     /// `None` for store/remote/global selectors. Lets commands like `migrate`
     /// locate the repo's project config even when run from a different cwd.
     pub project_root: Option<PathBuf>,
+    /// Git operations backend. Production uses `CliGitAdapter` (shells out to
+    /// `git`); tests can substitute `InMemoryGitAdapter`.
+    pub git: Arc<dyn crate::git::GitAdapter>,
 }
 
 impl Context {
@@ -133,11 +138,14 @@ impl Context {
         };
 
         for sm in crate::git::list_submodules(&git_root) {
-            let status = crate::git::run(&["status", "--porcelain"], &sm).unwrap_or_default();
+            let status = self
+                .git
+                .run(&["status", "--porcelain"], &sm)
+                .unwrap_or_default();
             if status.trim().is_empty() {
                 continue;
             }
-            if let Err(e) = crate::git::ensure_on_branch(&sm) {
+            if let Err(e) = self.git.ensure_on_branch(&sm) {
                 eprintln!(
                     "warning: submodule at {} can't commit: {e}\n  \
                      working tree left dirty — resolve manually.",
@@ -145,17 +153,21 @@ impl Context {
                 );
                 continue;
             }
-            let _ = crate::git::run(&["add", "-A"], &sm);
-            if crate::git::run(&["diff", "--cached", "--quiet"], &sm).is_err() {
-                let _ = crate::git::run(&["commit", "-m", message], &sm);
+            let _ = self.git.run(&["add", "-A"], &sm);
+            if self.git.run(&["diff", "--cached", "--quiet"], &sm).is_err() {
+                let _ = self.git.run(&["commit", "-m", message], &sm);
                 debug!("committed in submodule {}: {message}", sm.display());
             }
         }
 
-        let _ = crate::git::run(&["add", ".himitsu"], &git_root);
+        let _ = self.git.run(&["add", ".himitsu"], &git_root);
 
-        if crate::git::run(&["diff", "--cached", "--quiet"], &git_root).is_err() {
-            let _ = crate::git::run(&["commit", "-m", message], &git_root);
+        if self
+            .git
+            .run(&["diff", "--cached", "--quiet"], &git_root)
+            .is_err()
+        {
+            let _ = self.git.run(&["commit", "-m", message], &git_root);
             debug!("committed: {message}");
             true
         } else {
@@ -174,10 +186,13 @@ impl Context {
         let Some(git_root) = self.git_root() else {
             return;
         };
-        if !crate::git::has_any_remote(&git_root) {
+        if !self.git.has_any_remote(&git_root) {
             return;
         }
-        if let Err(e) = crate::git::run(&["fetch", "--recurse-submodules", "origin"], &git_root) {
+        if let Err(e) = self
+            .git
+            .run(&["fetch", "--recurse-submodules", "origin"], &git_root)
+        {
             eprintln!("warning: auto-pull fetch failed: {e}");
             return;
         }
@@ -186,7 +201,10 @@ impl Context {
         // history out-of-band. Surface that loudly instead of silently
         // creating a merge commit. --recurse-submodules updates submodule
         // working trees to match the fetched pointers.
-        if let Err(e) = crate::git::run(&["pull", "--ff-only", "--recurse-submodules"], &git_root) {
+        if let Err(e) = self
+            .git
+            .run(&["pull", "--ff-only", "--recurse-submodules"], &git_root)
+        {
             eprintln!("warning: auto-pull skipped (not fast-forward or no upstream): {e}");
         }
     }
@@ -209,7 +227,7 @@ impl Context {
         // with a dangling ref. Next invocation will retry.
         let mut submodule_push_failed = false;
         for sm in crate::git::list_submodules(&git_root) {
-            if !crate::git::has_any_remote(&sm) {
+            if !self.git.has_any_remote(&sm) {
                 eprintln!(
                     "warning: submodule at {} has no git remote — commit landed locally only.",
                     sm.display()
@@ -217,10 +235,10 @@ impl Context {
                 submodule_push_failed = true;
                 continue;
             }
-            if !crate::git::has_unpushed_commits(&sm) {
+            if !self.git.has_unpushed_commits(&sm) {
                 continue;
             }
-            match crate::git::push(&sm) {
+            match self.git.push(&sm) {
                 Ok(_) => debug!("pushed submodule {}", sm.display()),
                 Err(e) => {
                     eprintln!(
@@ -236,7 +254,7 @@ impl Context {
             return;
         }
 
-        if !crate::git::has_any_remote(&git_root) {
+        if !self.git.has_any_remote(&git_root) {
             eprintln!(
                 "warning: store at {} has no git remote — commit landed locally only.\n  \
                  Add one with: himitsu git remote add origin <url>",
@@ -244,7 +262,7 @@ impl Context {
             );
             return;
         }
-        match crate::git::push(&git_root) {
+        match self.git.push(&git_root) {
             Ok(_) => debug!("pushed to remote"),
             Err(e) => debug!("push skipped: {e}"),
         }
@@ -525,6 +543,7 @@ impl Cli {
                 recipients_path: None,
                 key_provider: crate::config::KeyProvider::default(),
                 project_root: None,
+                git: Arc::new(crate::git::CliGitAdapter),
             };
             init::run(
                 init::InitArgs {
@@ -603,6 +622,7 @@ impl Cli {
             recipients_path,
             key_provider,
             project_root,
+            git: Arc::new(crate::git::CliGitAdapter),
         };
 
         // Pre-dispatch: when `auto_pull` is on, fetch + fast-forward the
@@ -725,6 +745,7 @@ impl Cli {
             recipients_path,
             key_provider,
             project_root: None,
+            git: Arc::new(crate::git::CliGitAdapter),
         };
         crate::tui::run(&ctx)
     }
@@ -879,19 +900,7 @@ fn load_recipients_path_override(
 pub(crate) fn resolver_candidates_with_tags(
     ctx: &Context,
 ) -> Vec<crate::config::outputs::resolver::SecretCandidate> {
-    use crate::config::outputs::resolver::SecretCandidate;
-
-    let identities = ctx.load_identities().unwrap_or_default();
-    crate::remote::store::list_secrets(&ctx.store, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| {
-            let tags = get::get_decoded_with_identities(ctx, &path, &identities)
-                .map(|decoded| decoded.tags)
-                .unwrap_or_default();
-            SecretCandidate { path, tags }
-        })
-        .collect()
+    resolver::SecretResolver::resolve_candidates(ctx)
 }
 
 #[cfg(test)]
@@ -1042,6 +1051,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: Arc::new(crate::git::CliGitAdapter),
         }
     }
 

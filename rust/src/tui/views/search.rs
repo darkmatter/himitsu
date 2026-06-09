@@ -268,6 +268,7 @@ impl SearchView {
             recipients_path: ctx.recipients_path.clone(),
             key_provider: ctx.key_provider.clone(),
             project_root: ctx.project_root.clone(),
+            git: ctx.git.clone(),
         };
         let (global_health, project_health) = check_store_health_pair(&ctx_owned);
         let mut view = Self {
@@ -1901,6 +1902,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         }
     }
 
@@ -2480,6 +2482,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         }
     }
 
@@ -2584,6 +2587,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         };
         (dir, ctx)
     }

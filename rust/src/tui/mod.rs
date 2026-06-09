@@ -96,6 +96,7 @@ pub fn run_init_flow() -> Result<()> {
                 recipients_path: None,
                 key_provider: crate::config::KeyProvider::default(),
                 project_root: None,
+                git: std::sync::Arc::new(crate::git::CliGitAdapter),
             };
             let result = init::run(args, &ctx);
 
@@ -132,6 +133,7 @@ pub fn run_init_flow() -> Result<()> {
         recipients_path: None,
         key_provider: cfg.key_provider,
         project_root: None,
+        git: std::sync::Arc::new(crate::git::CliGitAdapter),
     };
     if !should_continue_to_dashboard_after_init(&ctx.store) {
         return Ok(());
@@ -187,6 +189,7 @@ mod tests {
             recipients_path: None,
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
+            git: std::sync::Arc::new(crate::git::CliGitAdapter),
         }
     }
 
