@@ -70,6 +70,7 @@ pub struct Context {
     pub git: Arc<dyn crate::git::GitAdapter>,
 }
 
+// ── Path resolution ──────────────────────────────────────────────
 impl Context {
     /// Path to the age private key file. Only valid for the
     /// [`Disk`](crate::config::KeyProvider::Disk) provider — with the
@@ -86,32 +87,40 @@ impl Context {
         crate::crypto::keystore::pubkey_path(&self.data_dir)
     }
 
+    /// Directory containing managed store checkouts.
+    pub fn stores_dir(&self) -> PathBuf {
+        self.state_dir.join("stores")
+    }
+}
+
+// ── Identity loading ─────────────────────────────────────────────
+impl Context {
     /// Load the user's primary age identity through the active provider.
     pub fn load_identity(&self) -> Result<::age::x25519::Identity> {
-        crate::crypto::keystore::load_identity(&self.key_provider, &self.data_dir)
+        self.identity_resolver().load_primary()
     }
 
     /// Load every available age identity through the active provider.
     /// Decryption paths should use this so himitsu and SOPS age key files are
     /// all tried before reporting a decrypt failure.
     pub fn load_identities(&self) -> Result<Vec<::age::x25519::Identity>> {
-        let rdir = crate::remote::store::recipients_dir_with_override(
+        self.identity_resolver().load_all()
+    }
+
+    /// Build an [`IdentityResolver`](crate::crypto::identity::IdentityResolver)
+    /// bound to this context's key + store sources.
+    fn identity_resolver(&self) -> crate::crypto::identity::IdentityResolver<'_> {
+        crate::crypto::identity::IdentityResolver::new(
+            &self.data_dir,
+            &self.key_provider,
             &self.store,
             self.recipients_path.as_deref(),
-        );
-        let recipients_dir = if rdir.exists() { Some(rdir) } else { None };
-        crate::crypto::keystore::load_identities(
-            &self.key_provider,
-            &self.data_dir,
-            recipients_dir.as_deref(),
         )
     }
+}
 
-    /// Directory containing managed store checkouts.
-    pub fn stores_dir(&self) -> PathBuf {
-        self.state_dir.join("stores")
-    }
-
+// ── Git / store mutation ─────────────────────────────────────────
+impl Context {
     /// Find the git root: in the new model the store itself is the git root.
     pub fn git_root(&self) -> Option<PathBuf> {
         if self.store.as_os_str().is_empty() {
