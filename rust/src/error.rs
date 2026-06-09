@@ -3,25 +3,45 @@ use std::path::PathBuf;
 /// Top-level error type for himitsu.
 #[derive(Debug, thiserror::Error)]
 pub enum HimitsuError {
+    // ── Config & project ───────────────────────────────────────────────
     #[error("config file not found: {0}")]
     ConfigNotFound(PathBuf),
 
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
+    #[error("project config required: {0}")]
+    ProjectConfigRequired(String),
+
+    // ── Crypto ──────────────────────────────────────────────────────────
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
 
     #[error("decryption failed: {0}")]
     DecryptionFailed(String),
 
+    #[error("keychain error: {0}")]
+    Keychain(String),
+
+    // ── Secrets & references ────────────────────────────────────────────
     #[error("secret not found: {0}")]
     SecretNotFound(String),
+
+    #[error("invalid reference: {0}")]
+    InvalidReference(String),
+
+    /// A tag-selector string failed to parse.
+    #[error("invalid selector: {0}")]
+    InvalidSelector(String),
 
     /// Selector matched no secrets — subprocess not launched.
     #[error("selector '{0}' matched no secrets")]
     ExecEmptyMatch(String),
 
+    #[error("recipient error: {0}")]
+    Recipient(String),
+
+    // ── Stores & remotes ────────────────────────────────────────────────
     #[error("remote not found: {0}")]
     RemoteNotFound(String),
 
@@ -40,37 +60,17 @@ pub enum HimitsuError {
     #[error("git error: {0}")]
     Git(String),
 
-    #[error("recipient error: {0}")]
-    Recipient(String),
-
-    #[error("not initialized: run `himitsu init` first")]
-    NotInitialized,
-
-    #[error("not supported: {0}")]
-    NotSupported(String),
+    // ── Output generation & external tooling ────────────────────────────
+    #[error("generate error: {0}")]
+    GenerateError(String),
 
     #[error("external tool error: {0}")]
     External(String),
 
-    #[error("project config required: {0}")]
-    ProjectConfigRequired(String),
+    #[error("not supported: {0}")]
+    NotSupported(String),
 
-    #[error("generate error: {0}")]
-    GenerateError(String),
-
-    #[error("invalid reference: {0}")]
-    InvalidReference(String),
-
-    /// A tag-selector string failed to parse.
-    #[error("invalid selector: {0}")]
-    InvalidSelector(String),
-
-    #[error("keychain error: {0}")]
-    Keychain(String),
-
-    #[error("index error: {0}")]
-    Index(String),
-
+    // ── Serialization & I/O (auto-converted via `?`) ────────────────────
     #[error("YAML parse error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 
