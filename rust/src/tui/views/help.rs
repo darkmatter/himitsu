@@ -28,15 +28,32 @@ pub enum HelpAction {
     Close,
 }
 
-/// Modal help popup bound to a static set of `(key, description)` rows.
+/// Modal help popup bound to a set of `(key, description)` rows. Views with
+/// rebindable actions build their rows from the live keymap (via
+/// [`crate::tui::keymap::help_rows`]) so user rebinds show up here; views
+/// whose keys are fixed use [`HelpView::from_static`].
 pub struct HelpView {
-    entries: &'static [(&'static str, &'static str)],
+    entries: Vec<(String, String)>,
     title: &'static str,
 }
 
 impl HelpView {
-    pub fn new(entries: &'static [(&'static str, &'static str)], title: &'static str) -> Self {
+    pub fn new(entries: Vec<(String, String)>, title: &'static str) -> Self {
         Self { entries, title }
+    }
+
+    /// Convenience for views whose help rows carry no rebindable chords.
+    pub fn from_static(
+        entries: &'static [(&'static str, &'static str)],
+        title: &'static str,
+    ) -> Self {
+        Self::new(
+            entries
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            title,
+        )
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> HelpAction {
@@ -84,7 +101,7 @@ impl HelpView {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw("  "),
-                    Span::raw(*desc),
+                    Span::raw(desc.clone()),
                 ]);
                 ListItem::new(line)
             })
@@ -119,19 +136,19 @@ mod tests {
 
     #[test]
     fn esc_closes_overlay() {
-        let mut view = HelpView::new(SAMPLE, "help");
+        let mut view = HelpView::from_static(SAMPLE, "help");
         assert_eq!(view.on_key(press(KeyCode::Esc)), HelpAction::Close);
     }
 
     #[test]
     fn question_mark_closes_overlay() {
-        let mut view = HelpView::new(SAMPLE, "help");
+        let mut view = HelpView::from_static(SAMPLE, "help");
         assert_eq!(view.on_key(press(KeyCode::Char('?'))), HelpAction::Close);
     }
 
     #[test]
     fn other_keys_keep_overlay_open() {
-        let mut view = HelpView::new(SAMPLE, "help");
+        let mut view = HelpView::from_static(SAMPLE, "help");
         assert_eq!(view.on_key(press(KeyCode::Char('q'))), HelpAction::None);
         assert_eq!(view.on_key(press(KeyCode::Down)), HelpAction::None);
         assert_eq!(view.on_key(press(KeyCode::Enter)), HelpAction::None);

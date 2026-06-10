@@ -886,6 +886,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -915,6 +916,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(
@@ -945,6 +947,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         let err = run(args, &ctx).unwrap_err();
         assert!(

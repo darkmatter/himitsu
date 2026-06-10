@@ -104,35 +104,6 @@ pub struct RecipientEntry {
     pub short_key: String,
 }
 
-/// Add a recipient by explicit age public key (the `--age-key` path). Mirrors
-/// `himitsu recipient add <name> --age-key <key>`, but never prompts and never
-/// prints — safe to call from the TUI where stdin/stdout drive ratatui.
-pub fn add_recipient(
-    ctx: &Context,
-    name: &str,
-    age_key: &str,
-    description: Option<String>,
-) -> Result<()> {
-    // Normalise an empty description to `None` so the silent core never
-    // writes an empty sidecar. The TUI must NOT reach the interactive prompt
-    // path in `add`, so we call the core directly.
-    let description = description.and_then(|d| {
-        let t = d.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
-    });
-    add_core(ctx, name, Some(age_key), description).map(|_missing| ())
-}
-
-/// Remove a recipient by name. Mirrors `himitsu recipient rm <name>`, but
-/// never prints — safe to call from the TUI.
-pub fn remove_recipient(ctx: &Context, name: &str) -> Result<()> {
-    rm_core(ctx, name)
-}
-
 /// List recipients in the current store, sorted by name. Live read — no
 /// caching — so the TUI always reflects the on-disk state.
 pub fn list_recipients(ctx: &Context) -> Result<Vec<RecipientEntry>> {
@@ -233,7 +204,7 @@ fn add(
 ///
 /// Does NOT prompt and does NOT print — callers own presentation. The CLI's
 /// `add` adds prompting + stdout messages; the TUI calls this directly.
-fn add_core(
+pub(super) fn add_core(
     ctx: &Context,
     name: &str,
     age_key: Option<&str>,
@@ -317,7 +288,7 @@ fn rm(ctx: &Context, name: &str) -> Result<()> {
 
 /// Silent mutation core for removing a recipient. Deletes the `.pub` and any
 /// sidecar. Does NOT print — callers own presentation.
-fn rm_core(ctx: &Context, name: &str) -> Result<()> {
+pub(super) fn rm_core(ctx: &Context, name: &str) -> Result<()> {
     let recipients_dir = flat_recipients_dir(ctx);
 
     let pub_file = recipients_dir.join(format!("{name}.pub"));
@@ -618,6 +589,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         (tmp, ctx)
     }
@@ -768,11 +740,11 @@ mod tests {
 
     #[test]
     fn add_recipient_wrapper_with_empty_description_writes_no_sidecar() {
-        // Regression for the TUI hang: add_recipient (the TUI-facing wrapper)
+        // Regression for the TUI hang: store_ops::recipient_add (the TUI-facing core)
         // must NOT reach the interactive prompt path in `add`. An empty/None
         // description must be normalised to no sidecar via the silent core.
         let (_tmp, ctx) = mk_ctx();
-        add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, None).unwrap();
         let rdir = rstore::recipients_dir(&ctx.store);
         assert!(rdir.join("alice.pub").exists());
         assert!(
@@ -781,7 +753,7 @@ mod tests {
         );
 
         // A whitespace-only description is also treated as empty.
-        add_recipient(&ctx, "bob", AGE_KEY_2, Some("   ".into())).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "bob", AGE_KEY_2, Some("   ".into())).unwrap();
         assert!(rdir.join("bob.pub").exists());
         assert!(!rdir.join("bob.yaml").exists());
     }
@@ -789,7 +761,7 @@ mod tests {
     #[test]
     fn add_recipient_wrapper_with_description_writes_sidecar() {
         let (_tmp, ctx) = mk_ctx();
-        add_recipient(&ctx, "alice", AGE_KEY_1, Some("Platform lead".into())).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("Platform lead".into())).unwrap();
         let sidecar = rstore::recipients_dir(&ctx.store).join("alice.yaml");
         assert!(sidecar.exists());
         let meta: RecipientMeta =
@@ -800,8 +772,8 @@ mod tests {
     #[test]
     fn list_recipients_wrapper_returns_sorted_entries() {
         let (_tmp, ctx) = mk_ctx();
-        add_recipient(&ctx, "bob", AGE_KEY_2, None).unwrap();
-        add_recipient(&ctx, "alice", AGE_KEY_1, Some("A".into())).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "bob", AGE_KEY_2, None).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("A".into())).unwrap();
         let entries = list_recipients(&ctx).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "alice");
@@ -812,8 +784,8 @@ mod tests {
     #[test]
     fn remove_recipient_wrapper_deletes_entry() {
         let (_tmp, ctx) = mk_ctx();
-        add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
-        remove_recipient(&ctx, "alice").unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        crate::cli::store_ops::recipient_rm(&ctx, "alice").unwrap();
         assert!(!rstore::recipients_dir(&ctx.store)
             .join("alice.pub")
             .exists());

@@ -6,10 +6,8 @@ use clap::Args;
 use tracing::{debug, info};
 
 use super::Context;
-use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, ResolvedOutput,
-};
-use crate::config::{self, load_project_config, validate_env_label};
+use crate::config::outputs::resolver::ResolvedOutput;
+use crate::config::validate_env_label;
 use crate::error::{HimitsuError, Result};
 use crate::proto::{self, CodegenLang};
 
@@ -89,12 +87,11 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
         args.env,
     );
 
-    // 2. Load project outputs config and resolve.
-    let outputs_map = load_project_config()?
-        .map(|(cfg, _)| cfg.outputs)
-        .unwrap_or_default();
+    // 2. Resolve the project's outputs (candidates carry real decrypted tags
+    //    so `tag:` selectors and selector-valued aliases match).
+    let outputs = super::output_resolver::OutputResolver::open(ctx)?;
 
-    if outputs_map.is_empty() {
+    if outputs.all().is_empty() {
         return Err(HimitsuError::InvalidConfig(
             "no `outputs` defined in project config — \
              define outputs: blocks in himitsu.yaml"
@@ -102,12 +99,8 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let available_secrets = super::resolver_candidates_with_tags(ctx);
-    let resolver_ctx = ResolverContext { available_secrets };
-    let resolved_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
-
     // 3. Build inventory from resolved outputs.
-    let inventory = build_inventory_from_outputs(&resolved_outputs);
+    let inventory = build_inventory_from_outputs(outputs.all());
 
     if inventory.all_keys.is_empty() {
         return Err(HimitsuError::InvalidConfig(
@@ -150,11 +143,9 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result<()> {
     validate_env_label(label)?;
 
-    let outputs_map = load_project_config()?
-        .map(|(cfg, _)| cfg.outputs)
-        .unwrap_or_default();
+    let outputs = super::output_resolver::OutputResolver::open(ctx)?;
 
-    if outputs_map.is_empty() {
+    if outputs.all().is_empty() {
         return Err(HimitsuError::InvalidConfig(
             "no `outputs` defined in project config — \
              define outputs: blocks in himitsu.yaml"
@@ -162,43 +153,25 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
         ));
     }
 
-    let available_secrets = super::resolver_candidates_with_tags(ctx);
-    let resolver_ctx = ResolverContext { available_secrets };
-    let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
-
-    let resolved = all_outputs
-        .into_iter()
-        .find(|o| o.name == label)
+    let resolved = outputs
+        .get(label)
         .ok_or_else(|| HimitsuError::InvalidConfig(format!("unknown output: {label}")))?;
 
-    let identities = ctx.load_identities()?;
     let mut output: BTreeMap<String, String> = BTreeMap::new();
-    for entry in &resolved.entries {
-        let effective_store = if let Some(ref slug) = entry.store_slug {
-            config::ensure_store(slug)?
-        } else {
-            ctx.store.clone()
-        };
-        let payload =
-            crate::remote::store::read_secret_payload(&effective_store, &entry.secret_path)?;
-        let plaintext =
-            match crate::crypto::age::decrypt_with_identities(&payload.ciphertext, &identities) {
-                Ok(p) => p,
-                Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
-                Err(err) => return Err(err),
-            };
-        let decoded = crate::crypto::secret_value::decode_with_legacy_environment(
-            &plaintext,
-            payload.legacy_environment.as_deref(),
-        );
-        super::get::warn_if_expired(&entry.secret_path, &decoded);
-        let value = String::from_utf8(decoded.data).map_err(|e| {
-            HimitsuError::DecryptionFailed(format!(
-                "non-UTF-8 secret at '{}': {e}",
-                entry.secret_path
-            ))
-        })?;
-        output.insert(entry.env_key.clone(), value);
+    for entry in outputs.decode(resolved)? {
+        if let Some(warning) = entry.expiry_warning() {
+            eprintln!("{warning}");
+        }
+        // Last-wins collapse, warned: aliases resolve after selectors, so a
+        // duplicate key reads as "the alias pins this binding". See
+        // docs/adr/0001-keep-last-wins-collapse-in-file-generators.md.
+        if output.contains_key(&entry.env_key) {
+            eprintln!(
+                "warning: duplicate key '{}' in output '{label}' — using last value",
+                entry.env_key
+            );
+        }
+        output.insert(entry.env_key, entry.value);
     }
 
     let body = serde_yaml::to_string(&output)?;
@@ -1015,6 +988,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
 
         let args = CodegenArgs {
@@ -1044,6 +1018,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         let args = CodegenArgs {
             env_positional: None,
@@ -1073,6 +1048,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
 
         let args = CodegenArgs {
@@ -1106,6 +1082,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
 
         let args = CodegenArgs {
@@ -1173,6 +1150,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         let result = run_sops("ghost", None, &ctx);
 

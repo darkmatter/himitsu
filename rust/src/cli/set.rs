@@ -107,7 +107,7 @@ pub fn set_plaintext(
     encrypt_and_write(ctx, path, &sv)
 }
 
-fn encrypt_and_write(ctx: &Context, path: &str, sv: &SecretValue) -> Result<String> {
+pub(super) fn encrypt_and_write(ctx: &Context, path: &str, sv: &SecretValue) -> Result<String> {
     let secret_ref = SecretRef::parse(path)?;
     let (effective_store, secret_path, recipients_path_override) = if secret_ref.is_qualified() {
         let resolved = secret_ref.resolve_store()?;

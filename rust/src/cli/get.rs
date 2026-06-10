@@ -144,18 +144,25 @@ fn emit_metadata_block(decoded: &secret_value::Decoded) {
 }
 
 pub(crate) fn warn_if_expired(path: &str, decoded: &secret_value::Decoded) {
-    let Some(ts) = decoded.expires_at.as_ref() else {
-        return;
-    };
+    if let Some(msg) = expiry_message(path, decoded.expires_at.as_ref()) {
+        eprintln!("{msg}");
+    }
+}
+
+/// Canonical expired-secret message, or `None` when no expiry is set, the
+/// timestamp is unset, or it hasn't passed yet. Channel-free: callers decide
+/// where it renders (CLI stderr, TUI badge).
+pub(crate) fn expiry_message(
+    path: &str,
+    expires_at: Option<&pbjson_types::Timestamp>,
+) -> Option<String> {
+    let ts = expires_at?;
     if duration::is_unset(ts) {
-        return;
+        return None;
     }
-    let Some(dt) = duration::from_proto_timestamp(ts) else {
-        return;
-    };
-    if dt <= chrono::Utc::now() {
-        eprintln!("warning: secret '{path}' expired at {}", dt.to_rfc3339());
-    }
+    let dt = duration::from_proto_timestamp(ts)?;
+    (dt <= chrono::Utc::now())
+        .then(|| format!("warning: secret '{path}' expired at {}", dt.to_rfc3339()))
 }
 
 fn colorize(s: &str, sev: ExpirySeverity, is_tty: bool) -> String {

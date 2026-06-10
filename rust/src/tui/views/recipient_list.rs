@@ -133,7 +133,8 @@ impl RecipientListView {
     }
 
     fn do_remove(&mut self, name: &str) -> RecipientListAction {
-        match recipient::remove_recipient(&self.ctx, name) {
+        // The mutation core runs the commit/push/completions chain.
+        match crate::cli::store_ops::recipient_rm(&self.ctx, name) {
             Ok(()) => {
                 self.reload();
                 RecipientListAction::Removed(name.to_string())
@@ -297,6 +298,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         (tmp, ctx)
     }
@@ -314,6 +316,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 
@@ -348,8 +351,8 @@ mod tests {
     #[test]
     fn lists_recipients_from_store() {
         let (_tmp, ctx) = mk_ctx();
-        recipient::add_recipient(&ctx, "alice", AGE_KEY_1, Some("Alice".into())).unwrap();
-        recipient::add_recipient(&ctx, "bob", AGE_KEY_2, None).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("Alice".into())).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "bob", AGE_KEY_2, None).unwrap();
 
         let view = RecipientListView::new(&ctx);
         assert_eq!(view.entries.len(), 2);
@@ -362,7 +365,7 @@ mod tests {
     fn delete_requires_confirmation_then_removes() {
         let km = KeyMap::default();
         let (_tmp, ctx) = mk_ctx();
-        recipient::add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, None).unwrap();
 
         let mut view = RecipientListView::new(&ctx);
         assert_eq!(view.entries.len(), 1);
@@ -388,7 +391,7 @@ mod tests {
     fn delete_confirmation_cancels_on_other_key() {
         let km = KeyMap::default();
         let (_tmp, ctx) = mk_ctx();
-        recipient::add_recipient(&ctx, "alice", AGE_KEY_1, None).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, None).unwrap();
 
         let mut view = RecipientListView::new(&ctx);
         view.on_key(press(KeyCode::Char('d')), &km);

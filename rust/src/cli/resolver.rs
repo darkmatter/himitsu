@@ -90,30 +90,4 @@ impl SecretResolver {
         }
     }
 
-    /// Build resolver candidates for the store with real decrypted tags.
-    ///
-    /// Tag selectors and selector-valued aliases inside `outputs:` blocks only
-    /// resolve when candidates carry their tags, so `exec`, `generate`, and
-    /// `codegen` share this builder instead of passing `tags: vec![]` (which
-    /// made every `tag:` selector silently match nothing).
-    ///
-    /// Secrets the current identity cannot decrypt contribute no tags (they
-    /// simply won't match tag selectors), mirroring `ls --tag`.
-    pub fn resolve_candidates(
-        ctx: &Context,
-    ) -> Vec<crate::config::outputs::resolver::SecretCandidate> {
-        use crate::config::outputs::resolver::SecretCandidate;
-
-        let identities = ctx.load_identities().unwrap_or_default();
-        store::list_secrets(&ctx.store, None)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|path| {
-                let tags = Self::resolve_with_identities(ctx, &path, &identities)
-                    .map(|decoded| decoded.tags)
-                    .unwrap_or_default();
-                SecretCandidate { path, tags }
-            })
-            .collect()
-    }
 }

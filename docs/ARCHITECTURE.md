@@ -367,6 +367,11 @@ filesystem paths).
 Conflicts (two secrets resolving to the same env-var name) are a hard
 error: a half-injected environment is more confusing than a clear failure.
 
+Multiple refs may be passed (`himitsu exec tag:pci prod/* -- cmd`); the
+union is injected. Each ref must match at least one secret, and an env var
+resolving to different values via different refs is a hard error (the same
+secret reached by overlapping refs is tolerated).
+
 Tab completion for `exec` uses fuzzy subsequence matching via
 `nucleo_matcher` (`--fuzzy` flag on `__complete-paths`); other subcommands
 retain exact-prefix matching.

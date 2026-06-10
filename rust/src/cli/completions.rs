@@ -286,8 +286,9 @@ fn patch_zsh(script: &str) -> String {
         let is_path_positional = (trimmed.starts_with("':path -- ")
             || trimmed.starts_with("'::path -- "))
             && line.trim_end().ends_with(":_default' \\");
-        let is_ref_positional = (trimmed.starts_with("':ref -- ")
-            || trimmed.starts_with("'::ref -- "))
+        let is_ref_positional = (trimmed.starts_with("':refs -- ")
+            || trimmed.starts_with("'::refs -- ")
+            || trimmed.starts_with("'*::refs -- "))
             && line.trim_end().ends_with(":_default' \\");
         if is_path_positional {
             out.push_str(&line.replace(":_default'", ":_himitsu_secrets'"));
@@ -450,8 +451,8 @@ mod tests {
         );
         let ref_line = text
             .lines()
-            .find(|l| l.trim_start().starts_with("':ref -- "))
-            .expect("exec ref positional present in generated zsh script");
+            .find(|l| l.trim_start().starts_with("'*::refs -- "))
+            .expect("exec refs positional present in generated zsh script");
         assert!(
             ref_line.trim_end().ends_with(":_himitsu_secrets_fuzzy' \\"),
             "expected exec ref positional to use fuzzy helper, got:\n{ref_line}"

@@ -29,8 +29,10 @@ use crate::cli::search::{humanize_age_compact, parse_ts, search_core, SearchResu
 use crate::cli::Context;
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
-use crate::tui::icons;
 use crate::tui::keymap::{KeyAction, KeyMap};
+use crate::tui::model::path_folding::{build_rows, prefix_of, split_shared_prefix, Row};
+use crate::tui::model::result_sort::{SearchColumn, SortDirection, SortState};
+use crate::tui::widgets::store_health::{check_store_health_pair, render_health_pill, StoreHealth};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 use crate::tui::widgets::secret_ref_autocomplete::SecretRefAutocomplete;
@@ -81,125 +83,8 @@ pub enum SearchAction {
     CommandHint(String),
 }
 
-/// A row in the rendered results list. `Store` headers group secrets by
-/// origin (`org/repo` slug or local path) and are never selectable;
-/// navigation steps over them. `FoldedGroup` rows appear only in folded mode,
-/// one per top-level path prefix shared by ≥ 2 secrets — they collapse the
-/// group's leaves into a single selectable row that expands when the user
-/// unfolds.
-#[derive(Debug, Clone)]
-enum Row {
-    Store {
-        name: String,
-        count: usize,
-    },
-    FoldedGroup {
-        /// Top-level path segment shared by the collapsed leaves.
-        prefix: String,
-        /// Number of leaves under this prefix.
-        count: usize,
-        /// Indentation depth (matches what its children would have if
-        /// expanded). 0 in single-store mode, 1 under a `Store` header.
-        indent: usize,
-    },
-    Secret {
-        result: SearchResult,
-        /// Indentation depth in list-item cells (2 spaces per level).
-        /// 0 in single-store mode, 1 under a `Store` header.
-        indent: usize,
-        /// Top-level path segment when this secret shares a prefix with
-        /// ≥ 1 sibling in the same store. The renderer paints this segment
-        /// with a subtle accent so the visual grouping survives without a
-        /// separate header row. `None` for singletons.
-        shared_prefix: Option<String>,
-    },
-}
-
-/// Health status of the active store's git checkout, computed once at view
-/// construction. Displayed as a compact indicator in the header bar.
-#[derive(Debug, Clone)]
-enum StoreHealth {
-    /// Store checkout is up to date with its remote tracking branch.
-    Synced,
-    /// Local checkout is behind its remote by N commit(s).
-    Behind(u32),
-    /// Working tree has uncommitted local changes.
-    Dirty,
-    /// Both behind remote AND has local changes.
-    BehindAndDirty(u32),
-    /// Store directory is not a git repo.
-    NotGit,
-    /// Git repo exists but has no remote configured.
-    NoRemote,
-    /// Git repo has a remote but the tracking branch doesn't exist yet
-    /// (e.g. never pushed).
-    NotPushed,
-    /// User's own age key is not in the store's recipient list.
-    NotRecipient,
-    /// Could not determine status for some other reason.
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchColumn {
-    Path,
-    Updated,
-    Tags,
-    Description,
-    Store,
-}
-
 const SEARCH_COLUMN_MAX_WIDTH: usize = 32;
 const TRUNCATION_MARKER: &str = "..";
-
-impl SearchColumn {
-    fn label(self) -> &'static str {
-        match self {
-            SearchColumn::Path => "PATH",
-            SearchColumn::Updated => "UPDATED",
-            SearchColumn::Tags => "TAGS",
-            SearchColumn::Description => "DESCRIPTION",
-            SearchColumn::Store => "STORE",
-        }
-    }
-
-    fn base_columns() -> &'static [SearchColumn] {
-        &[
-            SearchColumn::Path,
-            SearchColumn::Updated,
-            SearchColumn::Tags,
-            SearchColumn::Description,
-        ]
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SortDirection {
-    Asc,
-    Desc,
-}
-
-impl SortDirection {
-    fn toggled(self) -> Self {
-        match self {
-            SortDirection::Asc => SortDirection::Desc,
-            SortDirection::Desc => SortDirection::Asc,
-        }
-    }
-
-    fn marker(self) -> char {
-        match self {
-            SortDirection::Asc => '^',
-            SortDirection::Desc => 'v',
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SortState {
-    column: SearchColumn,
-    direction: SortDirection,
-}
 
 pub struct SearchView {
     query: String,
@@ -269,6 +154,7 @@ impl SearchView {
             key_provider: ctx.key_provider.clone(),
             project_root: ctx.project_root.clone(),
             git: ctx.git.clone(),
+            project_config_cell: ctx.project_config_cell.clone(),
         };
         let (global_health, project_health) = check_store_health_pair(&ctx_owned);
         let mut view = Self {
@@ -337,24 +223,10 @@ impl SearchView {
             }
         }
 
-        // Ctrl+Space opens the autocomplete popup. We re-toggle it (rather
-        // than only opening) so a user who pulled it up by accident can
-        // dismiss it with the same chord.
-        if matches!(key.code, KeyCode::Char(' ')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-            let want_open = !self.autocomplete.is_open();
-            self.autocomplete.set_open(want_open);
-            return SearchAction::None;
-        }
-        if matches!(key.code, KeyCode::Char('t')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return self.refine_to_selected_tag();
-        }
-        if matches!(key.code, KeyCode::Char('o')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.sort_by_selected_column();
-            return SearchAction::None;
-        }
-        // Ctrl+- / Ctrl++ (collapse/expand paths) are keymap-driven actions
-        // routed through `dispatch_action` above (and reachable via the leader
-        // chord `Ctrl+x -` / `Ctrl+x +`), so no hardcoded handling here.
+        // Autocomplete toggle, tag refine, and column sort are keymap-driven
+        // actions (ToggleAutocomplete / RefineTag / SortColumn) routed
+        // through `dispatch_action` above — rebindable like everything else,
+        // no hardcoded chords here.
         // Esc closes the popup before falling through to the view's own
         // cancel/quit semantics.
         if key.code == KeyCode::Esc && self.autocomplete.is_open() {
@@ -461,6 +333,18 @@ impl SearchView {
             }
             KeyAction::ExpandPaths => {
                 self.set_folded(false);
+                Some(SearchAction::None)
+            }
+            KeyAction::ToggleAutocomplete => {
+                // Re-toggle (rather than only open) so a user who pulled the
+                // popup up by accident can dismiss it with the same chord.
+                let want_open = !self.autocomplete.is_open();
+                self.autocomplete.set_open(want_open);
+                Some(SearchAction::None)
+            }
+            KeyAction::RefineTag => Some(self.refine_to_selected_tag()),
+            KeyAction::SortColumn => {
+                self.sort_by_selected_column();
                 Some(SearchAction::None)
             }
             _ => None,
@@ -817,12 +701,14 @@ impl SearchView {
     }
 
     fn run_sync(&mut self) -> SearchAction {
-        use crate::cli::rekey;
+        use crate::cli::store_ops;
 
         if let Err(e) = crate::git::pull(&self.ctx.store) {
             return SearchAction::CommandFailed(format!("sync pull failed: {e}"));
         }
-        match rekey::rekey_store(&self.ctx, None) {
+        // The mutation core owns the commit/push/completions chain — the
+        // rekeyed store is never left with a dirty tree.
+        match store_ops::rekey(&self.ctx, None) {
             Ok(n) => {
                 self.refresh_results();
                 let (g, p) = check_store_health_pair(&self.ctx);
@@ -835,8 +721,8 @@ impl SearchView {
     }
 
     fn run_rekey(&self) -> SearchAction {
-        use crate::cli::rekey;
-        match rekey::rekey_store(&self.ctx, None) {
+        use crate::cli::store_ops;
+        match store_ops::rekey(&self.ctx, None) {
             Ok(n) => {
                 let recipients = crate::crypto::age::collect_recipients(
                     &self.ctx.store,
@@ -853,21 +739,14 @@ impl SearchView {
     }
 
     fn run_join(&mut self) -> SearchAction {
-        use crate::cli::join::{self, JoinArgs};
+        use crate::cli::join::JoinOutcome;
+        use crate::cli::store_ops;
 
-        if join::is_self_recipient(&self.ctx) {
-            return SearchAction::Joined("already a recipient".into());
-        }
-
-        match join::run(
-            JoinArgs {
-                name: None,
-                no_push: false,
-            },
-            &self.ctx,
-        ) {
-            Ok(()) => {
-                self.ctx.commit_and_push("himitsu: join");
+        // The silent core is idempotent and never prints (printing would
+        // corrupt ratatui); the chain commits and pushes on success.
+        match store_ops::join(&self.ctx) {
+            Ok(JoinOutcome::AlreadyRecipient) => SearchAction::Joined("already a recipient".into()),
+            Ok(JoinOutcome::Joined(_)) => {
                 let (g, p) = check_store_health_pair(&self.ctx);
                 self.global_health = g;
                 self.project_health = p;
@@ -1419,6 +1298,9 @@ const SEARCH_ACTION_PRIORITY: &[KeyAction] = &[
     KeyAction::CopySelected,
     KeyAction::CollapsePaths,
     KeyAction::ExpandPaths,
+    KeyAction::ToggleAutocomplete,
+    KeyAction::RefineTag,
+    KeyAction::SortColumn,
 ];
 
 fn match_keymap_action(keymap: &KeyMap, key: &crossterm::event::KeyEvent) -> Option<KeyAction> {
@@ -1458,170 +1340,8 @@ fn decrypt_value(ctx: &Context, result: &SearchResult) -> crate::error::Result<S
     Ok(String::from_utf8_lossy(&decoded.data).into_owned())
 }
 
-/// Check the git health of a store checkout (offline — no fetch).
-///
-/// Returns a [`StoreHealth`] summarising whether the checkout is behind its
-/// remote tracking branch and/or has uncommitted local changes. Also checks
-/// whether the user's own age key is in the store's recipient list —
-/// [`StoreHealth::NotRecipient`] takes priority over git health because the
-/// store is unusable without it.
-/// Compute health for both the global default store and the active project
-/// store. The project store comes from the current repo's `himitsu.yaml`
-/// `default_store` slug, resolved against the global stores directory.
-/// `None` means "no project store is wired up" (no git repo, no project
-/// config, project's slug not registered) — rendered as a gray indicator.
-fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealth>) {
-    let global_health = check_store_health(ctx);
-
-    let project_health = match resolve_project_store(ctx) {
-        Some(project_store) => {
-            let mut project_ctx = ctx.clone();
-            project_ctx.store = project_store;
-            Some(check_store_health(&project_ctx))
-        }
-        None => None,
-    };
-    (global_health, project_health)
-}
-
-/// Find the project store referenced by the current repo's `himitsu.yaml`,
-/// if any. Returns `None` when there's no project config, no `default_store`
-/// in it, or the slug doesn't resolve to an existing checkout under
-/// `stores_dir`.
-fn resolve_project_store(ctx: &Context) -> Option<std::path::PathBuf> {
-    let (project_cfg, _) = crate::config::load_project_config().ok()??;
-    let slug = project_cfg.default_store?;
-    let (org, repo) = crate::config::validate_remote_slug(&slug).ok()?;
-    let candidate = ctx.stores_dir().join(org).join(repo);
-    candidate.exists().then_some(candidate)
-}
-
-/// Render a labelled health pill: `<icon> <label>: <status>`. A `None`
-/// status renders as a muted gray "n/a" so the user sees an explicit
-/// "not configured" instead of a missing chip.
-fn render_health_pill(label: &str, health: Option<&StoreHealth>) -> Vec<Span<'static>> {
-    let label_owned = label.to_string();
-    let Some(health) = health else {
-        // No project store configured for this repo. Gray, low-contrast.
-        return vec![
-            Span::styled(icons::health(), Style::default().fg(theme::muted())),
-            Span::raw(" "),
-            Span::styled(
-                format!("{label_owned}: n/a"),
-                Style::default().fg(theme::muted()),
-            ),
-        ];
-    };
-    let (status, color) = match health {
-        StoreHealth::Synced => ("synced".to_string(), theme::success()),
-        StoreHealth::Behind(n) => (format!("{n} behind"), theme::warning()),
-        StoreHealth::Dirty => ("dirty".to_string(), theme::danger()),
-        StoreHealth::BehindAndDirty(n) => (format!("{n} behind + dirty"), theme::danger()),
-        StoreHealth::NotGit => ("not a git repo".to_string(), theme::warning()),
-        StoreHealth::NoRemote => ("no remote".to_string(), theme::warning()),
-        StoreHealth::NotPushed => ("not pushed".to_string(), theme::warning()),
-        StoreHealth::NotRecipient => ("not a recipient".to_string(), theme::warning()),
-        StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
-    };
-    let body = format!("{label_owned}: {status}");
-    if matches!(health, StoreHealth::Synced) {
-        // Quiet steady-state: dot + label on the default background. No
-        // bright pill for the happy path.
-        vec![
-            Span::styled(icons::health(), Style::default().fg(color)),
-            Span::raw(" "),
-            Span::styled(body, Style::default().fg(color)),
-        ]
-    } else {
-        theme::pill_with(
-            format!("{} {body}", icons::health()),
-            color,
-            theme::on_accent(),
-        )
-    }
-}
-
 fn span_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
-}
-
-fn check_store_health(ctx: &Context) -> StoreHealth {
-    use crate::git;
-
-    let store_path = &ctx.store;
-
-    if let Some(override_health) = store_health_override() {
-        return override_health;
-    }
-
-    if store_path.as_os_str().is_empty() {
-        return StoreHealth::Unknown;
-    }
-
-    // Recipient membership check — takes priority because the store is
-    // unusable (can't decrypt) if you're not a recipient.
-    if !crate::cli::join::is_self_recipient(ctx) {
-        return StoreHealth::NotRecipient;
-    }
-
-    if !store_path.join(".git").exists() {
-        return StoreHealth::NotGit;
-    }
-
-    // Current branch name
-    let branch = match git::run(&["rev-parse", "--abbrev-ref", "HEAD"], store_path) {
-        Ok(b) => b.trim().to_string(),
-        Err(_) => return StoreHealth::Unknown,
-    };
-
-    // Check if any remote is configured at all
-    let has_remote = git::run(&["remote"], store_path)
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if !has_remote {
-        return StoreHealth::NoRemote;
-    }
-
-    // Check remote tracking branch exists
-    let remote_ref = format!("origin/{branch}");
-    if git::run(&["rev-parse", "--verify", &remote_ref], store_path).is_err() {
-        return StoreHealth::NotPushed;
-    }
-
-    // Behind count
-    let behind: u32 = git::run(
-        &["rev-list", "--count", &format!("HEAD..{remote_ref}")],
-        store_path,
-    )
-    .ok()
-    .and_then(|s| s.trim().parse().ok())
-    .unwrap_or(0);
-
-    // Dirty working tree
-    let dirty = git::run(&["status", "--short"], store_path)
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-
-    match (behind > 0, dirty) {
-        (true, true) => StoreHealth::BehindAndDirty(behind),
-        (true, false) => StoreHealth::Behind(behind),
-        (false, true) => StoreHealth::Dirty,
-        (false, false) => StoreHealth::Synced,
-    }
-}
-
-fn store_health_override() -> Option<StoreHealth> {
-    let raw = std::env::var("HIMITSU_TUI_STORE_HEALTH").ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "synced" => Some(StoreHealth::Synced),
-        "no-remote" | "no_remote" => Some(StoreHealth::NoRemote),
-        "not-pushed" | "not_pushed" => Some(StoreHealth::NotPushed),
-        "not-git" | "not_git" => Some(StoreHealth::NotGit),
-        "not-recipient" | "not_recipient" => Some(StoreHealth::NotRecipient),
-        "dirty" => Some(StoreHealth::Dirty),
-        "unknown" => Some(StoreHealth::Unknown),
-        _ => None,
-    }
 }
 
 /// Tracks which row was selected before a fold/unfold toggle so the cursor
@@ -1636,224 +1356,30 @@ enum SelectionAnchor {
     Store(String),
 }
 
-/// Top-level path segment of a secret's path, used for prefix grouping.
-fn prefix_of(path: &str) -> &str {
-    match path.split_once('/') {
-        Some((head, _)) => head,
-        None => path,
-    }
-}
-
-/// Group a flat list of results into rows.
-///
-/// When results span **multiple stores**, rows are partitioned per-store with
-/// a `Store` header row per bucket; within each bucket we apply path-prefix
-/// grouping. When only one store is present we fall back to the single-store
-/// layout (no store header).
-///
-/// A "group" is any top-level path segment that contains ≥ 2 leaves. In
-/// folded mode each such group collapses to a single `FoldedGroup` row; in
-/// unfolded mode the leaves render inline with their shared prefix tagged so
-/// the renderer can paint it in a subtle accent. Singletons render the same
-/// in both modes. The active sort column controls ordering inside each store;
-/// store headers stay grouped for readability.
-fn build_rows(results: &[SearchResult], folded: bool, sort_state: SortState) -> Vec<Row> {
-    use std::collections::BTreeMap;
-
-    let mut by_store: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
-    for r in results {
-        by_store.entry(r.store.clone()).or_default().push(r.clone());
-    }
-
-    let multi_store = by_store.len() > 1;
-    let mut rows = Vec::new();
-    let mut store_names: Vec<String> = by_store.keys().cloned().collect();
-    if sort_state.column == SearchColumn::Store && sort_state.direction == SortDirection::Desc {
-        store_names.reverse();
-    }
-    for store_name in store_names {
-        let bucket = by_store.remove(&store_name).unwrap_or_default();
-        if multi_store {
-            rows.push(Row::Store {
-                name: store_name.clone(),
-                count: bucket.len(),
-            });
-        }
-        append_prefix_grouped_rows(&mut rows, bucket, multi_store, folded, sort_state);
-    }
-    rows
-}
-
-/// Append `bucket` rows to `rows` applying path-prefix grouping.
-///
-/// `under_store_header` adds one level of indent so each store's children
-/// visually nest. `folded` collapses ≥ 2-leaf groups into `FoldedGroup` rows.
-fn append_prefix_grouped_rows(
-    rows: &mut Vec<Row>,
-    mut bucket: Vec<SearchResult>,
-    under_store_header: bool,
-    folded: bool,
-    sort_state: SortState,
-) {
-    use std::collections::HashMap;
-
-    let store_indent: usize = if under_store_header { 1 } else { 0 };
-    let bucket_sort = if sort_state.column == SearchColumn::Store {
-        SortState {
-            column: SearchColumn::Path,
-            direction: SortDirection::Asc,
-        }
-    } else {
-        sort_state
-    };
-    sort_results(&mut bucket, bucket_sort);
-
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, Vec<SearchResult>> = HashMap::new();
-    for r in bucket {
-        let prefix = prefix_of(&r.path).to_string();
-        if !groups.contains_key(&prefix) {
-            order.push(prefix.clone());
-        }
-        groups.entry(prefix).or_default().push(r);
-    }
-
-    let mut folders: Vec<(String, Vec<SearchResult>)> = Vec::new();
-    let mut singles: Vec<(String, Vec<SearchResult>)> = Vec::new();
-    for name in order {
-        let items = groups.remove(&name).unwrap_or_default();
-        if items.len() >= 2 {
-            folders.push((name, items));
-        } else {
-            singles.push((name, items));
-        }
-    }
-    if bucket_sort.column == SearchColumn::Path {
-        folders.sort_by(|a, b| compare_strings(&a.0, &b.0, bucket_sort.direction));
-        singles.sort_by(|a, b| compare_strings(&a.0, &b.0, bucket_sort.direction));
-    }
-
-    for (prefix, items) in folders {
-        if folded {
-            rows.push(Row::FoldedGroup {
-                prefix,
-                count: items.len(),
-                indent: store_indent,
-            });
-            continue;
-        }
-        let shared = Some(prefix);
-        for result in items {
-            rows.push(Row::Secret {
-                result,
-                indent: store_indent,
-                shared_prefix: shared.clone(),
-            });
-        }
-    }
-    for (_, items) in singles {
-        for result in items {
-            rows.push(Row::Secret {
-                result,
-                indent: store_indent,
-                shared_prefix: None,
-            });
-        }
-    }
-}
-
-fn sort_results(results: &mut [SearchResult], sort_state: SortState) {
-    results.sort_by(|a, b| compare_results(a, b, sort_state));
-}
-
-fn compare_results(
-    a: &SearchResult,
-    b: &SearchResult,
-    sort_state: SortState,
-) -> std::cmp::Ordering {
-    let primary = match sort_state.column {
-        SearchColumn::Path => a.path.cmp(&b.path),
-        SearchColumn::Updated => result_timestamp(a).cmp(result_timestamp(b)),
-        SearchColumn::Tags => result_tags(a).cmp(result_tags(b)),
-        SearchColumn::Description => a
-            .description
-            .as_deref()
-            .unwrap_or("")
-            .cmp(b.description.as_deref().unwrap_or("")),
-        SearchColumn::Store => a.store.cmp(&b.store),
-    };
-    let primary = match sort_state.direction {
-        SortDirection::Asc => primary,
-        SortDirection::Desc => primary.reverse(),
-    };
-    primary
-        .then_with(|| a.store.cmp(&b.store))
-        .then_with(|| a.path.cmp(&b.path))
-}
-
-fn compare_strings(a: &str, b: &str, direction: SortDirection) -> std::cmp::Ordering {
-    match direction {
-        SortDirection::Asc => a.cmp(b),
-        SortDirection::Desc => b.cmp(a),
-    }
-}
-
-fn result_timestamp(result: &SearchResult) -> &str {
-    result
-        .updated_at
-        .as_deref()
-        .or(result.created_at.as_deref())
-        .unwrap_or("")
-}
-
-fn result_tags(result: &SearchResult) -> &str {
-    result
-        .tags
-        .as_deref()
-        .and_then(|tags| tags.first())
-        .map(String::as_str)
-        .unwrap_or("")
-}
-
-/// Split `parent` (the slash-terminated path prefix in front of a secret's
-/// basename) into a leading "shared" segment and the remainder. The shared
-/// segment is `"<prefix>/"` when the leaf is part of a multi-leaf group;
-/// otherwise the entire parent stays in the second slot for the dimmed
-/// renderer to draw as before.
-fn split_shared_prefix<'a>(parent: &'a str, shared: Option<&str>) -> (&'a str, &'a str) {
-    let Some(prefix) = shared else {
-        return ("", parent);
-    };
-    let head = format!("{prefix}/");
-    if parent.starts_with(&head) {
-        parent.split_at(head.len())
-    } else {
-        ("", parent)
-    }
-}
-
 // ── Help overlay integration (US-012) ─────────────────────────────────
 //
 // In its own impl block so parallel branches adding new bindings can extend
 // `help_entries` without colliding with the main impl.
 impl SearchView {
-    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
-        &[
-            ("type", "filter results"),
-            ("↑/↓", "navigate"),
-            ("tab / shift-tab", "select column"),
-            ("ctrl-o", "sort selected column"),
-            ("enter", "open selection"),
-            ("ctrl-- / ctrl-+", "collapse / expand groups"),
-            ("backspace", "delete char"),
-            ("ctrl-p", "open command palette"),
-            ("ctrl-n", "new secret"),
-            ("ctrl-s", "switch store"),
-            ("ctrl-y", "copy selection to clipboard"),
-            ("shift-e", "browse outputs"),
-            ("?", "toggle this help"),
-            ("esc / ctrl-c", "quit"),
-        ]
+    /// Help rows: static navigation keys plus every rebindable action,
+    /// rendered from the LIVE keymap so user rebinds show up here.
+    pub fn help_entries(keymap: &KeyMap) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = vec![
+            ("type".into(), "filter results".into()),
+            ("↑/↓".into(), "navigate".into()),
+            ("tab / shift-tab".into(), "select column".into()),
+            ("enter".into(), "open selection".into()),
+            ("backspace".into(), "delete char".into()),
+        ];
+        rows.extend(crate::tui::keymap::help_rows(
+            keymap,
+            crate::tui::keymap::Scope::Search,
+        ));
+        rows.extend(crate::tui::keymap::help_rows(
+            keymap,
+            crate::tui::keymap::Scope::Global,
+        ));
+        rows
     }
 
     pub fn help_title() -> &'static str {
@@ -1903,6 +1429,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 
@@ -2483,6 +2010,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 
@@ -2588,6 +2116,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         (dir, ctx)
     }

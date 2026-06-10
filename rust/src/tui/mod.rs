@@ -13,6 +13,7 @@ pub mod forms;
 mod harness;
 mod hint;
 mod icons;
+mod model;
 pub mod keymap;
 pub mod layout;
 mod terminal;
@@ -97,6 +98,7 @@ pub fn run_init_flow() -> Result<()> {
                 key_provider: crate::config::KeyProvider::default(),
                 project_root: None,
                 git: std::sync::Arc::new(crate::git::CliGitAdapter),
+                project_config_cell: Default::default(),
             };
             let result = init::run(args, &ctx);
 
@@ -134,6 +136,7 @@ pub fn run_init_flow() -> Result<()> {
         key_provider: cfg.key_provider,
         project_root: None,
         git: std::sync::Arc::new(crate::git::CliGitAdapter),
+        project_config_cell: Default::default(),
     };
     if !should_continue_to_dashboard_after_init(&ctx.store) {
         return Ok(());
@@ -190,6 +193,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 

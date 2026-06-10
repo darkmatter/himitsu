@@ -106,7 +106,7 @@ pub fn run(args: CheckArgs, ctx: &Context) -> Result<()> {
 /// 1. Explicit `args.store` slug.
 /// 2. Slugs referenced in global or project config.
 /// 3. All known stores (`list_remotes()`).
-fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
+fn discover_stores(args: &CheckArgs, ctx: &Context) -> Result<Vec<String>> {
     // 1. Explicit store argument
     if let Some(ref slug) = args.store {
         config::validate_remote_slug(slug)?;
@@ -116,7 +116,7 @@ fn discover_stores(args: &CheckArgs, _ctx: &Context) -> Result<Vec<String>> {
     // 2. Global + project config
     let global = config::Config::load(&config::config_path()).unwrap_or_default();
     let mut slugs = collect_stores_from_global_config(&global);
-    if let Some((cfg, _path)) = config::load_project_config().ok().flatten() {
+    if let Some((cfg, _path)) = ctx.project_config().ok().flatten() {
         slugs.extend(collect_stores_from_project_config(&cfg));
     }
     if !slugs.is_empty() {

@@ -30,14 +30,17 @@ use crate::remote::store;
 /// Run a command with secrets injected as environment variables.
 #[derive(Debug, Args)]
 pub struct ExecArgs {
-    /// Secret reference — selector grammar:
+    /// Secret references — one or more, each using the selector grammar:
     ///   * `tag:NAME` — all secrets tagged NAME
     ///   * `tag:A+tag:B` — AND-combined tags
     ///   * `prod/*` — path glob
     ///   * `prod/*+tag:pci` — glob AND tag
     ///   * `prod/API_KEY` — concrete path
-    #[arg(value_name = "REF")]
-    pub r#ref: String,
+    ///
+    /// The union of all refs is injected. An env-var resolving to different
+    /// values via different refs is a hard error.
+    #[arg(value_name = "REF", required = true, num_args = 1..)]
+    pub refs: Vec<String>,
 
     /// Filter resolved secrets by tag. Repeat for AND-semantics. Secrets
     /// missing any required tag are dropped before injection.
@@ -49,9 +52,9 @@ pub struct ExecArgs {
     #[arg(long, short = 'i')]
     pub clean: bool,
 
-    /// Command and arguments to run. Pass after `--` so `himitsu` does not
-    /// try to interpret the command's own flags.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    /// Command and arguments to run, after `--` (e.g.
+    /// `himitsu exec tag:pci prod/* -- node app.js`).
+    #[arg(last = true, required = true)]
     pub command: Vec<String>,
 }
 
@@ -62,8 +65,21 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         })?;
     }
 
-    if let Some(warning) = warn_if_shell_expanded(&args.r#ref) {
-        eprintln!("{warning}");
+    for ref_str in &args.refs {
+        if let Some(warning) = warn_if_shell_expanded(ref_str) {
+            eprintln!("{warning}");
+        }
+        // Reject documented-but-unsupported cross-store refs up front with a
+        // clear error, rather than silently parsing them as a local path and
+        // reporting "matched no secrets". A provider-qualified ref (e.g.
+        // `github:org/repo/prod/API_KEY`) has a colon-prefixed provider that
+        // is NOT the `tag:` selector prefix.
+        if is_cross_store_ref(ref_str) {
+            return Err(HimitsuError::NotSupported(format!(
+                "cross-store exec ref {ref_str:?} is not supported yet — run from the owning \
+                 store with `-r <org/repo> exec <local-ref>`",
+            )));
+        }
     }
 
     let (cmd, cmd_args) = args
@@ -71,31 +87,58 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         .split_first()
         .expect("clap enforces required = true on `command`");
 
-    // Reject documented-but-unsupported cross-store refs up front with a clear
-    // error, rather than silently parsing them as a local path and reporting
-    // "matched no secrets". A provider-qualified ref (e.g.
-    // `github:org/repo/prod/API_KEY`) has a colon-prefixed provider that is NOT
-    // the `tag:` selector prefix.
-    if is_cross_store_ref(&args.r#ref) {
-        return Err(HimitsuError::NotSupported(format!(
-            "cross-store exec ref {:?} is not supported yet — run from the owning \
-             store with `-r <org/repo> exec <local-ref>`",
-            args.r#ref
-        )));
-    }
+    let outputs = super::output_resolver::OutputResolver::open(ctx)?;
 
-    // 1. Try to resolve the ref as an `outputs:` label from project config
-    //    (e.g. `himitsu exec pci-prod`). Falls through to selector/glob/path
-    //    parsing when the ref is not a defined output name.
-    if let Some(env_map) = try_resolve_output_label(ctx, &args.r#ref, &args.tags)? {
-        if env_map.is_empty() {
-            return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
+    // Union of every ref's resolution. Each ref is tried as an `outputs:`
+    // label first (`env_map` is tri-state: `Ok(None)` means not a defined
+    // output name) and falls through to selector/glob/path parsing. Each ref
+    // must match at least one secret. The same env-var arriving from two refs
+    // with the same value is tolerated (overlapping refs hitting the same
+    // secret); different values are a hard conflict.
+    let mut env_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut first_source: BTreeMap<String, String> = BTreeMap::new();
+    for ref_str in &args.refs {
+        let resolved = match outputs.env_map(ref_str, &args.tags)? {
+            Some(map) => map,
+            None => resolve_selector_env(ctx, ref_str, &args.tags)?,
+        };
+        if resolved.is_empty() {
+            return Err(HimitsuError::ExecEmptyMatch(ref_str.clone()));
         }
-        return spawn_and_wait(cmd, cmd_args, env_map, args.clean);
+        for (key, value) in resolved {
+            match env_map.get(&key) {
+                Some(prev) if *prev != value => {
+                    let prev_ref = first_source
+                        .get(&key)
+                        .map(String::as_str)
+                        .unwrap_or("an earlier ref");
+                    return Err(HimitsuError::InvalidConfig(format!(
+                        "env-var {key:?} resolves to different values via {prev_ref:?} \
+                         and {ref_str:?}; narrow the refs or rename one via `set --env-key`",
+                    )));
+                }
+                _ => {
+                    first_source
+                        .entry(key.clone())
+                        .or_insert_with(|| ref_str.clone());
+                    env_map.insert(key, value);
+                }
+            }
+        }
     }
 
-    // 2. Selector grammar: tag:/glob/concrete-path.
-    let selector = Selector::parse(&args.r#ref)?;
+    spawn_and_wait(cmd, cmd_args, env_map, args.clean)
+}
+
+/// Resolve one selector-grammar ref (`tag:`/glob/concrete path) against the
+/// active store to an env map. Errors with [`HimitsuError::ExecEmptyMatch`]
+/// when nothing matches.
+fn resolve_selector_env(
+    ctx: &Context,
+    ref_str: &str,
+    want_tags: &[String],
+) -> Result<BTreeMap<String, String>> {
+    let selector = Selector::parse(ref_str)?;
 
     let all_paths = store::list_secrets(&ctx.store, None)?;
     let candidates: Vec<String> = all_paths
@@ -104,18 +147,12 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
         .collect();
 
     if candidates.is_empty() {
-        return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
+        return Err(HimitsuError::ExecEmptyMatch(ref_str.to_string()));
     }
 
     let identities = ctx.load_identities()?;
     let decrypted = decrypt_paths(ctx, &identities, candidates)?;
-    let env_map = build_env_map(decrypted, &selector, &args.tags)?;
-
-    if env_map.is_empty() {
-        return Err(HimitsuError::ExecEmptyMatch(args.r#ref.clone()));
-    }
-
-    spawn_and_wait(cmd, cmd_args, env_map, args.clean)
+    build_env_map(decrypted, &selector, want_tags)
 }
 
 /// Returns `true` when `ref_str` is a provider-qualified cross-store ref
@@ -138,122 +175,6 @@ fn is_cross_store_ref(ref_str: &str) -> bool {
     provider
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-/// Attempt to resolve `ref_str` as a named `outputs:` label from the project
-/// config. Returns:
-/// - `Ok(Some(env_map))` when the ref matches a defined output (the map may be
-///   empty if the output's selectors matched no secrets);
-/// - `Ok(None)` when the ref is NOT a defined output name (caller falls back to
-///   selector parsing);
-/// - `Err(..)` on a resolution/decryption failure.
-///
-/// Unlike `codegen`, candidates are built WITH real tags (by decrypting each
-/// secret) so `tag:` selectors inside an output block resolve correctly.
-fn try_resolve_output_label(
-    ctx: &Context,
-    ref_str: &str,
-    want_tags: &[String],
-) -> Result<Option<BTreeMap<String, String>>> {
-    use crate::config::outputs::resolver::{
-        resolve_outputs, Context as ResolverContext, SecretCandidate,
-    };
-
-    // Load the project config from the explicit project root when one was
-    // selected (`--project[=<path>]`), so output labels resolve even when exec
-    // is invoked from a different cwd. Fall back to a cwd walk otherwise.
-    let project_config = match ctx.project_root.as_deref() {
-        Some(root) => config::load_project_config_from(root)?,
-        None => config::load_project_config()?,
-    };
-    let outputs_map = project_config
-        .map(|(cfg, _)| cfg.outputs)
-        .unwrap_or_default();
-    if outputs_map.is_empty() {
-        return Ok(None);
-    }
-
-    // Build candidates with real tags so tag-selectors resolve. We decrypt
-    // every secret once; identities that can't decrypt a secret yield no tags
-    // for it (it simply won't match tag selectors), mirroring `ls --tag`.
-    let identities = ctx.load_identities()?;
-    let all_paths = store::list_secrets(&ctx.store, None)?;
-    let mut decoded_by_path: BTreeMap<String, secret_value::Decoded> = BTreeMap::new();
-    let mut candidates = Vec::with_capacity(all_paths.len());
-    for path in all_paths {
-        let tags = match super::get::get_decoded_with_identities(ctx, &path, &identities) {
-            Ok(decoded) => {
-                let tags = decoded.tags.clone();
-                decoded_by_path.insert(path.clone(), decoded);
-                tags
-            }
-            Err(_) => Vec::new(),
-        };
-        candidates.push(SecretCandidate { path, tags });
-    }
-
-    let resolver_ctx = ResolverContext {
-        available_secrets: candidates,
-    };
-    let resolved = resolve_outputs(&outputs_map, &resolver_ctx)?;
-
-    let Some(output) = resolved.into_iter().find(|o| o.name == ref_str) else {
-        return Ok(None);
-    };
-
-    // Build the env map from resolved entries. Cross-store entries
-    // (`store_slug.is_some()`) are not supported by exec yet — surface a clear
-    // error rather than silently dropping them.
-    let mut env_map: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for entry in output.entries {
-        if entry.store_slug.is_some() {
-            return Err(HimitsuError::NotSupported(format!(
-                "output {ref_str:?} references a cross-store secret ({}); \
-                 cross-store exec is not supported yet",
-                entry.secret_path
-            )));
-        }
-
-        // Decode the secret: reuse the already-decrypted value when available,
-        // otherwise decrypt now (an alias may point at a path not in the tag
-        // scan, though it usually is).
-        let decoded = match decoded_by_path.remove(&entry.secret_path) {
-            Some(d) => d,
-            None => super::get::get_decoded_with_identities(ctx, &entry.secret_path, &identities)?,
-        };
-
-        // Apply the `--tag` AND filter on top of the resolved selection.
-        if !want_tags.is_empty()
-            && !want_tags
-                .iter()
-                .all(|t| decoded.tags.iter().any(|d| d == t))
-        {
-            continue;
-        }
-
-        let key = entry.env_key;
-        super::set::validate_env_key(&key).map_err(|e| {
-            HimitsuError::InvalidReference(format!("{e} (from {:?})", entry.secret_path))
-        })?;
-        if let Some((_, prev_path)) = env_map.get(&key) {
-            return Err(HimitsuError::InvalidConfig(format!(
-                "env-var {key:?} would be set by both {prev_path:?} and {:?}; \
-                 rename one via `set --env-key` or a selector alias",
-                entry.secret_path
-            )));
-        }
-        let value = String::from_utf8(decoded.data).map_err(|e| {
-            HimitsuError::InvalidReference(format!(
-                "secret {:?} contains non-UTF-8 bytes — exec can only inject text values: {e}",
-                entry.secret_path
-            ))
-        })?;
-        env_map.insert(key, (value, entry.secret_path));
-    }
-
-    Ok(Some(
-        env_map.into_iter().map(|(k, (v, _))| (k, v)).collect(),
-    ))
 }
 
 /// Returns true if the path could match any group in the selector based on
@@ -582,7 +503,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["test", "prod/API_KEY", "--", "node", "-e", "console.log(1)"])
                 .unwrap();
-        assert_eq!(cli.args.r#ref, "prod/API_KEY");
+        assert_eq!(cli.args.refs, vec!["prod/API_KEY"]);
         assert_eq!(cli.args.command, vec!["node", "-e", "console.log(1)"]);
         assert!(!cli.args.clean);
         assert!(cli.args.tags.is_empty());
@@ -591,16 +512,37 @@ mod tests {
             "test", "prod/*", "--tag", "pci", "--tag", "rotate", "-i", "--", "env",
         ])
         .unwrap();
-        assert_eq!(cli.args.r#ref, "prod/*");
+        assert_eq!(cli.args.refs, vec!["prod/*"]);
         assert_eq!(cli.args.tags, vec!["pci", "rotate"]);
         assert!(cli.args.clean);
         assert_eq!(cli.args.command, vec!["env"]);
 
         let cli = Cli::try_parse_from(["test", "tag:pci", "--", "env"]).unwrap();
-        assert_eq!(cli.args.r#ref, "tag:pci");
+        assert_eq!(cli.args.refs, vec!["tag:pci"]);
 
         let cli = Cli::try_parse_from(["test", "tag:pci+tag:prod", "--", "env"]).unwrap();
-        assert_eq!(cli.args.r#ref, "tag:pci+tag:prod");
+        assert_eq!(cli.args.refs, vec!["tag:pci+tag:prod"]);
+    }
+
+    #[test]
+    fn parses_multiple_refs_before_double_dash() {
+        use clap::Parser;
+
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(flatten)]
+            args: ExecArgs,
+        }
+
+        let cli = Cli::try_parse_from(["test", "tag:pci", "prod/*", "app", "--", "env"]).unwrap();
+        assert_eq!(cli.args.refs, vec!["tag:pci", "prod/*", "app"]);
+        assert_eq!(cli.args.command, vec!["env"]);
+
+        // Without `--`, everything is a ref and the required command is
+        // missing — a clear parse error instead of silently treating the
+        // second token as the command.
+        let res = Cli::try_parse_from(["test", "foo", "bar"]);
+        assert!(res.is_err());
     }
 
     #[test]

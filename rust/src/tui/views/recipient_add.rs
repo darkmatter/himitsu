@@ -75,7 +75,9 @@ impl RecipientAddView {
             Some(description)
         };
 
-        match crate::cli::recipient::add_recipient(&self.ctx, &name, &age_key, description) {
+        // The mutation core runs the commit/push/completions chain — the
+        // recipient add is committed like its CLI equivalent.
+        match crate::cli::store_ops::recipient_add(&self.ctx, &name, &age_key, description) {
             Ok(()) => RecipientAddAction::Created(name),
             Err(e) => RecipientAddAction::Failed(format!("{e}")),
         }
@@ -168,6 +170,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 
