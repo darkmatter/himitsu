@@ -61,8 +61,23 @@ pub fn run_mutation<T>(
 /// Create or overwrite a Secret: validate env-key metadata, encrypt to the
 /// effective store's recipients, write, then run the chain. Returns the
 /// normalized secret path.
+///
+/// A qualified ref (`github:org/repo/...`) writes to that store, not the
+/// ambient one — the chain (commit, push, completions refresh) is scoped
+/// to the same effective store so the write is never stranded dirty.
 pub fn set_secret(ctx: &Context, path: &str, sv: &SecretValue) -> Result<String> {
-    run_mutation(ctx, &format!("set {path}"), false, || {
+    let mut chain_ctx = ctx.clone();
+    if let Ok(secret_ref) = crate::reference::SecretRef::parse(path) {
+        if secret_ref.is_qualified() {
+            if let Ok(store) = secret_ref.resolve_store() {
+                chain_ctx.store = store;
+            }
+            // Resolution errors fall through with the ambient store: the
+            // mutation body re-parses and surfaces the real error before
+            // anything is written.
+        }
+    }
+    run_mutation(&chain_ctx, &format!("set {path}"), false, || {
         if !sv.env_key.is_empty() {
             super::set::validate_env_key(&sv.env_key)?;
         }
