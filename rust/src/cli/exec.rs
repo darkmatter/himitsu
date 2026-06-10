@@ -132,7 +132,10 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
 
 /// Resolve one selector-grammar ref (`tag:`/glob/concrete path) against the
 /// active store to an env map. Errors with [`HimitsuError::ExecEmptyMatch`]
-/// when nothing matches.
+/// only when no path even *candidates* for the selector; the map may still
+/// come back empty after tag-token / `--tag` filtering of the decrypted
+/// candidates — the caller owns that emptiness policy (`run` maps it to
+/// `ExecEmptyMatch` per ref).
 fn resolve_selector_env(
     ctx: &Context,
     ref_str: &str,
