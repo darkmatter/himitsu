@@ -954,10 +954,8 @@ impl NewSecretView {
     /// Help rows: rebindable form actions rendered from the LIVE keymap,
     /// plus the form's fixed enter semantics and the hardwired Ctrl-C quit.
     pub fn help_entries(keymap: &KeyMap) -> Vec<(String, String)> {
-        let mut rows = crate::tui::keymap::help_rows(
-            keymap,
-            crate::tui::keymap::Scope::NewSecretForm,
-        );
+        let mut rows =
+            crate::tui::keymap::help_rows(keymap, crate::tui::keymap::Scope::NewSecretForm);
         rows.extend([
             ("enter (value)".to_string(), "insert newline".to_string()),
             (

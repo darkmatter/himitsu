@@ -32,10 +32,10 @@ use crate::remote::store;
 use crate::tui::keymap::{KeyAction, KeyMap};
 use crate::tui::model::path_folding::{build_rows, prefix_of, split_shared_prefix, Row};
 use crate::tui::model::result_sort::{SearchColumn, SortDirection, SortState};
-use crate::tui::widgets::store_health::{check_store_health_pair, render_health_pill, StoreHealth};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 use crate::tui::widgets::secret_ref_autocomplete::SecretRefAutocomplete;
+use crate::tui::widgets::store_health::{check_store_health_pair, render_health_pill, StoreHealth};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
 #[derive(Debug, Clone)]

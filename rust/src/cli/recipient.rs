@@ -761,7 +761,13 @@ mod tests {
     #[test]
     fn add_recipient_wrapper_with_description_writes_sidecar() {
         let (_tmp, ctx) = mk_ctx();
-        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("Platform lead".into())).unwrap();
+        crate::cli::store_ops::recipient_add(
+            &ctx,
+            "alice",
+            AGE_KEY_1,
+            Some("Platform lead".into()),
+        )
+        .unwrap();
         let sidecar = rstore::recipients_dir(&ctx.store).join("alice.yaml");
         assert!(sidecar.exists());
         let meta: RecipientMeta =

@@ -351,7 +351,8 @@ mod tests {
     #[test]
     fn lists_recipients_from_store() {
         let (_tmp, ctx) = mk_ctx();
-        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("Alice".into())).unwrap();
+        crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, Some("Alice".into()))
+            .unwrap();
         crate::cli::store_ops::recipient_add(&ctx, "bob", AGE_KEY_2, None).unwrap();
 
         let view = RecipientListView::new(&ctx);

@@ -3713,7 +3713,13 @@ fn codegen_sops_warns_on_duplicate_keys() {
         .success();
     himitsu()
         .env("HIMITSU_CONFIG", &cfg)
-        .args(["--store", &store_flag(&store), "set", "staging/api-key", "b"])
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "staging/api-key",
+            "b",
+        ])
         .assert()
         .success();
 

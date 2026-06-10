@@ -108,7 +108,9 @@ impl<'ctx> OutputResolver<'ctx> {
         let mut candidates = Vec::with_capacity(all_paths.len());
         for path in all_paths {
             let tags = match super::resolver::SecretResolver::resolve_with_identities(
-                ctx, &path, &identities,
+                ctx,
+                &path,
+                &identities,
             ) {
                 Ok(d) => {
                     let tags = d.tags.clone();
@@ -221,8 +223,7 @@ impl<'ctx> OutputResolver<'ctx> {
         for entry in &output.entries {
             let decoded = if let Some(ref slug) = entry.store_slug {
                 let effective_store = crate::config::ensure_store(slug)?;
-                let payload =
-                    store::read_secret_payload(&effective_store, &entry.secret_path)?;
+                let payload = store::read_secret_payload(&effective_store, &entry.secret_path)?;
                 match crate::crypto::age::decrypt_with_identities(
                     &payload.ciphertext,
                     &self.identities,
@@ -384,10 +385,7 @@ mod tests {
         let (_tmp, ctx) = test_ctx();
         let recipients = store_recipients(&ctx);
         write_secret_with(&ctx.store, "prod/api-key", b"v1", &["pci"], &recipients);
-        write_project_outputs(
-            &ctx,
-            "outputs:\n  app:\n    selectors:\n      - tag:pci\n",
-        );
+        write_project_outputs(&ctx, "outputs:\n  app:\n    selectors:\n      - tag:pci\n");
 
         let outputs = OutputResolver::open(&ctx).unwrap();
         // Unknown label: not an error — the caller falls through to
@@ -529,7 +527,13 @@ mod tests {
     fn non_utf8_value_is_a_hard_error() {
         let (_tmp, ctx) = test_ctx();
         let recipients = store_recipients(&ctx);
-        write_secret_with(&ctx.store, "prod/blob", &[0xff, 0xfe, 0x00], &[], &recipients);
+        write_secret_with(
+            &ctx.store,
+            "prod/blob",
+            &[0xff, 0xfe, 0x00],
+            &[],
+            &recipients,
+        );
         write_project_outputs(
             &ctx,
             "outputs:\n  app:\n    selectors:\n      - prod/blob\n",

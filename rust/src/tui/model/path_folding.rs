@@ -222,7 +222,13 @@ mod tests {
             }
             other => panic!("expected FoldedGroup, got {other:?}"),
         }
-        assert!(matches!(&rows[1], Row::Secret { shared_prefix: None, .. }));
+        assert!(matches!(
+            &rows[1],
+            Row::Secret {
+                shared_prefix: None,
+                ..
+            }
+        ));
     }
 
     #[test]
