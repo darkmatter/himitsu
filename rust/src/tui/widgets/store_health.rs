@@ -43,8 +43,17 @@ pub fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealt
     let global_health = check_store_health(ctx);
 
     let project_health = match resolve_project_store(ctx) {
-        Some(project_store) => {
+        Some((project_store, project_recipients_override)) => {
             let mut project_ctx = ctx.clone();
+            // The ambient context's recipients override belongs to the
+            // ACTIVE store — carrying it across would mis-resolve the
+            // project store's recipient list (false NotRecipient). Mirror
+            // the dispatcher's resolution order: the store-internal config
+            // wins, then the project config's override.
+            project_ctx.recipients_path = crate::remote::store::load_store_config(&project_store)
+                .ok()
+                .and_then(|cfg| cfg.recipients_path)
+                .or(project_recipients_override);
             project_ctx.store = project_store;
             Some(check_store_health(&project_ctx))
         }
@@ -54,15 +63,18 @@ pub fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealt
 }
 
 /// Find the project store referenced by the invocation's project config,
-/// if any. Returns `None` when there's no project config, no
-/// `default_store` in it, or the slug doesn't resolve to an existing
-/// checkout under `stores_dir`.
-fn resolve_project_store(ctx: &Context) -> Option<std::path::PathBuf> {
+/// if any, along with the project config's `recipients_path` override.
+/// Returns `None` when there's no project config, no `default_store` in
+/// it, or the slug doesn't resolve to an existing checkout under
+/// `stores_dir`.
+fn resolve_project_store(ctx: &Context) -> Option<(std::path::PathBuf, Option<String>)> {
     let (project_cfg, _) = ctx.project_config().ok()??;
-    let slug = project_cfg.default_store?;
-    let (org, repo) = crate::config::validate_remote_slug(&slug).ok()?;
+    let slug = project_cfg.default_store.as_deref()?;
+    let (org, repo) = crate::config::validate_remote_slug(slug).ok()?;
     let candidate = ctx.stores_dir().join(org).join(repo);
-    candidate.exists().then_some(candidate)
+    candidate
+        .exists()
+        .then_some((candidate, project_cfg.recipients_path))
 }
 
 /// Render a labelled health pill: `<icon> <label>: <status>`. A `None`
