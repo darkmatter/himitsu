@@ -92,9 +92,7 @@ impl Context {
     /// views can consult the config freely without re-reading it or
     /// re-triggering the legacy `envs:` warning. Load errors (e.g.
     /// malformed YAML) are returned but not memoized.
-    pub fn project_config(
-        &self,
-    ) -> Result<Option<(crate::config::ProjectConfig, PathBuf)>> {
+    pub fn project_config(&self) -> Result<Option<(crate::config::ProjectConfig, PathBuf)>> {
         if let Some(cached) = self.project_config_cell.get() {
             return Ok(cached.clone());
         }

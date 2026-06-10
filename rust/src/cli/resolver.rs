@@ -89,5 +89,4 @@ impl SecretResolver {
             }
         }
     }
-
 }

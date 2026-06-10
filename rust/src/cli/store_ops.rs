@@ -199,9 +199,12 @@ mod tests {
         assert!(status.trim().is_empty(), "tree dirty: {status}");
 
         // Completions cache refreshed — the new path is immediately visible.
-        let hits =
-            crate::completions_cache::lookup(&ctx.state_dir, std::slice::from_ref(&ctx.store), "prod")
-                .unwrap();
+        let hits = crate::completions_cache::lookup(
+            &ctx.state_dir,
+            std::slice::from_ref(&ctx.store),
+            "prod",
+        )
+        .unwrap();
         assert!(hits.iter().any(|h| h == "prod/api-key"), "{hits:?}");
     }
 
@@ -230,9 +233,12 @@ mod tests {
         assert_eq!(last_commit_subject(&ctx.store), "himitsu: delete prod/gone");
         let status = crate::git::run(&["status", "--porcelain"], &ctx.store).unwrap();
         assert!(status.trim().is_empty(), "tree dirty: {status}");
-        let hits =
-            crate::completions_cache::lookup(&ctx.state_dir, std::slice::from_ref(&ctx.store), "prod")
-                .unwrap();
+        let hits = crate::completions_cache::lookup(
+            &ctx.state_dir,
+            std::slice::from_ref(&ctx.store),
+            "prod",
+        )
+        .unwrap();
         assert!(!hits.iter().any(|h| h == "prod/gone"), "{hits:?}");
     }
 
@@ -243,11 +249,7 @@ mod tests {
         // A mutation that writes something, then fails: the chain must
         // still commit, with the FAILED prefix recording the partial state.
         let result: Result<()> = run_mutation(&ctx, "test-op", true, || {
-            std::fs::write(
-                rstore::secrets_dir(&ctx.store).join("partial.age"),
-                b"junk",
-            )
-            .unwrap();
+            std::fs::write(rstore::secrets_dir(&ctx.store).join("partial.age"), b"junk").unwrap();
             Err(HimitsuError::NotSupported("boom".into()))
         });
         assert!(result.is_err());
