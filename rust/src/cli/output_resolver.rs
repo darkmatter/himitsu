@@ -14,9 +14,10 @@
 //!   identity load, no store I/O, no decryption.
 //! - **Decrypt once**: `open` performs the single scan; tags for
 //!   selector matching and plaintexts for later materialization come
-//!   from the same pass. Secrets the current Identity cannot decrypt
-//!   contribute no tags (mirroring `ls --tag`) and only error when a
-//!   value is actually needed.
+//!   from the same pass. Secrets the current Identity cannot decrypt —
+//!   including when no identity loads at all — contribute no tags
+//!   (mirroring `ls --tag`) and only error when a value is actually
+//!   needed.
 //! - **Whole-map validation**: selector parse errors and alias
 //!   exactly-one violations surface at `open`, even when the caller
 //!   eventually asks for a different Output.
@@ -87,6 +88,13 @@ impl<'ctx> OutputResolver<'ctx> {
     ///
     /// Cheap when no Outputs are defined: no identity load, no store I/O,
     /// no decryption. Otherwise this is the single decrypt-once scan.
+    ///
+    /// The scan is tolerant: missing identities or an unreadable store
+    /// yield candidates without tags (they simply match no `tag:`
+    /// selectors, mirroring `ls --tag`) rather than failing resolution —
+    /// `codegen --lang` legitimately runs without any identity on disk.
+    /// Needing a *value* still fails hard, at [`Self::env_map`]/
+    /// [`Self::decode`] time.
     pub fn open(ctx: &'ctx Context) -> Result<Self> {
         let outputs_map = ctx
             .project_config()?
@@ -102,8 +110,8 @@ impl<'ctx> OutputResolver<'ctx> {
             });
         }
 
-        let identities = ctx.load_identities()?;
-        let all_paths = store::list_secrets(&ctx.store, None)?;
+        let identities = ctx.load_identities().unwrap_or_default();
+        let all_paths = store::list_secrets(&ctx.store, None).unwrap_or_default();
         let mut decoded: BTreeMap<String, secret_value::Decoded> = BTreeMap::new();
         let mut candidates = Vec::with_capacity(all_paths.len());
         for path in all_paths {
@@ -378,6 +386,29 @@ mod tests {
         assert!(outputs.all().is_empty());
         assert_eq!(outputs.env_map("anything", &[]).unwrap(), None);
         assert!(outputs.get("anything").is_none());
+    }
+
+    #[test]
+    fn open_tolerates_missing_identities() {
+        // CI regression: `codegen --lang` legitimately runs on machines with
+        // no age identity at all. The scan must tolerate identity-load
+        // failure (candidates carry no tags, tag selectors match nothing) —
+        // only needing a VALUE fails hard.
+        let (_tmp, ctx) = test_ctx();
+        let recipients = store_recipients(&ctx);
+        write_secret_with(&ctx.store, "prod/api-key", b"v", &["pci"], &recipients);
+        std::fs::remove_file(ctx.data_dir.join("key")).unwrap();
+        write_project_outputs(
+            &ctx,
+            "outputs:\n  app:\n    selectors:\n      - tag:pci\n  direct:\n    selectors:\n      - prod/api-key\n",
+        );
+
+        let outputs = OutputResolver::open(&ctx).expect("open tolerates no identities");
+        // Tags are unreadable, so the tag selector matches nothing.
+        let env = outputs.env_map("app", &[]).unwrap().expect("defined");
+        assert!(env.is_empty(), "{env:?}");
+        // A concrete-path entry needs the value: hard error.
+        assert!(outputs.env_map("direct", &[]).is_err());
     }
 
     #[test]
