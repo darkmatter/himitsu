@@ -101,7 +101,7 @@ impl HelpView {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw("  "),
-                    Span::raw(desc.clone()),
+                    Span::raw(desc.as_str()),
                 ]);
                 ListItem::new(line)
             })
