@@ -154,6 +154,9 @@ impl fmt::Display for KeyBinding {
 
 fn code_to_string(code: KeyCode) -> String {
     match code {
+        // The named form roundtrips: chord steps are whitespace-separated in
+        // the config format, so a literal ' ' would be unparseable.
+        KeyCode::Char(' ') => "space".to_string(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "enter".to_string(),
         KeyCode::Esc => "esc".to_string(),
@@ -509,6 +512,12 @@ pub enum KeyAction {
     CollapsePaths,
     /// In the search view: expand all secret paths back to full depth.
     ExpandPaths,
+    /// In the search view: toggle the secret-ref autocomplete popup.
+    ToggleAutocomplete,
+    /// In the search view: refine the query to the selected row's tag.
+    RefineTag,
+    /// In the search view: sort by the selected results column.
+    SortColumn,
 
     Reveal,
     CopyValue,
@@ -565,13 +574,23 @@ pub struct KeyMap {
     /// secret without putting plaintext on the clipboard. Default: `Y`
     /// (Shift+y) — symmetric with the viewer.
     pub copy_ref_selected: Vec<KeyChord>,
-    pub envs: Vec<KeyChord>,
+    /// Open the outputs browser (default: `Shift+E`). The serde alias
+    /// accepts the pre-rename `envs` config key, so existing user keymaps
+    /// keep working.
+    #[serde(alias = "envs")]
+    pub outputs: Vec<KeyChord>,
     /// Collapse all secret paths to top-level folders (default: `Ctrl+-`,
     /// leader fallback `Ctrl+x -`).
     pub collapse_paths: Vec<KeyChord>,
     /// Expand all secret paths to full depth (default: `Ctrl++` / `Ctrl+=`,
     /// leader fallback `Ctrl+x +`).
     pub expand_paths: Vec<KeyChord>,
+    /// Toggle the secret-ref autocomplete popup (default: `Ctrl+Space`).
+    pub toggle_autocomplete: Vec<KeyChord>,
+    /// Refine the query to the selected row's tag (default: `Ctrl+T`).
+    pub refine_tag: Vec<KeyChord>,
+    /// Sort by the selected results column (default: `Ctrl+O`).
+    pub sort_column: Vec<KeyChord>,
 
     // ── Secret viewer ────────────────────────────────────────────────
     pub reveal: Vec<KeyChord>,
@@ -617,9 +636,12 @@ impl Default for KeyMap {
             switch_store: vec![ctrl('s')],
             copy_selected: vec![ctrl('y')],
             copy_ref_selected: vec![shift_char('y')],
-            envs: vec![shift_char('e')],
+            outputs: vec![shift_char('e')],
             collapse_paths: vec![ctrl('-'), leader_x('-')],
             expand_paths: vec![ctrl('+'), ctrl('='), leader_x('+')],
+            toggle_autocomplete: vec![ctrl(' ')],
+            refine_tag: vec![ctrl('t')],
+            sort_column: vec![ctrl('o')],
 
             reveal: vec![bare(KeyCode::Char('r'))],
             copy_value: vec![bare(KeyCode::Char('y'))],
@@ -637,35 +659,262 @@ impl Default for KeyMap {
     }
 }
 
+// ── KeyRegistry ────────────────────────────────────────────────────────────
+
+/// Which view's help screen lists a [`KeyAction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Available everywhere (quit, help).
+    Global,
+    /// Search view.
+    Search,
+    /// Secret viewer.
+    Viewer,
+    /// New-secret form.
+    NewSecretForm,
+}
+
+/// One registry row: everything every surface needs to know about a
+/// [`KeyAction`] — its config field, its help text, which view's help
+/// screen lists it, and the command-palette entry that shares it.
+pub struct Row {
+    /// Accessor for the user-configurable chord list backing this action.
+    pub field: fn(&KeyMap) -> &Vec<KeyChord>,
+    /// Help-screen description.
+    pub help: &'static str,
+    /// Which view's help screen lists this action.
+    pub scope: Scope,
+    /// The command-palette command sharing this action, if any.
+    pub palette: Option<crate::tui::views::command_palette::Command>,
+}
+
+impl KeyAction {
+    /// Every action, in help-screen display order (grouped by scope). Used
+    /// to derive [`KeyMap::entries`] — an action missing here simply never
+    /// dispatches, which is loud, unlike the silent drift of the old
+    /// hand-maintained table.
+    pub const ALL: [KeyAction; 24] = [
+        // Global
+        KeyAction::Help,
+        KeyAction::Quit,
+        // Search view
+        KeyAction::CommandPalette,
+        KeyAction::NewSecret,
+        KeyAction::SwitchStore,
+        KeyAction::CopySelected,
+        KeyAction::CopyRefSelected,
+        KeyAction::Outputs,
+        KeyAction::CollapsePaths,
+        KeyAction::ExpandPaths,
+        KeyAction::ToggleAutocomplete,
+        KeyAction::RefineTag,
+        KeyAction::SortColumn,
+        // Secret viewer
+        KeyAction::Reveal,
+        KeyAction::CopyValue,
+        KeyAction::CopyRef,
+        KeyAction::Rekey,
+        KeyAction::Edit,
+        KeyAction::Delete,
+        KeyAction::Back,
+        // New-secret form
+        KeyAction::SaveSecret,
+        KeyAction::NextField,
+        KeyAction::PrevField,
+        KeyAction::Cancel,
+    ];
+}
+
+/// The single source of truth tying a [`KeyAction`] to its config field,
+/// help text, scope, and palette link. The exhaustive match means adding a
+/// `KeyAction` variant without a row is a **compile error** — this replaces
+/// the hand-synced `entries()` table, the per-view hardcoded help strings,
+/// and the palette's hand-maintained action map.
+pub fn row(action: KeyAction) -> Row {
+    use crate::tui::views::command_palette::Command;
+    match action {
+        KeyAction::Quit => Row {
+            field: |km| &km.quit,
+            help: "quit",
+            scope: Scope::Global,
+            palette: Some(Command::Quit),
+        },
+        KeyAction::Help => Row {
+            field: |km| &km.help,
+            help: "toggle this help",
+            scope: Scope::Global,
+            palette: Some(Command::Help),
+        },
+        KeyAction::CommandPalette => Row {
+            field: |km| &km.command_palette,
+            help: "open command palette",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::NewSecret => Row {
+            field: |km| &km.new_secret,
+            help: "new secret",
+            scope: Scope::Search,
+            palette: Some(Command::NewSecret),
+        },
+        KeyAction::SwitchStore => Row {
+            field: |km| &km.switch_store,
+            help: "switch store",
+            scope: Scope::Search,
+            palette: Some(Command::SwitchStore),
+        },
+        KeyAction::CopySelected => Row {
+            field: |km| &km.copy_selected,
+            help: "copy selection to clipboard",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::CopyRefSelected => Row {
+            field: |km| &km.copy_ref_selected,
+            help: "copy `himitsu read <ref>` command",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::Outputs => Row {
+            field: |km| &km.outputs,
+            help: "browse outputs",
+            scope: Scope::Search,
+            palette: Some(Command::Outputs),
+        },
+        KeyAction::CollapsePaths => Row {
+            field: |km| &km.collapse_paths,
+            help: "collapse paths to top-level folders",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::ExpandPaths => Row {
+            field: |km| &km.expand_paths,
+            help: "expand paths to full depth",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::ToggleAutocomplete => Row {
+            field: |km| &km.toggle_autocomplete,
+            help: "toggle ref autocomplete",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::RefineTag => Row {
+            field: |km| &km.refine_tag,
+            help: "refine to selected tag",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::SortColumn => Row {
+            field: |km| &km.sort_column,
+            help: "sort selected column",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::Reveal => Row {
+            field: |km| &km.reveal,
+            help: "reveal / hide value",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::CopyValue => Row {
+            field: |km| &km.copy_value,
+            help: "copy value to clipboard",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::CopyRef => Row {
+            field: |km| &km.copy_ref,
+            help: "copy `himitsu read <ref>` command",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::Rekey => Row {
+            field: |km| &km.rekey,
+            help: "rekey for current recipients",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::Edit => Row {
+            field: |km| &km.edit,
+            help: "edit value + metadata in $EDITOR",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::Delete => Row {
+            field: |km| &km.delete,
+            help: "delete secret (with confirm)",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::Back => Row {
+            field: |km| &km.back,
+            help: "back",
+            scope: Scope::Viewer,
+            palette: None,
+        },
+        KeyAction::SaveSecret => Row {
+            field: |km| &km.save_secret,
+            help: "save from any field",
+            scope: Scope::NewSecretForm,
+            palette: None,
+        },
+        KeyAction::NextField => Row {
+            field: |km| &km.next_field,
+            help: "next field (wraps)",
+            scope: Scope::NewSecretForm,
+            palette: None,
+        },
+        KeyAction::PrevField => Row {
+            field: |km| &km.prev_field,
+            help: "previous field (wraps)",
+            scope: Scope::NewSecretForm,
+            palette: None,
+        },
+        KeyAction::Cancel => Row {
+            field: |km| &km.cancel,
+            help: "cancel",
+            scope: Scope::NewSecretForm,
+            palette: None,
+        },
+    }
+}
+
+/// Live help rows for one scope: `(chords, description)` with the chord
+/// display rendered from the CURRENT keymap, so user rebinds show up in
+/// every help screen automatically.
+pub fn help_rows(keymap: &KeyMap, scope: Scope) -> Vec<(String, String)> {
+    KeyAction::ALL
+        .into_iter()
+        .filter(|a| row(*a).scope == scope)
+        .map(|a| (chords_display(keymap, a), row(a).help.to_string()))
+        .collect()
+}
+
+/// One live help row for a single action — for views that compose their
+/// help screens from individual rows rather than a whole scope.
+pub fn help_row(keymap: &KeyMap, action: KeyAction) -> (String, String) {
+    (chords_display(keymap, action), row(action).help.to_string())
+}
+
+/// Human-facing display of every chord bound to `action`, joined with
+/// ` / ` — e.g. `ctrl-- / ctrl-x -`. The keymap's `+` separator renders
+/// as `-` to match the command palette's established style.
+pub fn chords_display(keymap: &KeyMap, action: KeyAction) -> String {
+    keymap
+        .chords_for(action)
+        .iter()
+        .map(|c| c.to_string().replace('+', "-"))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
 impl KeyMap {
-    /// `(action, chords)` pairs across every keymap field. Stack-allocated
-    /// so the dispatcher (called per keystroke) doesn't churn the heap.
-    /// When you add a new `KeyAction`, append it here and bump the array
-    /// length.
-    fn entries(&self) -> [(KeyAction, &Vec<KeyChord>); 21] {
-        [
-            (KeyAction::Quit, &self.quit),
-            (KeyAction::Help, &self.help),
-            (KeyAction::CommandPalette, &self.command_palette),
-            (KeyAction::NewSecret, &self.new_secret),
-            (KeyAction::SwitchStore, &self.switch_store),
-            (KeyAction::CopySelected, &self.copy_selected),
-            (KeyAction::CopyRefSelected, &self.copy_ref_selected),
-            (KeyAction::Outputs, &self.envs),
-            (KeyAction::CollapsePaths, &self.collapse_paths),
-            (KeyAction::ExpandPaths, &self.expand_paths),
-            (KeyAction::Reveal, &self.reveal),
-            (KeyAction::CopyValue, &self.copy_value),
-            (KeyAction::CopyRef, &self.copy_ref),
-            (KeyAction::Rekey, &self.rekey),
-            (KeyAction::Edit, &self.edit),
-            (KeyAction::Delete, &self.delete),
-            (KeyAction::Back, &self.back),
-            (KeyAction::SaveSecret, &self.save_secret),
-            (KeyAction::NextField, &self.next_field),
-            (KeyAction::PrevField, &self.prev_field),
-            (KeyAction::Cancel, &self.cancel),
-        ]
+    /// `(action, chords)` pairs across every keymap field, derived from
+    /// [`KeyAction::ALL`] and the registry [`row`]s — there is no second
+    /// table to keep in sync.
+    fn entries(&self) -> [(KeyAction, &Vec<KeyChord>); KeyAction::ALL.len()] {
+        KeyAction::ALL.map(|action| (action, (row(action).field)(self)))
     }
 
     /// Single-step direct lookup: find the action whose binding list
@@ -697,18 +946,11 @@ impl KeyMap {
             .find(|&action| self.chords_for(action).matches(key))
     }
 
-    /// Borrow the chord list registered for a given action. Looked up
-    /// linearly through [`Self::entries`] — ~19 entries, called per
-    /// keystroke; the cost is dwarfed by terminal redraw.
+    /// Borrow the chord list registered for a given action — a direct
+    /// registry-field access; total by construction (the registry match is
+    /// exhaustive over [`KeyAction`]).
     pub fn chords_for(&self, action: KeyAction) -> &Vec<KeyChord> {
-        for (a, chords) in self.entries() {
-            if a == action {
-                return chords;
-            }
-        }
-        // entries() covers every variant of KeyAction, so this is
-        // unreachable in practice.
-        unreachable!("KeyMap::entries missing variant {action:?}")
+        (row(action).field)(self)
     }
 
     /// Drive the leader-key state machine.
@@ -786,45 +1028,75 @@ mod tests {
     }
 
     #[test]
-    fn entries_cover_every_key_action_variant() {
-        // entries() returns a fixed-size array; chords_for() relies on it
-        // covering every KeyAction. If a variant is added without being
-        // appended to entries(), chords_for() would hit its unreachable!()
-        // arm. Exercise every variant through chords_for to guarantee
-        // coverage and catch drift at test time rather than runtime.
+    fn registry_covers_every_key_action_variant() {
+        // Row coverage is a COMPILE error now (the registry match is
+        // exhaustive); what's left to pin at test time is that ALL lists
+        // every variant exactly once (an action missing from ALL never
+        // dispatches), that every action has a non-empty default binding,
+        // and that every row carries help text.
         let km = KeyMap::default();
-        for action in [
-            KeyAction::Quit,
-            KeyAction::Help,
-            KeyAction::CommandPalette,
-            KeyAction::NewSecret,
-            KeyAction::SwitchStore,
-            KeyAction::CopySelected,
-            KeyAction::CopyRefSelected,
-            KeyAction::Outputs,
-            KeyAction::CollapsePaths,
-            KeyAction::ExpandPaths,
-            KeyAction::Reveal,
-            KeyAction::CopyValue,
-            KeyAction::CopyRef,
-            KeyAction::Rekey,
-            KeyAction::Edit,
-            KeyAction::Delete,
-            KeyAction::Back,
-            KeyAction::SaveSecret,
-            KeyAction::NextField,
-            KeyAction::PrevField,
-            KeyAction::Cancel,
-        ] {
-            // Must not panic (chords_for has an unreachable! for missing
-            // variants) — every action is registered in entries().
-            let _ = km.chords_for(action);
+        for action in KeyAction::ALL {
+            assert!(
+                !km.chords_for(action).is_empty(),
+                "{action:?} has no default binding"
+            );
+            assert!(!row(action).help.is_empty(), "{action:?} has empty help");
         }
-        assert_eq!(
-            km.entries().len(),
-            21,
-            "entries array length tracks variants"
+        // Duplicate detection without Hash: pairwise.
+        for (i, a) in KeyAction::ALL.iter().enumerate() {
+            for b in &KeyAction::ALL[i + 1..] {
+                assert_ne!(a, b, "duplicate entry in KeyAction::ALL");
+            }
+        }
+        assert_eq!(km.entries().len(), KeyAction::ALL.len());
+    }
+
+    #[test]
+    fn help_rows_render_live_bindings() {
+        // Rebinding an action must change the help row — help screens can't
+        // lie. Default first:
+        let km = KeyMap::default();
+        let rows = help_rows(&km, Scope::Search);
+        assert!(
+            rows.iter()
+                .any(|(k, d)| k == "ctrl-t" && d == "refine to selected tag"),
+            "{rows:?}"
         );
+
+        // Rebind and confirm the row follows.
+        let remapped = KeyMap {
+            refine_tag: vec![KeyChord::single(KeyBinding::ctrl('g'))],
+            ..KeyMap::default()
+        };
+        let rows = help_rows(&remapped, Scope::Search);
+        assert!(
+            rows.iter()
+                .any(|(k, d)| k == "ctrl-g" && d == "refine to selected tag"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_envs_config_key_still_binds_outputs() {
+        // The field was renamed envs -> outputs; the serde alias must keep
+        // pre-rename user keymaps working.
+        let yaml = r#"
+envs: ["ctrl+l"]
+"#;
+        let km: KeyMap = serde_yaml::from_str(yaml).unwrap();
+        assert!(km
+            .outputs
+            .matches(&key(KeyCode::Char('l'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn palette_links_resolve_through_registry() {
+        use crate::tui::views::command_palette::Command;
+        // The palette's key_action() derives from registry rows; spot-check
+        // the link survives in both directions.
+        assert_eq!(Command::Outputs.key_action(), Some(KeyAction::Outputs));
+        assert_eq!(row(KeyAction::Outputs).palette, Some(Command::Outputs));
+        assert_eq!(Command::Import.key_action(), None);
     }
 
     #[test]

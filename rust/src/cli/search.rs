@@ -37,7 +37,7 @@ pub struct SearchArgs {
 }
 
 /// A single search result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchResult {
     pub store: String,
     /// Filesystem path of the store that holds this result. Consumed by the

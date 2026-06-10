@@ -16,11 +16,11 @@
 //!    RFC 3339 timestamp.
 //!
 //! Tab / Shift-Tab move between fields with wrap-around. `Ctrl+S` or `Ctrl+W`
-//! submits from any field. Submission encrypts via [`crate::crypto::age`]
-//! and writes through [`crate::remote::store::write_secret`], reusing the
-//! exact same code path that `himitsu set` uses. Validation leans on the
-//! `pub(crate)` helpers in [`crate::cli::set`] and [`crate::cli::duration`]
-//! so the TUI and CLI stay in lockstep.
+//! submits from any field. Submission goes through
+//! [`crate::cli::store_ops::set_secret`] — the same mutation core (and the
+//! same commit/push/completions chain) that backs `himitsu set` — so the
+//! TUI and CLI cannot drift. Validation leans on the `pub(crate)` helpers
+//! in [`crate::cli::set`] and [`crate::cli::duration`].
 //!
 //! On success the outer app router refreshes search; on failure the view
 //! surfaces the error in its status line and stays open so the user can
@@ -43,7 +43,7 @@ use ratatui::Frame;
 use crate::cli::duration::{self, ExpiresAt};
 use crate::cli::set::{validate_env_key, validate_totp};
 use crate::cli::Context;
-use crate::crypto::{age, secret_value, tags as tag_grammar};
+use crate::crypto::tags as tag_grammar;
 use crate::proto::SecretValue;
 use crate::remote::store;
 use crate::tui::keymap::{Bindings, KeyAction, KeyMap};
@@ -643,21 +643,6 @@ impl NewSecretView {
 
         let full = self.path.trim().to_string();
 
-        let recipients =
-            match age::collect_recipients(&self.ctx.store, self.ctx.recipients_path.as_deref()) {
-                Ok(r) if !r.is_empty() => r,
-                Ok(_) => {
-                    let msg = "no recipients configured for this store".to_string();
-                    self.status = Some(msg.clone());
-                    return NewSecretAction::Failed(msg);
-                }
-                Err(e) => {
-                    let msg = format!("{e}");
-                    self.status = Some(msg.clone());
-                    return NewSecretAction::Failed(msg);
-                }
-            };
-
         let sv = match self.build_secret_value() {
             Ok(sv) => sv,
             Err(msg) => {
@@ -665,23 +650,15 @@ impl NewSecretView {
                 return NewSecretAction::Failed(msg);
             }
         };
-        let wire = secret_value::encode(&sv);
-        let ciphertext = match age::encrypt(&wire, &recipients) {
-            Ok(ct) => ct,
-            Err(e) => {
-                let msg = format!("{e}");
-                self.status = Some(msg.clone());
-                return NewSecretAction::Failed(msg);
-            }
-        };
 
-        if let Err(e) = store::write_secret(&self.ctx.store, &full, &ciphertext) {
+        // The mutation core owns the full chain — validation, encryption to
+        // the effective store's recipients, write, append-only commit+push,
+        // completions-cache refresh — so the TUI cannot drift from the CLI.
+        if let Err(e) = crate::cli::store_ops::set_secret(&self.ctx, &full, &sv) {
             let msg = format!("{e}");
             self.status = Some(msg.clone());
             return NewSecretAction::Failed(msg);
         }
-
-        self.ctx.commit_and_push(&format!("himitsu: set {full}"));
 
         NewSecretAction::Created(full)
     }
@@ -974,20 +951,23 @@ impl NewSecretView {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
-        &[
+    /// Help rows: rebindable form actions rendered from the LIVE keymap,
+    /// plus the form's fixed enter semantics and the hardwired Ctrl-C quit.
+    pub fn help_entries(keymap: &KeyMap) -> Vec<(String, String)> {
+        let mut rows = crate::tui::keymap::help_rows(
+            keymap,
+            crate::tui::keymap::Scope::NewSecretForm,
+        );
+        rows.extend([
+            ("enter (value)".to_string(), "insert newline".to_string()),
             (
-                "tab / enter",
-                "next field (wraps); tab cycles into [ submit ]",
+                "enter (submit)".to_string(),
+                "save the new secret".to_string(),
             ),
-            ("shift-tab", "previous field (wraps)"),
-            ("enter (value)", "insert newline"),
-            ("enter (submit)", "save the new secret"),
-            ("ctrl-s / ctrl-w", "save from any field"),
-            ("esc", "cancel (prompts if any field has content)"),
-            ("ctrl-c", "quit"),
-            ("?", "toggle this help"),
-        ]
+        ]);
+        rows.push(crate::tui::keymap::help_row(keymap, KeyAction::Help));
+        rows.push(("ctrl-c".into(), "quit".into()));
+        rows
     }
 
     pub fn help_title() -> &'static str {
@@ -1044,6 +1024,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 

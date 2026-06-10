@@ -20,6 +20,7 @@ pub mod join;
 pub mod keys;
 pub mod ls;
 pub mod migrate;
+pub mod output_resolver;
 pub mod prime;
 pub mod read;
 pub mod recipient;
@@ -30,6 +31,7 @@ pub mod schema;
 pub mod search;
 pub mod set;
 pub mod share;
+pub mod store_ops;
 pub mod sync;
 pub mod tag;
 pub mod write;
@@ -42,6 +44,12 @@ use clap::{Parser, Subcommand};
 use tracing::debug;
 
 use crate::error::{HimitsuError, Result};
+
+/// Shared memo cell for the lazily-loaded project config. `Default` yields
+/// an empty cell; `Context` clones share one cell, so the config loads (and
+/// the legacy `envs:` migration warning fires) at most once per process.
+pub type ProjectConfigCell =
+    Arc<std::sync::OnceLock<Option<(crate::config::ProjectConfig, PathBuf)>>>;
 
 /// Resolved paths for the current invocation.
 #[derive(Clone)]
@@ -68,6 +76,35 @@ pub struct Context {
     /// Git operations backend. Production uses `CliGitAdapter` (shells out to
     /// `git`); tests can substitute `InMemoryGitAdapter`.
     pub git: Arc<dyn crate::git::GitAdapter>,
+    /// Memoized project config for this invocation. Populated lazily by
+    /// [`Self::project_config`] (or seeded at construction when the
+    /// dispatcher already loaded it for the recipients override).
+    pub project_config_cell: ProjectConfigCell,
+}
+
+// ── Project config ───────────────────────────────────────────────
+impl Context {
+    /// The project config that applies to this invocation.
+    ///
+    /// Owns the "which project config applies" decision: an explicit
+    /// `--project[=<path>]` root wins over a cwd walk. Loaded lazily on
+    /// first call and memoized (clones share the memo), so commands and
+    /// views can consult the config freely without re-reading it or
+    /// re-triggering the legacy `envs:` warning. Load errors (e.g.
+    /// malformed YAML) are returned but not memoized.
+    pub fn project_config(
+        &self,
+    ) -> Result<Option<(crate::config::ProjectConfig, PathBuf)>> {
+        if let Some(cached) = self.project_config_cell.get() {
+            return Ok(cached.clone());
+        }
+        let loaded = match self.project_root.as_deref() {
+            Some(root) => crate::config::load_project_config_from(root)?,
+            None => crate::config::load_project_config()?,
+        };
+        let _ = self.project_config_cell.set(loaded.clone());
+        Ok(loaded)
+    }
 }
 
 // ── Path resolution ──────────────────────────────────────────────
@@ -553,6 +590,7 @@ impl Cli {
                 key_provider: crate::config::KeyProvider::default(),
                 project_root: None,
                 git: Arc::new(crate::git::CliGitAdapter),
+                project_config_cell: Default::default(),
             };
             init::run(
                 init::InitArgs {
@@ -616,7 +654,12 @@ impl Cli {
             init::ensure_default_origin(&store, &state_dir.join("stores"));
         }
 
-        let recipients_path = load_recipients_path_override(&store, &selector);
+        // One cell for the whole invocation: the recipients override may load
+        // the project config during construction (project mode); seeding the
+        // cell there means `ctx.project_config()` never re-reads it.
+        let project_config_cell = ProjectConfigCell::default();
+        let recipients_path =
+            load_recipients_path_override(&store, &selector, &project_config_cell);
         let key_provider = crate::config::Config::load(&crate::config::config_path())
             .map(|c| c.key_provider)
             .unwrap_or_default();
@@ -632,6 +675,7 @@ impl Cli {
             key_provider,
             project_root,
             git: Arc::new(crate::git::CliGitAdapter),
+            project_config_cell,
         };
 
         // Pre-dispatch: when `auto_pull` is on, fetch + fast-forward the
@@ -703,25 +747,13 @@ impl Cli {
             Command::Doctor(args) => doctor::run(args, &ctx),
         };
 
-        // Post-dispatch: enforce the append-only invariant for mutating
-        // commands. Always commit (success OR failure) so `git status` is
-        // never left dirty; on failure prefix the message with `FAILED:` and
-        // append the error so the history records the partial state. Push
-        // only on success, and only when the user did not opt out.
+        // Post-dispatch: run the append-only mutation chain (commit on
+        // success or failure, push, completions-cache refresh) — owned by
+        // `store_ops` so the CLI dispatcher and the TUI's mutation cores
+        // can't drift. One finalize per command keeps batch commands
+        // (e.g. `import`) a single commit.
         if let Some(msg) = mutation_msg {
-            let final_msg = match &result {
-                Ok(_) => format!("himitsu: {msg}"),
-                Err(e) => format!("himitsu: FAILED: {msg}: {e}"),
-            };
-            let committed = ctx.commit(&final_msg);
-            if result.is_ok() && committed && !no_push {
-                ctx.push();
-            }
-            // Keep the completions cache in sync after every successful mutation
-            // so the next tab-press sees the updated path list immediately.
-            if result.is_ok() && !ctx.store.as_os_str().is_empty() {
-                let _ = crate::completions_cache::refresh_store(&ctx.state_dir, &ctx.store);
-            }
+            store_ops::finalize(&ctx, &msg, no_push, &result);
         }
 
         result
@@ -742,7 +774,9 @@ impl Cli {
         // than erroring out. Bare-TUI launch uses Global context — explicit
         // project mode is reserved for the parent epic's context chooser.
         let store = crate::config::resolve_store(None).unwrap_or_default();
-        let recipients_path = load_recipients_path_override(&store, &ContextSelector::Global);
+        let project_config_cell = ProjectConfigCell::default();
+        let recipients_path =
+            load_recipients_path_override(&store, &ContextSelector::Global, &project_config_cell);
         let key_provider = crate::config::Config::load(&crate::config::config_path())
             .map(|c| c.key_provider)
             .unwrap_or_default();
@@ -755,6 +789,7 @@ impl Cli {
             key_provider,
             project_root: None,
             git: Arc::new(crate::git::CliGitAdapter),
+            project_config_cell,
         };
         crate::tui::run(&ctx)
     }
@@ -876,6 +911,7 @@ fn prompt_to_create_store(store: &Path, data_dir: &Path, state_dir: &Path) -> Re
 fn load_recipients_path_override(
     store: &std::path::Path,
     selector: &ContextSelector,
+    project_config_cell: &ProjectConfigCell,
 ) -> Option<String> {
     if store.as_os_str().is_empty() {
         return None;
@@ -888,28 +924,19 @@ fn load_recipients_path_override(
     }
 
     if let ContextSelector::Project(root) = selector {
-        if let Ok(Some((project_cfg, _))) = crate::config::load_project_config_from(root) {
-            if project_cfg.recipients_path.is_some() {
-                return project_cfg.recipients_path;
+        if let Ok(loaded) = crate::config::load_project_config_from(root) {
+            // Seed the invocation's memo so `Context::project_config()`
+            // doesn't re-read (or re-warn about) the same file.
+            let _ = project_config_cell.set(loaded.clone());
+            if let Some((project_cfg, _)) = loaded {
+                if project_cfg.recipients_path.is_some() {
+                    return project_cfg.recipients_path;
+                }
             }
         }
     }
 
     None
-}
-
-/// Build resolver candidates for the store with REAL tags, by decrypting each
-/// secret. Tag selectors and selector-valued aliases inside `outputs:` blocks
-/// only resolve when candidates carry their tags, so `exec`, `generate`, and
-/// `codegen` share this builder instead of passing `tags: vec![]` (which made
-/// every `tag:` selector silently match nothing).
-///
-/// Secrets the current identity cannot decrypt contribute no tags (they simply
-/// won't match tag selectors), mirroring `ls --tag`.
-pub(crate) fn resolver_candidates_with_tags(
-    ctx: &Context,
-) -> Vec<crate::config::outputs::resolver::SecretCandidate> {
-    resolver::SecretResolver::resolve_candidates(ctx)
 }
 
 #[cfg(test)]
@@ -1061,7 +1088,40 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
+    }
+
+    #[test]
+    fn project_config_prefers_explicit_root_and_memoizes() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("himitsu.yaml"),
+            "default_store: \"acme/secrets\"\n",
+        )
+        .unwrap();
+
+        let mut ctx = ctx_for(Path::new(""));
+        ctx.project_root = Some(project.path().to_path_buf());
+
+        // The explicit project root wins over any cwd walk.
+        let (cfg, path) = ctx
+            .project_config()
+            .unwrap()
+            .expect("config under explicit root");
+        assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
+        assert!(path.starts_with(project.path()));
+
+        // Memoized and shared across clones: rewriting the file on disk is
+        // not observed by a clone of the same invocation.
+        let clone = ctx.clone();
+        std::fs::write(
+            project.path().join("himitsu.yaml"),
+            "default_store: \"other/store\"\n",
+        )
+        .unwrap();
+        let (cfg2, _) = clone.project_config().unwrap().expect("memoized config");
+        assert_eq!(cfg2.default_store.as_deref(), Some("acme/secrets"));
     }
 
     #[test]

@@ -479,9 +479,10 @@ himitsu tag prod/STRIPE_KEY rm rotate-2026-q1
 absent tags. The grammar `[A-Za-z0-9_.-]+` (1-64 chars, case-sensitive)
 is validated up front for both `add` and `rm`.
 
-### `himitsu exec <REF> -- <CMD>...`
+### `himitsu exec <REF>... -- <CMD>...`
 
-Run a command with secrets injected as environment variables. `<REF>` is
+Run a command with secrets injected as environment variables. One or more
+refs may be passed; the union of all refs is injected. Each `<REF>` is
 one of:
 
 1. **Output label** from project config `outputs:` (e.g. `pci-prod`) -- uses
@@ -501,13 +502,16 @@ himitsu exec pci-prod -- node app.js
 himitsu exec tag:pci+tag:prod -- node app.js
 himitsu exec prod/*+tag:pci -- ./run-checks.sh
 himitsu exec prod/API_KEY -i -- env | grep API_KEY    # `-i` = clean env
+himitsu exec pci-prod common/DB_URL -- node app.js    # union of two refs
 ```
 
 The variable name for each secret comes from (in priority order): the output
 alias key → `SecretValue.env_key` → `derive_env_key(path tail)` (e.g.
 `api-key` → `API_KEY`, `group/item-name` → `GROUP__ITEM_NAME`). Two
 secrets resolving to the same env-var name is a hard error naming both
-source paths.
+source paths. With multiple refs, every ref must match at least one secret,
+and an env var resolving to *different* values via different refs is a hard
+error (the same secret reached by overlapping refs is fine).
 
 If a selector matches no secrets, `himitsu exec` exits 1 with `error: selector 'X' matched no secrets`.
 
@@ -840,9 +844,10 @@ binding immediately.
 The full action list (with defaults) is in
 [`rust/src/tui/keymap.rs`](rust/src/tui/keymap.rs):
 `quit`, `help`, `command_palette`, `new_secret`, `switch_store`,
-`copy_selected`, `copy_ref_selected`, `envs`, `reveal`, `copy_value`,
-`copy_ref`, `rekey`, `edit`, `delete`, `back`, `save_secret`,
-`next_field`, `prev_field`, `cancel`.
+`copy_selected`, `copy_ref_selected`, `outputs` (legacy alias: `envs`),
+`collapse_paths`, `expand_paths`, `toggle_autocomplete`, `refine_tag`,
+`sort_column`, `reveal`, `copy_value`, `copy_ref`, `rekey`, `edit`,
+`delete`, `back`, `save_secret`, `next_field`, `prev_field`, `cancel`.
 
 ## Sync & Store Health
 

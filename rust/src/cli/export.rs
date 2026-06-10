@@ -6,7 +6,7 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::{load_project_config, ProjectConfig};
+use crate::config::ProjectConfig;
 use crate::crypto::{age as crypto, secret_value};
 use crate::error::{HimitsuError, Result};
 use crate::remote::store;
@@ -92,7 +92,7 @@ pub fn run(args: ExportArgs, ctx: &Context) -> Result<()> {
     }
 
     // Encrypt via SOPS and write to file.
-    let project_cfg = load_project_config()?.map(|(c, _)| c);
+    let project_cfg = ctx.project_config()?.map(|(c, _)| c);
     let out_path = resolve_output_path(&args)?;
     write_encrypted(&out_path, &output_text, &args.format, project_cfg.as_ref())?;
 

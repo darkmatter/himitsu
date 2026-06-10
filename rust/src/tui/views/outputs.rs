@@ -1568,6 +1568,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         key_provider: ctx.key_provider.clone(),
         project_root: ctx.project_root.clone(),
         git: ctx.git.clone(),
+        project_config_cell: ctx.project_config_cell.clone(),
     }
 }
 
@@ -1655,6 +1656,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 

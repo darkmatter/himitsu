@@ -50,16 +50,18 @@ pub fn refresh_store(state_dir: &Path, store: &Path) -> rusqlite::Result<usize> 
     let secrets_dir = store.join(".himitsu").join("secrets");
     let current_mtime = max_mtime_recursive(&secrets_dir);
 
-    // Check whether the tree has changed since the last cache build.
-    let stored_mtime: i64 = conn
+    // Check whether the tree has changed since the last cache build. The
+    // stored value is the bit-cast fingerprint; a missing row means "never
+    // built" and forces a rebuild.
+    let stored_fingerprint: Option<i64> = conn
         .query_row(
             "SELECT mtime FROM store_info WHERE store_path = ?1",
             params![store_key],
             |row| row.get(0),
         )
-        .unwrap_or(-1);
+        .ok();
 
-    if stored_mtime >= 0 && stored_mtime as u64 == current_mtime {
+    if stored_fingerprint == Some(current_mtime as i64) {
         // Tree unchanged — return the cached count without touching paths.
         let count: i64 = conn
             .query_row(
@@ -199,35 +201,47 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Recursive max-mtime over a directory tree.  Returns 0 if the directory
-/// doesn't exist or mtime can't be read (drives a full rebuild on next call).
+/// Change fingerprint of a directory tree: max mtime (nanosecond precision)
+/// and entry count, hashed together order-independently. Either a content
+/// change or a deletion produces a new fingerprint — a plain
+/// seconds-granularity max-mtime missed deletions that happened within the
+/// same second as the last write. Returns 0 if the directory doesn't exist
+/// (drives a full rebuild on next call).
 fn max_mtime_recursive(dir: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    fn walk(dir: &Path, max_nanos: &mut u128, count: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            *count += 1;
+            if let Ok(modified) = meta.modified() {
+                let nanos = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                if nanos > *max_nanos {
+                    *max_nanos = nanos;
+                }
+            }
+            if meta.is_dir() {
+                walk(&entry.path(), max_nanos, count);
+            }
+        }
+    }
+
     if !dir.exists() {
         return 0;
     }
-    let mut max = 0u64;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        if let Ok(modified) = meta.modified() {
-            let secs = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if secs > max {
-                max = secs;
-            }
-        }
-        if meta.is_dir() {
-            let child = max_mtime_recursive(&entry.path());
-            if child > max {
-                max = child;
-            }
-        }
-    }
-    max
+    let mut max_nanos = 0u128;
+    let mut count = 0u64;
+    walk(dir, &mut max_nanos, &mut count);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    max_nanos.hash(&mut hasher);
+    count.hash(&mut hasher);
+    hasher.finish()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

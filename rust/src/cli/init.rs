@@ -73,6 +73,7 @@ pub fn run(args: InitArgs, ctx: &Context) -> Result<()> {
             key_provider: ctx.key_provider.clone(),
             project_root: ctx.project_root.clone(),
             git: ctx.git.clone(),
+            project_config_cell: ctx.project_config_cell.clone(),
         };
         return run_init(args, &patched_ctx);
     }

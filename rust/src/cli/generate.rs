@@ -6,11 +6,9 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::outputs::resolver::{resolve_outputs, Context as ResolverContext};
-use crate::config::{self, load_project_config, ProjectConfig};
-use crate::crypto::{age as crypto, secret_value};
+use crate::config::outputs::resolver::ResolvedOutput;
+use crate::config::ProjectConfig;
 use crate::error::{HimitsuError, Result};
-use crate::remote::store;
 
 /// Generate SOPS-encrypted (or plaintext) output files from outputs definitions.
 #[derive(Debug, Args)]
@@ -39,14 +37,14 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    let project_cfg = load_project_config()?.map(|(cfg, _)| cfg);
+    let project_cfg = ctx.project_config()?.map(|(cfg, _)| cfg);
 
-    let outputs_map = project_cfg
-        .as_ref()
-        .map(|c| c.outputs.clone())
-        .unwrap_or_default();
+    // One resolution pass for the whole command: candidates carry real
+    // decrypted tags (so `tag:` selectors and selector-valued aliases
+    // resolve) and the same pass feeds the decoded values below.
+    let outputs = super::output_resolver::OutputResolver::open(ctx)?;
 
-    if outputs_map.is_empty() {
+    if outputs.all().is_empty() {
         return Err(HimitsuError::GenerateError(
             "no `outputs` defined in project config — \
              define outputs: blocks in himitsu.yaml or use `himitsu codegen`"
@@ -54,30 +52,18 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         ));
     }
 
-    // Build candidates with real tags so `tag:` selectors and selector-valued
-    // aliases inside outputs: blocks resolve (empty tags made them match
-    // nothing).
-    let available_secrets = super::resolver_candidates_with_tags(ctx);
-    let resolver_ctx = ResolverContext { available_secrets };
-
-    let all_outputs = resolve_outputs(&outputs_map, &resolver_ctx)?;
-
-    let to_generate: Vec<_> = if let Some(ref name) = args.output {
-        let filtered: Vec<_> = all_outputs
-            .into_iter()
-            .filter(|o| &o.name == name)
-            .collect();
-        if filtered.is_empty() {
-            return Err(HimitsuError::GenerateError(format!(
-                "output '{name}' not found in project config"
-            )));
+    let to_generate: Vec<&ResolvedOutput> = if let Some(ref name) = args.output {
+        match outputs.get(name) {
+            Some(o) => vec![o],
+            None => {
+                return Err(HimitsuError::GenerateError(format!(
+                    "output '{name}' not found in project config"
+                )))
+            }
         }
-        filtered
     } else {
-        all_outputs
+        outputs.all().iter().collect()
     };
-
-    let identities = ctx.load_identities()?;
 
     for resolved_output in &to_generate {
         if resolved_output.entries.is_empty() {
@@ -89,37 +75,17 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
         }
 
         let mut output: BTreeMap<String, String> = BTreeMap::new();
-        for entry in &resolved_output.entries {
-            let effective_store = if let Some(ref slug) = entry.store_slug {
-                config::ensure_store(slug)?
-            } else {
-                ctx.store.clone()
-            };
-            let payload = store::read_secret_payload(&effective_store, &entry.secret_path)?;
-            let plaintext = match crypto::decrypt_with_identities(&payload.ciphertext, &identities)
-            {
-                Ok(p) => p,
-                Err(_) if payload.legacy_proto_envelope => payload.ciphertext,
-                Err(err) => return Err(err),
-            };
-            let decoded = secret_value::decode_with_legacy_environment(
-                &plaintext,
-                payload.legacy_environment.as_deref(),
-            );
-            super::get::warn_if_expired(&entry.secret_path, &decoded);
-            let value = String::from_utf8(decoded.data).map_err(|e| {
-                HimitsuError::DecryptionFailed(format!(
-                    "non-UTF-8 secret at '{}': {e}",
-                    entry.secret_path
-                ))
-            })?;
+        for entry in outputs.decode(resolved_output)? {
+            if let Some(warning) = entry.expiry_warning() {
+                eprintln!("{warning}");
+            }
             if output.contains_key(&entry.env_key) {
                 eprintln!(
                     "warning: duplicate key '{}' in output '{}' — using last value",
                     entry.env_key, resolved_output.name
                 );
             }
-            output.insert(entry.env_key.clone(), value);
+            output.insert(entry.env_key, entry.value);
         }
 
         let yaml = build_plaintext_yaml(&output, &resolved_output.name);

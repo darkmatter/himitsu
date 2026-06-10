@@ -21,17 +21,41 @@ pub struct JoinArgs {
 }
 
 pub fn run(args: JoinArgs, ctx: &Context) -> Result<()> {
+    // Presentation wrapper: the silent core does the work (the dispatcher
+    // runs the commit/push/cache chain post-dispatch); this layer owns the
+    // human-facing output.
+    match join_core(ctx, args.name)? {
+        JoinOutcome::AlreadyRecipient => {
+            println!("Already a recipient of this store — nothing to do.");
+        }
+        JoinOutcome::Joined(name) => {
+            println!("Joined as recipient '{name}'");
+        }
+    }
+    Ok(())
+}
+
+/// Outcome of [`join_core`], for presentation layers to render.
+#[derive(Debug)]
+pub enum JoinOutcome {
+    /// The caller's key was added under this recipient name.
+    Joined(String),
+    /// The caller was already a recipient — nothing changed.
+    AlreadyRecipient,
+}
+
+/// Silent core of `join`: add the caller's own age public key to the
+/// store's recipient list. Idempotent. No stdin, no stdout — safe to call
+/// from the TUI (use `store_ops::join`, which adds the mutation chain).
+pub(super) fn join_core(ctx: &Context, name: Option<String>) -> Result<JoinOutcome> {
     let self_pubkey = read_own_pubkey(ctx)?;
 
     let recipients = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref())?;
-    let already_member = recipients.iter().any(|r| r.to_string() == self_pubkey);
-
-    if already_member {
-        println!("Already a recipient of this store — nothing to do.");
-        return Ok(());
+    if recipients.iter().any(|r| r.to_string() == self_pubkey) {
+        return Ok(JoinOutcome::AlreadyRecipient);
     }
 
-    let name = args.name.unwrap_or_else(default_recipient_name);
+    let name = name.unwrap_or_else(default_recipient_name);
     let recipients_dir =
         rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
     std::fs::create_dir_all(&recipients_dir)?;
@@ -44,8 +68,7 @@ pub fn run(args: JoinArgs, ctx: &Context) -> Result<()> {
     if pub_file.exists() {
         let existing = std::fs::read_to_string(&pub_file)?.trim().to_string();
         if existing == self_pubkey {
-            println!("Already a recipient of this store — nothing to do.");
-            return Ok(());
+            return Ok(JoinOutcome::AlreadyRecipient);
         }
         return Err(HimitsuError::Recipient(format!(
             "recipient name '{name}' is taken by a different key — use --name to pick another"
@@ -53,9 +76,7 @@ pub fn run(args: JoinArgs, ctx: &Context) -> Result<()> {
     }
 
     std::fs::write(&pub_file, format!("{self_pubkey}\n"))?;
-    println!("Joined as recipient '{name}'");
-
-    Ok(())
+    Ok(JoinOutcome::Joined(name))
 }
 
 fn read_own_pubkey(ctx: &Context) -> Result<String> {
@@ -122,6 +143,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         }
     }
 

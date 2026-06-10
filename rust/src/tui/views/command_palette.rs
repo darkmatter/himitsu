@@ -96,21 +96,15 @@ impl Command {
         }
     }
 
-    /// The [`KeyAction`] this command shares with the keymap, if any. This is
-    /// the single link between the palette and the live keybindings: the
-    /// displayed shortcut is derived from whatever the user has bound to this
-    /// action, so the palette can never drift out of sync with the keymap.
-    /// Returns `None` for commands that have no direct key binding (they are
-    /// only reachable through the palette itself).
+    /// The [`KeyAction`] this command shares with the keymap, if any —
+    /// derived from the key registry's `palette` links, so the palette and
+    /// the keymap cannot drift (the registry row is the single source of
+    /// truth). Returns `None` for commands that have no direct key binding
+    /// (they are only reachable through the palette itself).
     pub fn key_action(&self) -> Option<KeyAction> {
-        match self {
-            Command::NewSecret => Some(KeyAction::NewSecret),
-            Command::SwitchStore => Some(KeyAction::SwitchStore),
-            Command::Outputs => Some(KeyAction::Outputs),
-            Command::Help => Some(KeyAction::Help),
-            Command::Quit => Some(KeyAction::Quit),
-            _ => None,
-        }
+        KeyAction::ALL
+            .into_iter()
+            .find(|a| crate::tui::keymap::row(*a).palette == Some(*self))
     }
 
     /// Human-facing shortcut string derived from the live keymap (e.g.
@@ -611,15 +605,15 @@ mod tests {
 
     #[test]
     fn shortcut_is_derived_from_live_keymap_not_hardcoded() {
-        // Default keymap binds envs to Shift+E — displayed as `shift-e`.
+        // Default keymap binds outputs to Shift+E — displayed as `shift-e`.
         let default_km = KeyMap::default();
         assert_eq!(Command::Outputs.shortcut(&default_km), "shift-e");
 
-        // Remap envs to Ctrl+L and confirm the palette shortcut tracks the
-        // change. If shortcut() were still hardcoded this would fail — this
-        // is the regression guard against palette/keymap drift.
+        // Remap outputs to Ctrl+L and confirm the palette shortcut tracks
+        // the change. If shortcut() were still hardcoded this would fail —
+        // this is the regression guard against palette/keymap drift.
         let remapped = KeyMap {
-            envs: vec![KeyChord::single(KeyBinding::ctrl('l'))],
+            outputs: vec![KeyChord::single(KeyBinding::ctrl('l'))],
             ..KeyMap::default()
         };
         assert_eq!(Command::Outputs.shortcut(&remapped), "ctrl-l");

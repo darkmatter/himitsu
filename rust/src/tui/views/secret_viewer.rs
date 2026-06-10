@@ -13,7 +13,7 @@
 //!   suspends its alternate screen while the editor runs. See
 //!   [`render_edit_doc`] / [`parse_edit_doc`] for the buffer format.
 //! - `R` — re-encrypt this one secret for the current recipient set via
-//!   [`crate::cli::rekey::rekey_store`] (no value change).
+//!   [`crate::cli::store_ops::rekey`] (no value change).
 //! - `Esc` — emit `SecretViewerAction::Back` so the router pops to the
 //!   previous view (search).
 
@@ -32,7 +32,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::cli::{duration, rekey, Context};
+use crate::cli::{duration, Context};
 use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::HimitsuError;
 use crate::proto::SecretValue;
@@ -96,7 +96,7 @@ pub struct SecretViewerView {
     value: ValueState,
     status: Option<(String, StatusKind)>,
     mode: Mode,
-    /// Context needed to call into `rekey::rekey_store` on `e`.
+    /// Context needed by the store_ops mutation cores (rekey, delete, edit).
     ///
     /// Cloned from the app router so the view owns its data.
     ctx: Context,
@@ -322,14 +322,21 @@ impl SecretViewerView {
         let wire = secret_value::encode(&sv);
         let ciphertext = age::encrypt(&wire, &recipients)?;
 
-        // Rename first (if needed) so the subsequent write_secret hits the
-        // moved envelope and preserves created_at/history.
-        if new_path != self.path {
-            store::rename_secret(&self.store_path, &self.path, &new_path)?;
-            self.path = new_path.clone();
-        }
-
-        store::write_secret(&self.store_path, &self.path, &ciphertext)?;
+        // Scope the mutation chain to the secret's own store (the viewer may
+        // be showing a secret from a different store than the ambient
+        // context). Rename first (if needed) so the subsequent write_secret
+        // hits the moved envelope and preserves created_at/history.
+        let store_ctx = Context {
+            store: self.store_path.clone(),
+            ..self.ctx.clone()
+        };
+        crate::cli::store_ops::run_mutation(&store_ctx, &format!("set {new_path}"), false, || {
+            if new_path != self.path {
+                store::rename_secret(&self.store_path, &self.path, &new_path)?;
+                self.path = new_path.clone();
+            }
+            store::write_secret(&self.store_path, &self.path, &ciphertext)
+        })?;
         if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
             self.meta = meta;
         }
@@ -350,7 +357,14 @@ impl SecretViewerView {
     }
 
     fn delete_secret(&mut self) -> crate::error::Result<()> {
-        store::delete_secret(&self.store_path, &self.path)
+        // The viewer may display a secret from a different store than the
+        // ambient context (cross-store search) — scope the mutation chain
+        // (commit, push, completions refresh) to the secret's own store.
+        let store_ctx = Context {
+            store: self.store_path.clone(),
+            ..self.ctx.clone()
+        };
+        crate::cli::store_ops::delete_secret(&store_ctx, &self.path)
     }
 
     // ── Actions ────────────────────────────────────────────────────────
@@ -405,7 +419,14 @@ impl SecretViewerView {
     }
 
     fn rekey(&mut self) {
-        match rekey::rekey_store(&self.ctx, Some(&self.path)) {
+        // Scope the mutation chain to the secret's own store, like delete —
+        // a rekey of a secret viewed from another store must rewrite (and
+        // commit) there, not in the ambient context's store.
+        let store_ctx = Context {
+            store: self.store_path.clone(),
+            ..self.ctx.clone()
+        };
+        match crate::cli::store_ops::rekey(&store_ctx, Some(&self.path)) {
             Ok(n) => {
                 // Refresh metadata so `lastmodified` reflects the rewrite.
                 if let Ok(meta) = store::read_secret_meta(&self.store_path, &self.path) {
@@ -895,17 +916,15 @@ pub fn store_path_for(label: &str, ctx: &Context) -> Option<PathBuf> {
 // In its own impl block so parallel branches adding new bindings can extend
 // `help_entries` without colliding with the main impl.
 impl SecretViewerView {
-    pub fn help_entries() -> &'static [(&'static str, &'static str)] {
-        &[
-            ("r", "reveal / hide value"),
-            ("y", "copy value to clipboard"),
-            ("e", "edit value + metadata in $EDITOR"),
-            ("R", "rekey for current recipients"),
-            ("d", "delete secret (with confirm)"),
-            ("?", "toggle this help"),
-            ("esc", "back"),
-            ("ctrl-c", "quit"),
-        ]
+    /// Help rows: rebindable viewer actions rendered from the LIVE keymap,
+    /// plus the help toggle and the viewer's hardwired Ctrl-C quit (the
+    /// viewer intercepts Ctrl-C literally so the user is never trapped —
+    /// Esc is the rebindable Back action, listed above).
+    pub fn help_entries(keymap: &KeyMap) -> Vec<(String, String)> {
+        let mut rows = crate::tui::keymap::help_rows(keymap, crate::tui::keymap::Scope::Viewer);
+        rows.push(crate::tui::keymap::help_row(keymap, KeyAction::Help));
+        rows.push(("ctrl-c".into(), "quit".into()));
+        rows
     }
 
     pub fn help_title() -> &'static str {
@@ -970,6 +989,7 @@ mod tests {
             key_provider: crate::config::KeyProvider::default(),
             project_root: None,
             git: std::sync::Arc::new(crate::git::CliGitAdapter),
+            project_config_cell: Default::default(),
         };
         (dir, ctx, "prod/API_KEY".to_string())
     }

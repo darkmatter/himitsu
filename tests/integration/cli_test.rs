@@ -3397,8 +3397,9 @@ fn exec_output_label_resolves_tag_selector() {
         .success();
 
     // Define a `pci-prod` output whose selector is `tag:pci`, in a project
-    // config at the store root. exec loads it via load_project_config(), so
-    // we run with cwd set to the store root.
+    // config at the store root. exec loads it via ctx.project_config() (cwd
+    // walk when no --project root is set), so we run with cwd set to the
+    // store root.
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
@@ -3474,6 +3475,308 @@ fn exec_output_label_resolves_via_explicit_project_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("STRIPE_KEY=sk_live_proj"));
+}
+
+#[test]
+fn generate_resolves_outputs_via_explicit_project_flag() {
+    // hm-x9r: `--project=<path> generate` from an UNRELATED cwd must load the
+    // outputs: map from the project root (ctx.project_config()), not a cwd
+    // walk — the same regression class fixed for exec (oracle round 5) and
+    // migrate (hm-j3s).
+    let home = TempDir::new().unwrap();
+    let slug = "acme/secrets";
+    let store_path = create_remote_store(&home, slug);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_path.to_string_lossy(),
+            "set",
+            "prod/stripe-key",
+            "sk_live_gen",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!(
+            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+        ),
+    )
+    .unwrap();
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(elsewhere.path())
+        .args([
+            &format!("--project={}", project_dir.path().to_string_lossy()),
+            "generate",
+            "--output",
+            "pci-prod",
+            "--stdout",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_gen"));
+}
+
+#[test]
+fn exec_multiple_refs_injects_union() {
+    // hm-y36: `himitsu exec <ref> <ref> -- cmd` injects the union of all
+    // refs — here an outputs: label plus a concrete path.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_multi_a",
+        ])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/db-pass",
+            "pw_multi_b",
+        ])
+        .assert()
+        .success();
+
+    std::fs::write(
+        store.path().join("himitsu.yaml"),
+        "outputs:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "app",
+            "prod/db-pass",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MY_STRIPE=sk_multi_a"))
+        .stdout(predicate::str::contains("DB_PASS=pw_multi_b"));
+}
+
+#[test]
+fn exec_multiple_refs_conflicting_values_error() {
+    // hm-y36: the same env var resolving to DIFFERENT values via different
+    // refs is a hard error (half-injected environments are forbidden).
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/api-key",
+            "value_one",
+        ])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "staging/api-key",
+            "value_two",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/api-key",
+            "staging/api-key",
+            "--",
+            "env",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API_KEY"))
+        .stderr(predicate::str::contains("different values"));
+}
+
+#[test]
+fn exec_multiple_refs_overlapping_same_secret_tolerated() {
+    // hm-y36: two refs matching the SAME secret (same env var, same value)
+    // are an idempotent union, not a conflict.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "prod/stripe-key",
+            "sk_overlap",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/*",
+            "tag:pci",
+            "--",
+            "env",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY=sk_overlap"));
+}
+
+#[test]
+fn exec_multiple_refs_each_must_match() {
+    // hm-y36: every named ref must match at least one secret — a dud second
+    // ref fails the whole invocation rather than silently injecting less.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &store_flag(&store), "set", "prod/x", "v"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args([
+            "--store",
+            &store_flag(&store),
+            "exec",
+            "prod/x",
+            "tag:nothing-here",
+            "--",
+            "env",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("matched no secrets"));
+}
+
+#[test]
+fn codegen_sops_warns_on_duplicate_keys() {
+    // hm-x7z / ADR-0001: codegen's silent last-wins clobber gains generate's
+    // warning. Two paths deriving the same env key (API_KEY) trigger it. No
+    // status assertion: the warning is emitted before the sops encryption
+    // step, which may or may not be available in the test environment.
+    let (home, store) = setup();
+    let cfg = home.path().join("config.yaml");
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &store_flag(&store), "set", "prod/api-key", "a"])
+        .assert()
+        .success();
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .args(["--store", &store_flag(&store), "set", "staging/api-key", "b"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        store.path().join("himitsu.yaml"),
+        "outputs:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", &cfg)
+        .current_dir(store.path())
+        .args(["--store", &store_flag(&store), "codegen", "app"])
+        .assert()
+        .stderr(predicate::str::contains("duplicate key 'API_KEY'"));
+}
+
+#[test]
+fn codegen_lang_resolves_outputs_via_explicit_project_flag() {
+    // hm-x9r: `--project=<path> codegen --lang ...` from an UNRELATED cwd must
+    // load the outputs: map from the project root, not a cwd walk.
+    let home = TempDir::new().unwrap();
+    let slug = "acme/secrets";
+    let store_path = create_remote_store(&home, slug);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_path.to_string_lossy(),
+            "set",
+            "prod/stripe-key",
+            "sk_live_cg",
+            "--tag",
+            "pci",
+        ])
+        .assert()
+        .success();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    init_git_repo(project_dir.path());
+    std::fs::write(
+        project_dir.path().join("himitsu.yaml"),
+        format!(
+            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+        ),
+    )
+    .unwrap();
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(elsewhere.path())
+        .args([
+            &format!("--project={}", project_dir.path().to_string_lossy()),
+            "codegen",
+            "--lang",
+            "typescript",
+            "--stdout",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE_KEY"));
 }
 
 #[test]

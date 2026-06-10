@@ -586,13 +586,19 @@ pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Load and parse the first project config found by [`find_project_config`].
+/// Load and parse the first project config found by [`find_project_config`]
+/// (cwd walk).
+///
+/// Internal to the Context machinery: commands and views must go through
+/// [`Context::project_config`](crate::cli::Context::project_config), which
+/// owns the "which project config applies" decision (explicit `--project`
+/// root vs cwd walk) and memoizes the result.
 ///
 /// Returns `Ok(Some((config, path)))` if a config file exists and parses
 /// successfully, `Ok(None)` if no config file is found, or `Err` if a config
 /// file exists but is malformed YAML. A legacy `envs:` key is tolerated (it is
 /// captured and a migration warning is emitted), not a parse error.
-pub fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> {
+pub(crate) fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> {
     let Some(path) = find_project_config() else {
         return Ok(None);
     };
@@ -603,10 +609,13 @@ pub fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> {
 }
 
 /// Load and parse the first project config found by walking upward from
-/// `start`. Unlike [`load_project_config`], parse errors are surfaced as
-/// `Err` so callers in explicit project mode can fail loudly when the
-/// config file is present but malformed.
-pub fn load_project_config_from(start: &Path) -> Result<Option<(ProjectConfig, PathBuf)>> {
+/// `start`. Same contract as [`load_project_config`], with an explicit
+/// starting point instead of a cwd walk.
+///
+/// Internal: the sanctioned direct callers are `migrate`'s multi-root scan
+/// and the Context construction/memoization machinery. Commands and views
+/// must use [`Context::project_config`](crate::cli::Context::project_config).
+pub(crate) fn load_project_config_from(start: &Path) -> Result<Option<(ProjectConfig, PathBuf)>> {
     let Some(path) = find_project_config_from(start) else {
         return Ok(None);
     };

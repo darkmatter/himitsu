@@ -606,28 +606,33 @@ impl App {
     }
 
     /// Build a [`HelpView`] populated with entries for whichever view is
-    /// currently active.
+    /// currently active. Views with rebindable actions derive their rows
+    /// from the live keymap, so a user rebind shows up in help immediately.
     fn help_for_current_view(&self) -> HelpView {
         match &self.view {
-            View::Search(_) => HelpView::new(SearchView::help_entries(), SearchView::help_title()),
+            View::Search(_) => HelpView::new(
+                SearchView::help_entries(&self.keymap),
+                SearchView::help_title(),
+            ),
             View::SecretViewer(_) => HelpView::new(
-                SecretViewerView::help_entries(),
+                SecretViewerView::help_entries(&self.keymap),
                 SecretViewerView::help_title(),
             ),
-            View::NewSecret(_) => {
-                HelpView::new(NewSecretView::help_entries(), NewSecretView::help_title())
-            }
+            View::NewSecret(_) => HelpView::new(
+                NewSecretView::help_entries(&self.keymap),
+                NewSecretView::help_title(),
+            ),
             View::Outputs(_) => {
-                HelpView::new(OutputsView::help_entries(), OutputsView::help_title())
+                HelpView::from_static(OutputsView::help_entries(), OutputsView::help_title())
             }
             View::RemoteAdd(_) => {
-                HelpView::new(RemoteAddView::help_entries(), RemoteAddView::help_title())
+                HelpView::from_static(RemoteAddView::help_entries(), RemoteAddView::help_title())
             }
-            View::RecipientList(_) => HelpView::new(
+            View::RecipientList(_) => HelpView::from_static(
                 RecipientListView::help_entries(),
                 RecipientListView::help_title(),
             ),
-            View::RecipientAdd(_) => HelpView::new(
+            View::RecipientAdd(_) => HelpView::from_static(
                 RecipientAddView::help_entries(),
                 RecipientAddView::help_title(),
             ),
@@ -654,6 +659,7 @@ fn clone_ctx(ctx: &Context) -> Context {
         key_provider: ctx.key_provider.clone(),
         project_root: ctx.project_root.clone(),
         git: ctx.git.clone(),
+        project_config_cell: ctx.project_config_cell.clone(),
     }
 }
 

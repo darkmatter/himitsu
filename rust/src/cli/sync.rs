@@ -47,6 +47,7 @@ pub fn run(args: SyncArgs, ctx: &Context) -> Result<()> {
             key_provider: ctx.key_provider.clone(),
             project_root: ctx.project_root.clone(),
             git: ctx.git.clone(),
+            project_config_cell: ctx.project_config_cell.clone(),
         };
 
         // Commit any pre-existing pending changes (e.g. from a prior sync that
