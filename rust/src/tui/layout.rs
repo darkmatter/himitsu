@@ -27,6 +27,13 @@ pub const CANVAS_MAX_WIDTH: u16 = 80;
 /// Maximum height (in rows) of the standard drawing canvas.
 pub const CANVAS_MAX_HEIGHT: u16 = 30;
 
+/// Minimum terminal height (in rows) required to launch the TUI.
+/// Below this the UI chrome (header, search input, footer) cannot fit.
+pub const MIN_TERMINAL_HEIGHT: u16 = 12;
+
+/// Minimum terminal width (in columns) required to launch the TUI.
+pub const MIN_TERMINAL_WIDTH: u16 = 40;
+
 // ── Chrome heights ────────────────────────────────────────────────────────────
 
 /// Height of the single-row header bar rendered at the top of most views

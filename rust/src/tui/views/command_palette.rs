@@ -118,7 +118,7 @@ impl Command {
         keymap
             .chords_for(action)
             .iter()
-            .find(|c| c.is_single_step())
+            .next()
             .map(|c| c.to_string().replace('+', "-"))
             .unwrap_or_default()
     }
@@ -605,9 +605,8 @@ mod tests {
 
     #[test]
     fn shortcut_is_derived_from_live_keymap_not_hardcoded() {
-        // Default keymap binds outputs to Shift+E — displayed as `shift-e`.
         let default_km = KeyMap::default();
-        assert_eq!(Command::Outputs.shortcut(&default_km), "shift-e");
+        assert_eq!(Command::Outputs.shortcut(&default_km), "ctrl-x shift-e");
 
         // Remap outputs to Ctrl+L and confirm the palette shortcut tracks
         // the change. If shortcut() were still hardcoded this would fail —

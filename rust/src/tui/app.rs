@@ -49,6 +49,7 @@ pub enum AppIntent {
 
 pub struct App {
     pub should_quit: bool,
+    pub search_dirty: bool,
     ctx: Context,
     view: View,
     /// User-configurable keybindings. Cloned into each view via `&KeyMap`
@@ -83,6 +84,7 @@ impl App {
         let ctx_owned = clone_ctx(ctx);
         Self {
             should_quit: false,
+            search_dirty: false,
             view: View::Search(SearchView::new(&ctx_owned)),
             ctx: ctx_owned,
             keymap,
@@ -114,6 +116,12 @@ impl App {
     /// Drop the active hint, if any.
     pub fn clear_hint(&mut self) {
         self.hint = None;
+    }
+
+    pub fn refresh_search(&mut self) {
+        if let View::Search(search) = &mut self.view {
+            search.refresh_results();
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
@@ -169,7 +177,12 @@ impl App {
         match &mut self.view {
             View::Search(search) => {
                 let action = search.on_key(key, &self.keymap);
-                self.handle_search_action(action)
+                let search_dirty = search.take_search_dirty();
+                let intent = self.handle_search_action(action);
+                if search_dirty {
+                    self.search_dirty = true;
+                }
+                intent
             }
             View::SecretViewer(viewer) => {
                 let action = viewer.on_key(key, &self.keymap);

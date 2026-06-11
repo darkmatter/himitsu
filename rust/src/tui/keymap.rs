@@ -5,9 +5,8 @@
 //! [`KeyBinding`] / [`KeyChord`] so a single action can be triggered by any
 //! number of equivalent key combinations.
 //!
-//! [`KeyMap::default`] reproduces the hardcoded bindings that shipped before
-//! this config existed, so users who never touch their config file see no
-//! behaviour change. Users override individual actions by adding a
+//! [`KeyMap::default`] defines the built-in bindings used when no user
+//! override exists. Users override individual actions by adding a
 //! `tui.keys` section to `~/.config/himitsu/config.yaml`:
 //!
 //! ```yaml
@@ -554,7 +553,7 @@ pub enum Dispatch {
 ///
 /// Each field is a list of [`KeyChord`]s so multiple key combinations can
 /// map to the same action. Unspecified fields fall back to
-/// [`KeyMap::default`], which reproduces the original hardcoded bindings.
+/// [`KeyMap::default`], which supplies the built-in bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeyMap {
@@ -571,23 +570,20 @@ pub struct KeyMap {
     pub copy_selected: Vec<KeyChord>,
     /// Copy `himitsu read <ref>` (the *command*, not the value) to the
     /// clipboard for the selected row. Useful when sharing how to fetch a
-    /// secret without putting plaintext on the clipboard. Default: `Y`
-    /// (Shift+y) — symmetric with the viewer.
+    /// secret without putting plaintext on the clipboard.
     pub copy_ref_selected: Vec<KeyChord>,
-    /// Open the outputs browser (default: `Shift+E`). The serde alias
+    /// Open the outputs browser. The serde alias
     /// accepts the pre-rename `envs` config key, so existing user keymaps
     /// keep working.
     #[serde(alias = "envs")]
     pub outputs: Vec<KeyChord>,
-    /// Collapse all secret paths to top-level folders (default: `Ctrl+-`,
-    /// leader fallback `Ctrl+x -`).
+    /// Collapse all secret paths to top-level folders.
     pub collapse_paths: Vec<KeyChord>,
-    /// Expand all secret paths to full depth (default: `Ctrl++` / `Ctrl+=`,
-    /// leader fallback `Ctrl+x +`).
+    /// Expand all secret paths to full depth.
     pub expand_paths: Vec<KeyChord>,
-    /// Toggle the secret-ref autocomplete popup (default: `Ctrl+Space`).
+    /// Toggle the secret-ref autocomplete popup.
     pub toggle_autocomplete: Vec<KeyChord>,
-    /// Refine the query to the selected row's tag (default: `Ctrl+T`).
+    /// Refine the query to the selected row's tag.
     pub refine_tag: Vec<KeyChord>,
     /// Sort by the selected results column (default: `Ctrl+O`).
     pub sort_column: Vec<KeyChord>,
@@ -597,7 +593,7 @@ pub struct KeyMap {
     /// Copy the revealed value to the clipboard (default: `y`).
     pub copy_value: Vec<KeyChord>,
     /// Copy `himitsu read <ref>` (the *command*) to the clipboard for the
-    /// currently open secret. Default: `Y` (Shift+y).
+    /// currently open secret.
     pub copy_ref: Vec<KeyChord>,
     pub rekey: Vec<KeyChord>,
     pub edit: Vec<KeyChord>,
@@ -617,35 +613,33 @@ impl Default for KeyMap {
         let bare = |c: KeyCode| single(KeyBinding::bare(c));
         let ctrl = |c: char| single(KeyBinding::ctrl(c));
         let shift_char = |c: char| single(KeyBinding::new(KeyCode::Char(c), KeyModifiers::SHIFT));
-        // Leader chord `Ctrl+x` then a bare character — gives every fold
-        // command a discoverable two-step fallback (e.g. `Ctrl+x +`).
-        let leader_x = |c: char| {
-            KeyChord::try_new(vec![
-                KeyBinding::ctrl('x'),
-                KeyBinding::bare(KeyCode::Char(c)),
-            ])
-            .expect("two-step leader chord is non-empty")
+        let chord = |binding: KeyBinding| {
+            KeyChord::try_new(vec![KeyBinding::ctrl('x'), binding])
+                .expect("two-step leader chord is non-empty")
         };
+        let chord_bare = |c: char| chord(KeyBinding::bare(KeyCode::Char(c)));
+        let chord_ctrl = |c: char| chord(KeyBinding::ctrl(c));
+        let chord_shift = |c: char| chord(KeyBinding::new(KeyCode::Char(c), KeyModifiers::SHIFT));
 
         Self {
             quit: vec![bare(KeyCode::Esc), ctrl('c')],
-            help: vec![bare(KeyCode::Char('?'))],
+            help: vec![chord_bare('?')],
 
             command_palette: vec![ctrl('p')],
             new_secret: vec![ctrl('n')],
-            switch_store: vec![ctrl('s')],
+            switch_store: vec![chord_ctrl('s')],
             copy_selected: vec![ctrl('y')],
-            copy_ref_selected: vec![shift_char('y')],
-            outputs: vec![shift_char('e')],
-            collapse_paths: vec![ctrl('-'), leader_x('-')],
-            expand_paths: vec![ctrl('+'), ctrl('='), leader_x('+')],
-            toggle_autocomplete: vec![ctrl(' ')],
-            refine_tag: vec![ctrl('t')],
+            copy_ref_selected: vec![chord_shift('y')],
+            outputs: vec![chord_shift('e')],
+            collapse_paths: vec![chord_ctrl('-')],
+            expand_paths: vec![chord_ctrl('+'), chord_ctrl('=')],
+            toggle_autocomplete: vec![chord_ctrl(' ')],
+            refine_tag: vec![chord_ctrl('t')],
             sort_column: vec![ctrl('o')],
 
             reveal: vec![bare(KeyCode::Char('r'))],
             copy_value: vec![bare(KeyCode::Char('y'))],
-            copy_ref: vec![shift_char('y')],
+            copy_ref: vec![chord_shift('y')],
             rekey: vec![shift_char('r')],
             edit: vec![bare(KeyCode::Char('e'))],
             delete: vec![bare(KeyCode::Char('d'))],
@@ -1027,6 +1021,10 @@ mod tests {
         KeyEvent::new(code, mods)
     }
 
+    fn chord_strings(chords: &[KeyChord]) -> Vec<String> {
+        chords.iter().map(ToString::to_string).collect()
+    }
+
     #[test]
     fn registry_covers_every_key_action_variant() {
         // Row coverage is a COMPILE error now (the registry match is
@@ -1059,7 +1057,7 @@ mod tests {
         let rows = help_rows(&km, Scope::Search);
         assert!(
             rows.iter()
-                .any(|(k, d)| k == "ctrl-t" && d == "refine to selected tag"),
+                .any(|(k, d)| k == "ctrl-x ctrl-t" && d == "refine to selected tag"),
             "{rows:?}"
         );
 
@@ -1074,6 +1072,58 @@ mod tests {
                 .any(|(k, d)| k == "ctrl-g" && d == "refine to selected tag"),
             "{rows:?}"
         );
+    }
+
+    #[test]
+    fn default_non_footer_actions_are_chord_only() {
+        let km = KeyMap::default();
+
+        assert_eq!(chord_strings(&km.help), ["ctrl+x ?"]);
+        assert_eq!(chord_strings(&km.switch_store), ["ctrl+x ctrl+s"]);
+        assert_eq!(
+            chord_strings(&km.toggle_autocomplete),
+            ["ctrl+x ctrl+space"]
+        );
+        assert_eq!(chord_strings(&km.refine_tag), ["ctrl+x ctrl+t"]);
+        assert_eq!(chord_strings(&km.copy_ref_selected), ["ctrl+x shift+y"]);
+        assert_eq!(chord_strings(&km.outputs), ["ctrl+x shift+e"]);
+        assert_eq!(chord_strings(&km.collapse_paths), ["ctrl+x ctrl+-"]);
+        assert_eq!(
+            chord_strings(&km.expand_paths),
+            ["ctrl+x ctrl++", "ctrl+x ctrl+="]
+        );
+        assert_eq!(chord_strings(&km.copy_ref), ["ctrl+x shift+y"]);
+
+        assert!(!km
+            .help
+            .matches(&key(KeyCode::Char('?'), KeyModifiers::NONE)));
+        assert!(!km
+            .switch_store
+            .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL)));
+        assert!(!km
+            .toggle_autocomplete
+            .matches(&key(KeyCode::Char(' '), KeyModifiers::CONTROL)));
+        assert!(!km
+            .refine_tag
+            .matches(&key(KeyCode::Char('t'), KeyModifiers::CONTROL)));
+        assert!(!km
+            .copy_ref_selected
+            .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT)));
+        assert!(!km
+            .outputs
+            .matches(&key(KeyCode::Char('E'), KeyModifiers::SHIFT)));
+        assert!(!km
+            .collapse_paths
+            .matches(&key(KeyCode::Char('-'), KeyModifiers::CONTROL)));
+        assert!(!km
+            .expand_paths
+            .matches(&key(KeyCode::Char('+'), KeyModifiers::CONTROL)));
+        assert!(!km
+            .expand_paths
+            .matches(&key(KeyCode::Char('='), KeyModifiers::CONTROL)));
+        assert!(!km
+            .copy_ref
+            .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT)));
     }
 
     #[test]
@@ -1100,24 +1150,16 @@ envs: ["ctrl+l"]
     }
 
     #[test]
-    fn fold_actions_have_default_and_leader_bindings() {
+    fn fold_actions_have_chord_only_defaults() {
         let km = KeyMap::default();
 
-        // Collapse: Ctrl+- as single-step, plus the Ctrl+x - leader chord.
         let collapse_single = key(KeyCode::Char('-'), KeyModifiers::CONTROL);
-        assert_eq!(
-            km.action_for_key(&collapse_single),
-            Some(KeyAction::CollapsePaths)
-        );
+        assert_eq!(km.action_for_key(&collapse_single), None);
 
-        // Expand: Ctrl++ and Ctrl+= as single-step.
         let expand_plus = key(KeyCode::Char('+'), KeyModifiers::CONTROL);
         let expand_eq = key(KeyCode::Char('='), KeyModifiers::CONTROL);
-        assert_eq!(
-            km.action_for_key(&expand_plus),
-            Some(KeyAction::ExpandPaths)
-        );
-        assert_eq!(km.action_for_key(&expand_eq), Some(KeyAction::ExpandPaths));
+        assert_eq!(km.action_for_key(&expand_plus), None);
+        assert_eq!(km.action_for_key(&expand_eq), None);
     }
 
     #[test]
@@ -1128,15 +1170,19 @@ envs: ["ctrl+l"]
         // Ctrl+x is a prefix of the fold leader chords — pending, not a match.
         assert_eq!(km.dispatch(&[], &ctrl_x), Dispatch::Pending);
 
-        // Ctrl+x then bare + completes the expand chord.
-        let plus = key(KeyCode::Char('+'), KeyModifiers::NONE);
+        let plus = key(KeyCode::Char('+'), KeyModifiers::CONTROL);
         assert_eq!(
             km.dispatch(&[ctrl_x], &plus),
             Dispatch::Match(KeyAction::ExpandPaths)
         );
 
-        // Ctrl+x then bare - completes the collapse chord.
-        let minus = key(KeyCode::Char('-'), KeyModifiers::NONE);
+        let equals = key(KeyCode::Char('='), KeyModifiers::CONTROL);
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &equals),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+
+        let minus = key(KeyCode::Char('-'), KeyModifiers::CONTROL);
         assert_eq!(
             km.dispatch(&[ctrl_x], &minus),
             Dispatch::Match(KeyAction::CollapsePaths)

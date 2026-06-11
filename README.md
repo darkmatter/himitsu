@@ -268,7 +268,7 @@ Launch the interactive terminal UI:
 himitsu        # no subcommand opens the TUI
 ```
 
-Search is the **root view** -- the app opens straight into a fuzzy filter over every secret in the active store. Start typing to narrow the list, arrow keys to move, `enter` to open. Press `?` in any view for a help overlay, or `ctrl-p` to open the **command palette** -- the canonical, fuzzy-filterable list of every action the current view exposes.
+Search is the **root view** -- the app opens straight into a fuzzy filter over every secret in the active store. Start typing to narrow the list, arrow keys to move, `enter` to open. Press `ctrl-x ?` in any view for a help overlay, or `ctrl-p` to open the **command palette** -- the canonical, fuzzy-filterable list of every action the current view exposes.
 
 ![browse and drill](demo/tui-us-011.gif)
 
@@ -282,11 +282,11 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 | `backspace` | delete filter char |
 | `ctrl-p` | command palette |
 | `ctrl-n` | new secret |
-| `ctrl-s` | switch store |
+| `ctrl-x ctrl-s` | switch store |
 | `ctrl-y` | copy selected value |
-| `Y` (`shift-y`) | copy `himitsu read <ref>` for the selected row |
-| `shift-e` | browse output presets |
-| `?` | help |
+| `ctrl-x shift-y` | copy `himitsu read <ref>` for the selected row |
+| `ctrl-x shift-e` | browse output presets |
+| `ctrl-x ?` | help |
 | `esc` / `ctrl-c` | quit |
 
 ### Secret viewer
@@ -295,14 +295,14 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 |-----|--------|
 | `r` | reveal / hide value |
 | `y` | copy decrypted value to clipboard |
-| `Y` (`shift-y`) | copy `himitsu read <ref>` (the *command*, not the value) |
+| `ctrl-x shift-y` | copy `himitsu read <ref>` (the *command*, not the value) |
 | `e` | edit in `$EDITOR` |
 | `R` | rekey for current recipients |
 | `d` | delete (confirms with `y`) |
-| `?` | help |
+| `ctrl-x ?` | help |
 | `esc` | back |
 
-`Y` lets you share *how to fetch* a secret in a PR comment, chat message,
+`ctrl-x shift-y` lets you share *how to fetch* a secret in a PR comment, chat message,
 or runbook without putting the plaintext on your clipboard. The clipboard
 gets `himitsu read prod/API_KEY` (or `himitsu -r org/repo read …` when the
 row lives in a different store from the active one), ready to paste into

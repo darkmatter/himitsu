@@ -44,6 +44,21 @@ pub fn new() -> Result<Tui> {
     Ok(Terminal::new(backend)?)
 }
 
+/// Check that the terminal is large enough for the TUI.
+/// Returns `Err` with a descriptive message when the terminal is too small.
+pub fn check_min_size() -> Result<()> {
+    use crate::tui::layout::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
+
+    let (width, height) = crossterm::terminal::size().map_err(std::io::Error::other)?;
+    if (width, height) < (MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT) {
+        let msg = format!(
+            "terminal too small: need at least {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}, got {width}x{height}"
+        );
+        return Err(std::io::Error::other(msg).into());
+    }
+    Ok(())
+}
+
 /// Suspend the alternate screen + raw mode for the duration of `f`, then
 /// reinstall them. Used to run external processes (e.g. `$EDITOR`) that
 /// expect a cooked terminal. The outer [`Guard`] remains in scope so a

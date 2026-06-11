@@ -49,6 +49,7 @@ pub fn run(ctx: &Context) -> Result<()> {
 
     let _guard = terminal::install()?;
     let mut terminal = terminal::new()?;
+    terminal::check_min_size()?;
     let mut app = app::App::new(ctx, keymap);
     event::run_loop(&mut terminal, &mut app)?;
     Ok(())
@@ -69,6 +70,7 @@ pub fn run_init_flow() -> Result<()> {
 
     let mut guard = Some(terminal::install()?);
     let mut terminal = Some(terminal::new()?);
+    terminal::check_min_size()?;
     let mut wizard = InitWizardView::new();
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -105,6 +107,7 @@ pub fn run_init_flow() -> Result<()> {
             // Resume TUI before reporting the result so the wizard can redraw.
             guard = Some(terminal::install()?);
             terminal = Some(terminal::new()?);
+            terminal::check_min_size()?;
             wizard.on_init_result(result);
             continue;
         }

@@ -3,7 +3,7 @@
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, Event};
 
@@ -12,8 +12,12 @@ use crate::tui::app::{App, AppIntent};
 use crate::tui::terminal::{self, Tui};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
 pub fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
+    let mut pending_refresh: Option<Instant> = None;
+    let mut last_refresh: Option<Instant> = None;
+
     loop {
         terminal.draw(|frame| app.draw(frame))?;
 
@@ -24,8 +28,38 @@ pub fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
                         handle_intent(terminal, app, intent)?;
                     }
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(width, height) => {
+                    use crate::tui::layout::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
+                    if (width, height) < (MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT) {
+                        app.should_quit = true;
+                    }
+                }
                 _ => {}
+            }
+        }
+
+        if app.search_dirty {
+            let now = Instant::now();
+            let debounce_elapsed = last_refresh
+                .map(|last| now.duration_since(last) >= SEARCH_DEBOUNCE)
+                .unwrap_or(true);
+
+            if pending_refresh.is_none() && debounce_elapsed {
+                app.refresh_search();
+                last_refresh = Some(now);
+            } else {
+                pending_refresh = Some(now);
+            }
+            app.search_dirty = false;
+        }
+
+        if let Some(last_key) = pending_refresh {
+            let now = Instant::now();
+            if now.duration_since(last_key) >= SEARCH_DEBOUNCE {
+                app.refresh_search();
+                last_refresh = Some(now);
+                pending_refresh = None;
+                app.search_dirty = false;
             }
         }
 

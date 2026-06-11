@@ -142,6 +142,7 @@ pub struct SearchView {
     /// Tab moves table-column focus, so Ctrl+Space keeps autocomplete separate
     /// from table navigation.
     autocomplete: SecretRefAutocomplete,
+    search_dirty: bool,
 }
 
 impl SearchView {
@@ -176,6 +177,7 @@ impl SearchView {
             },
             folded: false,
             autocomplete: SecretRefAutocomplete::new(Vec::new()),
+            search_dirty: false,
         };
         view.refresh_results();
         view
@@ -288,13 +290,13 @@ impl SearchView {
                 let changed = self.query.pop().is_some()
                     || (self.query.is_empty() && self.tag_filters.pop().is_some());
                 if changed {
-                    self.refresh_results();
+                    self.mark_search_dirty();
                 }
                 SearchAction::None
             }
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
                 self.query.push(ch);
-                self.refresh_results();
+                self.mark_search_dirty();
                 SearchAction::None
             }
             _ => SearchAction::None,
@@ -388,7 +390,7 @@ impl SearchView {
         }
     }
 
-    fn refresh_results(&mut self) {
+    pub(crate) fn refresh_results(&mut self) {
         self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
         self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.normalize_selected_column();
@@ -400,6 +402,17 @@ impl SearchView {
         let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
         self.autocomplete.set_corpus(corpus);
         self.autocomplete.update_query(&self.query);
+    }
+
+    fn mark_search_dirty(&mut self) {
+        self.search_dirty = true;
+        self.autocomplete.update_query(&self.query);
+    }
+
+    pub(crate) fn take_search_dirty(&mut self) -> bool {
+        let search_dirty = self.search_dirty;
+        self.search_dirty = false;
+        search_dirty
     }
 
     fn refine_to_selected_tag(&mut self) -> SearchAction {
@@ -1528,7 +1541,7 @@ mod tests {
         view.rows = build_rows(&view.results, false, view.sort_state);
         view.list_state.select(Some(0));
 
-        let action = view.on_key(ctrl('t'), &KeyMap::default());
+        let action = view.dispatch_action(KeyAction::RefineTag, &KeyMap::default()).unwrap();
         assert_eq!(view.tag_filters, vec!["pci"]);
         assert!(matches!(action, SearchAction::CommandHint(msg) if msg.contains("tag:pci")));
     }
@@ -1564,7 +1577,7 @@ mod tests {
         // Unfolded baseline: 3 leaves (2 grouped + 1 single).
         assert_eq!(view.rows.len(), 3);
 
-        view.on_key(ctrl('-'), &km);
+        view.dispatch_action(KeyAction::CollapsePaths, &km);
         // Folded: prod group collapses to a single FoldedGroup row + the
         // staging singleton stays as a Secret. 2 rows total.
         assert_eq!(view.rows.len(), 2);
@@ -1580,7 +1593,7 @@ mod tests {
             other => panic!("expected Secret at row 1, got {other:?}"),
         }
 
-        view.on_key(ctrl('+'), &km);
+        view.dispatch_action(KeyAction::ExpandPaths, &km);
         assert_eq!(view.rows.len(), 3);
     }
 
@@ -1682,7 +1695,7 @@ mod tests {
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
 
-        view.on_key(ctrl('-'), &km);
+        view.dispatch_action(KeyAction::CollapsePaths, &km);
         assert_eq!(view.list_state.selected(), Some(0));
         assert!(view.selected_folded_prefix().is_some());
 
@@ -1705,6 +1718,7 @@ mod tests {
         view.on_key(key(KeyCode::Char('d')), &km);
         view.on_key(key(KeyCode::Char('a')), &km);
         view.on_key(key(KeyCode::Char('t')), &km);
+        view.refresh_results(); // debounce flush
         assert!(view
             .results
             .iter()
@@ -1722,10 +1736,12 @@ mod tests {
         view.on_key(key(KeyCode::Char('d')), &km);
         view.on_key(key(KeyCode::Char('a')), &km);
         view.on_key(key(KeyCode::Char('t')), &km);
+        view.refresh_results(); // debounce flush
         assert_eq!(view.results.len(), 1);
         view.on_key(key(KeyCode::Backspace), &km);
         view.on_key(key(KeyCode::Backspace), &km);
         view.on_key(key(KeyCode::Backspace), &km);
+        view.refresh_results(); // debounce flush
         assert_eq!(view.results.len(), 3);
     }
 
@@ -1763,6 +1779,7 @@ mod tests {
         view.on_key(key(KeyCode::Char('z')), &km);
         view.on_key(key(KeyCode::Char('z')), &km);
         view.on_key(key(KeyCode::Char('z')), &km);
+        view.refresh_results(); // debounce flush
         assert_eq!(view.results.len(), 0);
         assert!(matches!(
             view.on_key(key(KeyCode::Enter), &km),
@@ -2147,6 +2164,7 @@ mod tests {
         for ch in "zzzzz".chars() {
             view.on_key(key(KeyCode::Char(ch)), &km);
         }
+        view.refresh_results(); // debounce flush
         assert_eq!(view.results.len(), 0);
         let action = view.on_key(ctrl('y'), &km);
         match action {
@@ -2164,7 +2182,7 @@ mod tests {
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
         assert!(view.picker.is_none());
-        let action = view.on_key(ctrl('s'), &km);
+        let action = view.dispatch_action(KeyAction::SwitchStore, &km).unwrap();
         assert!(matches!(action, SearchAction::None));
         assert!(view.picker.is_some());
     }

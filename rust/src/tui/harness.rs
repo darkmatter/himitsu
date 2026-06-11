@@ -93,6 +93,14 @@ impl TuiHarness {
         }
     }
 
+    /// Flush the search debounce timer, forcing an immediate search refresh.
+    /// The live event loop debounces search-affecting keystrokes by 150 ms;
+    /// in tests we call this after typing to get immediate results.
+    pub fn flush_search(&mut self) {
+        self.app.refresh_search();
+        self.tick();
+    }
+
     /// Feed a pre-built `KeyEvent` and run one draw tick.
     pub fn press_event(&mut self, key: KeyEvent) {
         // We ignore AppIntent here: none of the flows exercised by the
@@ -291,6 +299,7 @@ mod tests {
 
         // Type "DAT" to narrow down to DATABASE_URL, then open it.
         h.type_str("DAT");
+        h.flush_search();
         assert!(h.contains("DATABASE_URL"));
         assert!(
             !h.contains("API_KEY"),
@@ -518,7 +527,7 @@ mod tests {
         // Open the store picker. The picker lists alpha (index 0) and beta
         // (index 1) alphabetically, with the cursor starting on the current
         // store (alpha).
-        h.press_ctrl('s');
+        h.press_ctrl('x'); h.press_ctrl('s');
         assert!(
             h.contains("acme/beta"),
             "store picker should list beta:\n{}",
@@ -573,7 +582,7 @@ mod tests {
         let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
         assert_eq!(h.app.current_view(), "search");
 
-        h.press(KeyCode::Char('?'));
+        h.press_ctrl('x'); h.press(KeyCode::Char('?'));
 
         assert!(
             h.contains("filter results"),
