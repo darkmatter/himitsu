@@ -527,7 +527,8 @@ mod tests {
         // Open the store picker. The picker lists alpha (index 0) and beta
         // (index 1) alphabetically, with the cursor starting on the current
         // store (alpha).
-        h.press_ctrl('x'); h.press_ctrl('s');
+        h.press_ctrl('x');
+        h.press_ctrl('s');
         assert!(
             h.contains("acme/beta"),
             "store picker should list beta:\n{}",
@@ -582,7 +583,8 @@ mod tests {
         let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, KeyMap::default());
         assert_eq!(h.app.current_view(), "search");
 
-        h.press_ctrl('x'); h.press(KeyCode::Char('?'));
+        h.press_ctrl('x');
+        h.press(KeyCode::Char('?'));
 
         assert!(
             h.contains("filter results"),

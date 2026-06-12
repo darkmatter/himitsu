@@ -11,7 +11,6 @@ pub enum SearchColumn {
     Path,
     Updated,
     Tags,
-    Description,
     Store,
 }
 
@@ -21,7 +20,6 @@ impl SearchColumn {
             SearchColumn::Path => "PATH",
             SearchColumn::Updated => "UPDATED",
             SearchColumn::Tags => "TAGS",
-            SearchColumn::Description => "DESCRIPTION",
             SearchColumn::Store => "STORE",
         }
     }
@@ -31,7 +29,6 @@ impl SearchColumn {
             SearchColumn::Path,
             SearchColumn::Updated,
             SearchColumn::Tags,
-            SearchColumn::Description,
         ]
     }
 }
@@ -79,11 +76,6 @@ pub fn compare_results(
         SearchColumn::Path => a.path.cmp(&b.path),
         SearchColumn::Updated => result_timestamp(a).cmp(result_timestamp(b)),
         SearchColumn::Tags => result_tags(a).cmp(result_tags(b)),
-        SearchColumn::Description => a
-            .description
-            .as_deref()
-            .unwrap_or("")
-            .cmp(b.description.as_deref().unwrap_or("")),
         SearchColumn::Store => a.store.cmp(&b.store),
     };
     let primary = match sort_state.direction {

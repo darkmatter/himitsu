@@ -890,22 +890,19 @@ impl SearchView {
         let path_label = self.header_label(SearchColumn::Path);
         let updated_label = self.header_label(SearchColumn::Updated);
         let tags_label = self.header_label(SearchColumn::Tags);
-        let desc_label = self.header_label(SearchColumn::Description);
         let store_label = self.header_label(SearchColumn::Store);
 
         // Pre-compute the rendered cells for each secret row so column
         // widths account for the rendered text, not raw data.
         struct SecretCells {
             indent: usize,
-            parent_dim: String, // path prefix up to (but not including) the basename
+            parent_dim: String,
             basename: String,
             path_display: String,
             path_truncated: bool,
             updated: String,
-            tags_col: String,
-            desc_text: String,
-            desc_display: String,
-            desc_truncated: bool,
+            tags_display: String,
+            tags_truncated: bool,
             store: String,
             tags: Option<Vec<String>>,
         }
@@ -927,13 +924,10 @@ impl SearchView {
                         .map(|t| humanize_age_compact(now, t))
                         .unwrap_or_else(|| "—".to_string());
                     let updated = truncate_middle(&updated_raw, SEARCH_COLUMN_MAX_WIDTH);
-                    let desc_text = result.description.clone().unwrap_or_default();
-                    let tags_raw = result.tags.as_deref().unwrap_or_default().join(", ");
-                    let tags_col = truncate_middle(&tags_raw, SEARCH_COLUMN_MAX_WIDTH);
+                    let tags_text = tag_chips_text(result.tags.as_deref());
+                    let tags_display = truncate_middle(&tags_text, SEARCH_COLUMN_MAX_WIDTH);
+                    let tags_truncated = char_count(&tags_text) > char_count(&tags_display);
                     let tags = result.tags.clone();
-                    let desc_cell = desc_cell_text(&desc_text, tags.as_deref());
-                    let desc_display = truncate_middle(&desc_cell, SEARCH_COLUMN_MAX_WIDTH);
-                    let desc_truncated = char_count(&desc_cell) > char_count(&desc_display);
                     let store = truncate_middle(&result.store, SEARCH_COLUMN_MAX_WIDTH);
                     Some(SecretCells {
                         indent: *indent,
@@ -942,10 +936,8 @@ impl SearchView {
                         path_display,
                         path_truncated,
                         updated,
-                        tags_col,
-                        desc_text,
-                        desc_display,
-                        desc_truncated,
+                        tags_display,
+                        tags_truncated,
                         store,
                         tags,
                     })
@@ -973,16 +965,10 @@ impl SearchView {
             .max(updated_label.len());
         let tags_w = row_data
             .iter()
-            .filter_map(|d| d.as_ref().map(|c| char_count(&c.tags_col)))
+            .filter_map(|d| d.as_ref().map(|c| char_count(&c.tags_display)))
             .max()
             .unwrap_or(0)
             .max(tags_label.len());
-        let desc_w = row_data
-            .iter()
-            .filter_map(|d| d.as_ref().map(|c| char_count(&c.desc_display)))
-            .max()
-            .unwrap_or(0)
-            .max(desc_label.len());
         let store_w = if show_store {
             row_data
                 .iter()
@@ -1014,10 +1000,6 @@ impl SearchView {
             Span::styled(
                 format!("{:<tags_w$}  ", tags_label, tags_w = tags_w),
                 self.header_style(SearchColumn::Tags, header_style),
-            ),
-            Span::styled(
-                format!("{:<desc_w$}  ", desc_label, desc_w = desc_w),
-                self.header_style(SearchColumn::Description, header_style),
             ),
         ];
         if show_store {
@@ -1067,16 +1049,9 @@ impl SearchView {
                 }
                 Row::Secret { shared_prefix, .. } => {
                     let cells = data.as_ref().unwrap();
-                    // Compose the path cell. The parent prefix is split into
-                    // a "shared" segment (top-level path slice when this leaf
-                    // belongs to a multi-leaf group) painted in a subtle
-                    // accent — replacing the old folder header — and the
-                    // remaining parent path which stays dimmed.
                     let indent = "  ".repeat(cells.indent);
                     let consumed = indent.len() + char_count(&cells.path_display);
                     let pad = path_w.saturating_sub(consumed);
-                    let consumed_desc = char_count(&cells.desc_display);
-                    let desc_pad = desc_w.saturating_sub(consumed_desc);
                     let mut spans = vec![Span::raw(indent)];
                     if cells.path_truncated {
                         spans.push(Span::raw(cells.path_display.clone()));
@@ -1101,23 +1076,22 @@ impl SearchView {
                             format!("{:<updated_w$}  ", cells.updated, updated_w = updated_w),
                             Style::default().fg(theme::muted()),
                         ),
-                        Span::styled(
-                            format!("{:<tags_w$}  ", cells.tags_col, tags_w = tags_w),
-                            Style::default().fg(theme::accent()),
-                        ),
                     ]);
-                    if cells.desc_truncated {
-                        spans.push(Span::raw(cells.desc_display.clone()));
+                    // Colorized per-tag chips in the TAGS column. When the
+                    // chip text overflows the column budget, fall back to the
+                    // plain truncated string so the rendered width always
+                    // matches `tags_display` (which sized the column).
+                    let tag_consumed = char_count(&cells.tags_display);
+                    let tag_pad = tags_w.saturating_sub(tag_consumed);
+                    if cells.tags_truncated {
+                        spans.push(Span::styled(
+                            cells.tags_display.clone(),
+                            Style::default().fg(theme::accent()),
+                        ));
                     } else {
-                        let chips = format_tag_chips(cells.tags.as_deref());
-                        let needs_sep = !cells.desc_text.is_empty() && !chips.is_empty();
-                        spans.push(Span::raw(cells.desc_text.clone()));
-                        if needs_sep {
-                            spans.push(Span::raw(" "));
-                        }
-                        spans.extend(chips);
+                        spans.extend(format_colored_tag_chips(cells.tags.as_deref()));
                     }
-                    spans.push(Span::raw(format!("{:<pad$}  ", "", pad = desc_pad)));
+                    spans.push(Span::raw(format!("{:<tag_pad$}  ", "", tag_pad = tag_pad)));
                     if show_store {
                         spans.push(Span::styled(
                             format!("{:<store_w$}", cells.store, store_w = store_w),
@@ -1215,47 +1189,42 @@ impl SearchView {
     }
 }
 
-/// Render a secret's tag list as a sequence of small `[tag]` spans suitable
-/// for inlining into a table row. Returns an empty `Vec` when there are no
-/// tags to show — either because the secret could not be decrypted (`None`)
-/// or because it decrypted but carried no tags (`Some(&[])`); both cases
-/// render the same way, mirroring how `description = None` is currently
-/// handled (no chip, no `?` placeholder).
+/// Render a secret's tag list as a sequence of colorized `[tag]` spans
+/// suitable for the TAGS column in the search table. Each tag gets a
+/// deterministic per-tag color via [`theme::tag_color`] so different tags
+/// are visually distinguishable at a glance.
 ///
-/// Each chip renders as `[<label>] ` with a trailing space so consecutive
-/// chips space themselves naturally without the caller having to interleave
-/// separators.
-fn format_tag_chips(tags: Option<&[String]>) -> Vec<Span<'static>> {
+/// Returns an empty `Vec` when there are no tags to show. The rendered
+/// text is exactly [`tag_chips_text`] — `[a] [b]` with single-space
+/// separators and no trailing space — so column width math stays exact.
+fn format_colored_tag_chips(tags: Option<&[String]>) -> Vec<Span<'static>> {
     let Some(tags) = tags else {
         return Vec::new();
     };
-    if tags.is_empty() {
-        return Vec::new();
+    let mut spans = Vec::with_capacity(tags.len() * 2);
+    for (i, tag) in tags.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            format!("[{tag}]"),
+            Style::default().fg(theme::tag_color(tag)),
+        ));
     }
-    let style = Style::default().fg(theme::muted());
-    tags.iter()
-        .map(|tag| Span::styled(format!("[{tag}] "), style))
-        .collect()
+    spans
 }
 
+/// Plain-text form of the tag chip cell (`[a] [b]`), used for column
+/// width computation and truncation decisions. Must stay in sync with
+/// [`format_colored_tag_chips`].
 fn tag_chips_text(tags: Option<&[String]>) -> String {
     let Some(tags) = tags else {
         return String::new();
     };
     tags.iter()
-        .map(|tag| format!("[{tag}] "))
-        .collect::<String>()
-}
-
-fn desc_cell_text(desc: &str, tags: Option<&[String]>) -> String {
-    let chips = tag_chips_text(tags);
-    if desc.is_empty() {
-        chips
-    } else if chips.is_empty() {
-        desc.to_string()
-    } else {
-        format!("{desc} {chips}")
-    }
+        .map(|t| format!("[{t}]"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn truncate_middle(value: &str, max_chars: usize) -> String {
@@ -1541,7 +1510,9 @@ mod tests {
         view.rows = build_rows(&view.results, false, view.sort_state);
         view.list_state.select(Some(0));
 
-        let action = view.dispatch_action(KeyAction::RefineTag, &KeyMap::default()).unwrap();
+        let action = view
+            .dispatch_action(KeyAction::RefineTag, &KeyMap::default())
+            .unwrap();
         assert_eq!(view.tag_filters, vec!["pci"]);
         assert!(matches!(action, SearchAction::CommandHint(msg) if msg.contains("tag:pci")));
     }
@@ -1907,8 +1878,14 @@ mod tests {
             !row.contains(path),
             "row should not contain the raw long path:\n{row}"
         );
+    }
 
-        let desc = "desc/very-long-secret-name-with-middle-and-baz";
+    #[test]
+    fn tags_cell_caps_long_chip_text_with_middle_truncation() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+        let long_tag = "very-long-tag-name-exceeding-the-column-budget";
         set_single_result(
             &mut view,
             SearchResult {
@@ -1917,8 +1894,8 @@ mod tests {
                 path: "prod/API_KEY".into(),
                 created_at: None,
                 updated_at: None,
-                description: Some(desc.into()),
-                tags: None,
+                description: None,
+                tags: Some(vec![long_tag.to_string()]),
             },
         );
 
@@ -1928,12 +1905,12 @@ mod tests {
             .find(|line| line.contains("prod/API_KEY"))
             .expect("secret row should render");
         assert!(
-            row.contains("desc/very-long-..-middle-and-baz"),
-            "description should be middle-truncated after 32 chars:\n{row}"
+            !row.contains(long_tag),
+            "row should not contain the raw long tag:\n{row}"
         );
         assert!(
-            !row.contains(desc),
-            "row should not contain the raw long description:\n{row}"
+            row.contains(TRUNCATION_MARKER),
+            "long tag chip text should be middle-truncated:\n{row}"
         );
     }
 
@@ -1961,7 +1938,7 @@ mod tests {
             rendered
         };
 
-        // Default render: PATH / UPDATED / TAGS / DESCRIPTION are always
+        // Default render: PATH / UPDATED / TAGS are always
         // shown; STORE is hidden until the user toggles it on via the
         // command palette.
         let rendered = render(&mut view);
@@ -1971,10 +1948,6 @@ mod tests {
             "missing UPDATED header: {rendered}"
         );
         assert!(rendered.contains("TAGS"), "missing TAGS header: {rendered}");
-        assert!(
-            rendered.contains("DESCRIPTION"),
-            "missing DESCRIPTION header: {rendered}"
-        );
         assert!(
             !rendered.contains("STORE"),
             "STORE header should be hidden by default: {rendered}"
@@ -1987,6 +1960,10 @@ mod tests {
         assert!(
             rendered.contains("STORE"),
             "STORE header should appear after toggle: {rendered}"
+        );
+        assert!(
+            !rendered.contains("TAGSSTORE"),
+            "TAGS and STORE headers must stay separated: {rendered}"
         );
     }
 
@@ -2194,9 +2171,9 @@ mod tests {
     }
 
     #[test]
-    fn format_tag_chips_renders_each_label() {
+    fn format_colored_tag_chips_renders_each_label() {
         let tags = vec!["pci".to_string(), "stripe".to_string()];
-        let spans = format_tag_chips(Some(&tags));
+        let spans = format_colored_tag_chips(Some(&tags));
         let rendered = spans_text(&spans);
         assert!(
             rendered.contains("[pci]"),
@@ -2209,8 +2186,8 @@ mod tests {
     }
 
     #[test]
-    fn format_tag_chips_returns_empty_when_tags_none() {
-        let spans = format_tag_chips(None);
+    fn format_colored_tag_chips_returns_empty_when_tags_none() {
+        let spans = format_colored_tag_chips(None);
         assert!(
             spans.is_empty(),
             "expected no chips for None, got {spans:?}"
@@ -2218,12 +2195,39 @@ mod tests {
     }
 
     #[test]
-    fn format_tag_chips_returns_empty_when_tag_list_empty() {
+    fn format_colored_tag_chips_returns_empty_when_tag_list_empty() {
         let tags: Vec<String> = Vec::new();
-        let spans = format_tag_chips(Some(&tags));
+        let spans = format_colored_tag_chips(Some(&tags));
         assert!(
             spans.is_empty(),
             "expected no chips for empty list, got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn colored_tag_chips_text_matches_plain_cell_text() {
+        let tags = vec!["pci".to_string(), "stripe".to_string(), "a".to_string()];
+        let spans = format_colored_tag_chips(Some(&tags));
+        assert_eq!(
+            spans_text(&spans),
+            tag_chips_text(Some(&tags)),
+            "rendered chip text must match the width-computation text"
+        );
+        assert_eq!(tag_chips_text(None), "");
+        assert_eq!(spans_text(&format_colored_tag_chips(None)), "");
+    }
+
+    #[test]
+    fn tag_color_is_deterministic_per_tag() {
+        let a1 = theme::tag_color("pci");
+        let a2 = theme::tag_color("pci");
+        assert_eq!(a1, a2, "same tag must always map to the same color");
+        // Not all tags may differ (small palette), but these two known
+        // inputs hash to different palette slots.
+        assert_ne!(
+            theme::tag_color("pci"),
+            theme::tag_color("stripe"),
+            "distinct tags should usually get distinct colors"
         );
     }
 }

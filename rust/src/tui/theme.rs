@@ -248,6 +248,22 @@ pub(crate) fn path_dim() -> Color {
     current().path_dim
 }
 
+/// Deterministic per-tag accent color. Hashes the tag string into a
+/// small pool of visually distinct colors so each tag chip is
+/// distinguishable at a glance without requiring user configuration.
+pub(crate) fn tag_color(tag: &str) -> Color {
+    const TAG_PALETTE: &[Color] = &[
+        Color::Cyan,
+        Color::Magenta,
+        Color::Yellow,
+        Color::Green,
+        Color::Blue,
+        Color::Red,
+    ];
+    let hash = tag.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+    TAG_PALETTE[hash as usize % TAG_PALETTE.len()]
+}
+
 impl Palette {
     fn named(name: &str) -> Result<Self> {
         match normalize_name(name).as_str() {
