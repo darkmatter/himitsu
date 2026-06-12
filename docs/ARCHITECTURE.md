@@ -53,7 +53,7 @@ For example, `.himitsu/secrets/prod/integrations/STRIPE_KEY.age` is valid.
 Values are encrypted, key names are visible in filenames. This keeps change
 diffs simple and allows fast listing/search without decrypting everything.
 
-Note: v[next] removed the `envs:` block, replaced with `outputs:` and tag selectors.
+Note: v[next] removed the `envs:` block, replaced with `codegen:` (née `outputs:`) and tag selectors.
 Legacy `vars/<env>/` paths are migrated to `.himitsu/secrets/<path>.age`.
 
 ## 3) Filesystem Layout
@@ -350,7 +350,7 @@ variables into a child process. `<REF>` supports five formats:
 | Format | Example | Behavior |
 |--------|---------|----------|
 | Tag selector | `tag:pci` | Inject all secrets carrying the `pci` tag |
-| Output label | `pci-prod` | Resolve via project config `outputs:` map (local-store secrets only) |
+| Output label | `pci-prod` | Resolve via project config `codegen:` map (local-store secrets only) |
 | Prefix glob | `prod/*` | Inject every secret under the `prod/` prefix |
 | Trailing-slash | `prod/` | Same as `prod/*` — avoids shell glob expansion |
 | Concrete path | `prod/API_KEY` | Inject a single secret |

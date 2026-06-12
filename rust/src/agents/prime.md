@@ -18,7 +18,7 @@ himitsu exec <ref> -- <cmd>                # Run with secrets as env vars
 | Format | Example | Behavior |
 |--------|---------|----------|
 | Tag selector | `tag:pci` | All secrets carrying tag `pci` |
-| Output label | `my-env` | Resolved from project config `outputs:` (local-store secrets only) |
+| Output label | `my-env` | Resolved from project config `codegen:` (local-store secrets only) |
 | Prefix glob | `prod/*` | Every secret under `prod/` |
 | Trailing slash | `prod/` | Same as `prod/*` (avoids shell expansion) |
 | Concrete path | `prod/API_KEY` | Single secret |

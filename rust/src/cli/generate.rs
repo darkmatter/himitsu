@@ -10,7 +10,7 @@ use crate::config::outputs::resolver::ResolvedOutput;
 use crate::config::ProjectConfig;
 use crate::error::{HimitsuError, Result};
 
-/// Generate SOPS-encrypted (or plaintext) output files from outputs definitions.
+/// Generate SOPS-encrypted (or plaintext) output files from codegen definitions.
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
     /// Override output directory (default: from `generate.target` in project config).
@@ -46,8 +46,8 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
 
     if outputs.all().is_empty() {
         return Err(HimitsuError::GenerateError(
-            "no `outputs` defined in project config — \
-             define outputs: blocks in himitsu.yaml or use `himitsu codegen`"
+            "no `codegen` defined in project config — \
+             define codegen: blocks in himitsu.yaml or use `himitsu codegen`"
                 .into(),
         ));
     }

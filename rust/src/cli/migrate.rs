@@ -18,7 +18,7 @@ pub struct MigrateArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum MigrateCommand {
-    /// One-shot migration: fold environment proto fields into tags; rewrite .himitsu.yaml envs: → outputs:.
+    /// One-shot migration: fold environment proto fields into tags; rewrite .himitsu.yaml envs:/outputs: → codegen:.
     Envs {
         #[arg(long)]
         dry_run: bool,
@@ -190,8 +190,9 @@ fn migrate_all_project_configs(ctx: &super::Context, dry_run: bool) -> Result<us
     Ok(total)
 }
 
-/// Rewrite a single config file's `envs:` block to `outputs:`. No-op (returns
-/// 0) when the file is absent or carries no `envs:` block.
+/// Rewrite a single config file's legacy `envs:` / `outputs:` blocks to a
+/// `codegen:` block. No-op (returns 0) when the file is absent or carries
+/// no legacy block.
 fn migrate_project_config(path: &Path, dry_run: bool) -> Result<usize> {
     if !path.exists() {
         return Ok(0);
@@ -210,12 +211,47 @@ fn migrate_project_config(path: &Path, dry_run: bool) -> Result<usize> {
         )));
     };
 
-    let Some(envs) = root_map.remove(Value::String("envs".to_string())) else {
+    let legacy_envs = root_map.remove(Value::String("envs".to_string()));
+    let legacy_outputs = root_map.remove(Value::String("outputs".to_string()));
+    if legacy_envs.is_none() && legacy_outputs.is_none() {
         return Ok(0);
+    }
+    if root_map.contains_key(Value::String("codegen".to_string())) {
+        return Err(HimitsuError::InvalidConfig(format!(
+            "{} has both a 'codegen:' block and a legacy 'envs:'/'outputs:' block — merge them manually",
+            path.display()
+        )));
+    }
+    let mut codegen = match legacy_outputs {
+        Some(Value::Mapping(m)) => m,
+        Some(Value::Null) | None => Mapping::new(),
+        Some(_) => {
+            return Err(HimitsuError::InvalidConfig(format!(
+                "legacy `outputs` block in {} must be a mapping",
+                path.display()
+            )))
+        }
     };
-    let outputs = translate_envs_to_outputs(&envs)?;
-    let rewritten = outputs.as_mapping().map_or(0, Mapping::len);
-    root_map.insert(Value::String("outputs".to_string()), outputs);
+    if let Some(envs) = legacy_envs {
+        let translated = translate_envs_to_outputs(&envs)?;
+        if let Value::Mapping(m) = translated {
+            for (k, v) in m {
+                if codegen.contains_key(&k) {
+                    return Err(HimitsuError::InvalidConfig(format!(
+                        "label '{}' defined in both legacy 'envs:' and 'outputs:' blocks in {}",
+                        k.as_str().unwrap_or("?"),
+                        path.display()
+                    )));
+                }
+                codegen.insert(k, v);
+            }
+        }
+    }
+    let rewritten = codegen.len();
+    root_map.insert(
+        Value::String("codegen".to_string()),
+        Value::Mapping(codegen),
+    );
 
     if !dry_run {
         // Back up alongside the original, preserving its real filename

@@ -93,8 +93,8 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 
     if outputs.all().is_empty() {
         return Err(HimitsuError::InvalidConfig(
-            "no `outputs` defined in project config — \
-             define outputs: blocks in himitsu.yaml"
+            "no `codegen` defined in project config — \
+             define codegen: blocks in himitsu.yaml"
                 .into(),
         ));
     }
@@ -104,12 +104,12 @@ pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
 
     if inventory.all_keys.is_empty() {
         return Err(HimitsuError::InvalidConfig(
-            "no secrets found in outputs — nothing to generate".into(),
+            "no secrets found in codegen outputs — nothing to generate".into(),
         ));
     }
 
     info!(
-        "found {} keys across {} outputs",
+        "found {} keys across {} codegen outputs",
         inventory.all_keys.len(),
         inventory.environments.len(),
     );
@@ -147,8 +147,8 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
 
     if outputs.all().is_empty() {
         return Err(HimitsuError::InvalidConfig(
-            "no `outputs` defined in project config — \
-             define outputs: blocks in himitsu.yaml"
+            "no `codegen` defined in project config — \
+             define codegen: blocks in himitsu.yaml"
                 .into(),
         ));
     }
@@ -1001,7 +1001,7 @@ mod tests {
         };
 
         let result = with_outputs_project(
-            "outputs:\n  prod:\n    selectors:\n      - prod/MY_SECRET\n",
+            "codegen:\n  prod:\n    selectors:\n      - prod/MY_SECRET\n",
             || run(args, &ctx),
         );
         assert!(result.is_ok());
@@ -1095,7 +1095,7 @@ mod tests {
         };
 
         with_outputs_project(
-            "outputs:\n  prod:\n    selectors:\n      - prod/TOKEN\n",
+            "codegen:\n  prod:\n    selectors:\n      - prod/TOKEN\n",
             || run(args, &ctx).unwrap(),
         );
         assert!(output.exists());
@@ -1135,7 +1135,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
             project.join("himitsu.yaml"),
-            "outputs:\n  dev:\n    selectors:\n      - dev/API_KEY\n",
+            "codegen:\n  dev:\n    selectors:\n      - dev/API_KEY\n",
         )
         .unwrap();
 

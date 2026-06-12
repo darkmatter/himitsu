@@ -68,7 +68,7 @@ pub struct OutputDef {
     pub aliases: AliasMap,
 }
 
-/// The full `outputs:` block: output-name → OutputDef.
+/// The full `codegen:` block: output-name → OutputDef.
 pub type OutputsMap = BTreeMap<String, OutputDef>;
 
 /// Expand a brace-pattern label into `(expanded_name, capture_value)` pairs.

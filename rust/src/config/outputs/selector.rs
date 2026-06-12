@@ -1,4 +1,4 @@
-//! Tag-selector grammar for `himitsu exec`, `himitsu generate`, and the `outputs:` block.
+//! Tag-selector grammar for `himitsu exec`, `himitsu generate`, and the `codegen:` block.
 //!
 //! # Grammar (EBNF)
 //!

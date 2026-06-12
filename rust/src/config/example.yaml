@@ -89,7 +89,7 @@ auto_pull: false
 #     new_secret:     [ctrl+n]            # open new-secret form
 #     switch_store:   [ctrl+s]            # store picker
 #     copy_selected:  [ctrl+y]            # copy selected secret's value
-#     envs:           [shift+e]           # browse output presets (outputs:)
+#     envs:           [shift+e]           # browse codegen presets (codegen:)
 #
 #     # ── Secret viewer ──────────────────────────────────────────────────
 #     reveal:         [r]                 # reveal / hide value
@@ -115,7 +115,7 @@ auto_pull: false
 #   selectors: list of path globs, tag expressions, or combined selectors
 #   aliases:   explicit env-var-name → secret-ref overrides
 #
-# outputs:
+# codegen:
 #   pci-prod:
 #     selectors:
 #       - tag:pci+tag:prod

@@ -101,7 +101,13 @@ pub struct Config {
     pub tui: TuiConfig,
 
     #[serde(default)]
-    pub outputs: outputs::OutputsMap,
+    pub codegen: outputs::OutputsMap,
+
+    /// Captures a legacy `outputs:` block if present so callers can reject
+    /// it with a rename-guidance error. `None` when absent — checked via
+    /// [`reject_legacy_outputs`] after load. Never re-serialized.
+    #[serde(rename = "outputs", default, skip_serializing)]
+    outputs_legacy: Option<serde_yaml::Value>,
 
     /// Captures a legacy `envs:` block if present so callers can warn the
     /// user to run `himitsu migrate envs`. `None` when absent — checked via
@@ -113,6 +119,15 @@ pub struct Config {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Hard-error when this config carried a non-empty legacy `outputs:`
+    /// block (renamed to `codegen:`). Callers that parse a `Config`
+    /// outside [`Config::load`] (e.g. mutation paths that re-serialize the
+    /// struct, silently dropping `skip_serializing` legacy fields) MUST
+    /// call this before acting on the parsed value.
+    pub(crate) fn reject_legacy_outputs(&self, source: &str) -> Result<()> {
+        reject_legacy_outputs(&self.outputs_legacy, source)
     }
 }
 
@@ -165,7 +180,13 @@ pub struct ProjectConfig {
     pub default_store: Option<String>,
 
     #[serde(default)]
-    pub outputs: outputs::OutputsMap,
+    pub codegen: outputs::OutputsMap,
+
+    /// Captures a legacy `outputs:` block if present so callers can reject
+    /// it with a rename-guidance error. `None` when absent. Never
+    /// re-serialized.
+    #[serde(rename = "outputs", default, skip_serializing)]
+    outputs_legacy: Option<serde_yaml::Value>,
 
     /// Captures a legacy `envs:` block if present so callers can warn the
     /// user to run `himitsu migrate envs`. `None` when absent. Never
@@ -199,10 +220,28 @@ fn warn_legacy_envs(envs_legacy: &Option<serde_yaml::Value>) {
     };
     if has_content {
         eprintln!(
-            "warning: 'envs:' block has been replaced by 'outputs:' \
+            "warning: 'envs:' block has been replaced by 'codegen:' \
              — run 'himitsu migrate envs' to convert"
         );
     }
+}
+
+/// Reject a legacy `outputs:` block with a hard error and rename guidance.
+/// Called at the same canonical load sites as [`warn_legacy_envs`].
+/// Empty/null blocks are tolerated silently (mirroring `warn_legacy_envs`).
+fn reject_legacy_outputs(outputs_legacy: &Option<serde_yaml::Value>, source: &str) -> Result<()> {
+    let has_content = match outputs_legacy {
+        Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
+        Some(serde_yaml::Value::Sequence(s)) => !s.is_empty(),
+        Some(v) => !v.is_null(),
+        None => false,
+    };
+    if has_content {
+        return Err(HimitsuError::InvalidConfig(format!(
+            "the 'outputs:' key has been renamed to 'codegen:' — rename it in {source} or run 'himitsu migrate envs'"
+        )));
+    }
+    Ok(())
 }
 
 // ── Env label validation ──────────────────────────────────────────────────
@@ -311,13 +350,27 @@ impl ProjectConfig {
         Ok(())
     }
 
+    /// See [`Config::reject_legacy_outputs`] — same contract for the
+    /// per-project config.
+    pub(crate) fn reject_legacy_outputs(&self, source: &str) -> Result<()> {
+        reject_legacy_outputs(&self.outputs_legacy, source)
+    }
+
     /// Load an existing project config, or return defaults if missing.
+    /// Callers re-serialize the result (read-modify-write), which drops
+    /// `skip_serializing` legacy fields — so a non-empty legacy `outputs:`
+    /// block is a hard error here rather than silent data loss.
     pub fn load_or_default(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
         let contents = std::fs::read_to_string(path)?;
-        Ok(serde_yaml::from_str(&contents).unwrap_or_default())
+        let cfg: Self = match serde_yaml::from_str(&contents) {
+            Ok(cfg) => cfg,
+            Err(_) => return Ok(Self::default()),
+        };
+        cfg.reject_legacy_outputs(&path.display().to_string())?;
+        Ok(cfg)
     }
 
     /// Save this config to the given YAML path, creating parent dirs.
@@ -366,6 +419,7 @@ impl Config {
             let contents = std::fs::read_to_string(path)?;
             let cfg: Config = serde_yaml::from_str(&contents)?;
             warn_legacy_envs(&cfg.envs_legacy);
+            reject_legacy_outputs(&cfg.outputs_legacy, &path.display().to_string())?;
             cfg
         } else {
             Config::default()
@@ -605,6 +659,7 @@ pub(crate) fn load_project_config() -> Result<Option<(ProjectConfig, PathBuf)>> 
     let contents = std::fs::read_to_string(&path)?;
     let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
     warn_legacy_envs(&cfg.envs_legacy);
+    reject_legacy_outputs(&cfg.outputs_legacy, &path.display().to_string())?;
     Ok(Some((cfg, path)))
 }
 
@@ -622,6 +677,7 @@ pub(crate) fn load_project_config_from(start: &Path) -> Result<Option<(ProjectCo
     let contents = std::fs::read_to_string(&path)?;
     let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
     warn_legacy_envs(&cfg.envs_legacy);
+    reject_legacy_outputs(&cfg.outputs_legacy, &path.display().to_string())?;
     Ok(Some((cfg, path)))
 }
 
@@ -942,7 +998,7 @@ mod tests {
             cfg.envs_legacy.is_some(),
             "legacy envs block must be captured"
         );
-        assert!(cfg.outputs.is_empty());
+        assert!(cfg.codegen.is_empty());
     }
 
     // ── Env label grammar ──────────────────────────────────────────────
@@ -1032,14 +1088,36 @@ mod tests {
             cfg.envs_legacy.is_some(),
             "legacy envs block must be captured"
         );
-        assert!(cfg.outputs.is_empty());
+        assert!(cfg.codegen.is_empty());
+    }
+
+    #[test]
+    fn legacy_outputs_key_is_rejected_with_rename_guidance() {
+        // A non-empty legacy `outputs:` block is a hard error at the
+        // canonical load sites — the key was renamed to `codegen:`.
+        let yaml = "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n";
+        let cfg = serde_yaml::from_str::<ProjectConfig>(yaml).expect("parse captures legacy key");
+        assert!(cfg.outputs_legacy.is_some());
+        let err = reject_legacy_outputs(&cfg.outputs_legacy, "himitsu.yaml").unwrap_err();
+        assert!(
+            err.to_string().contains("renamed to 'codegen:'"),
+            "error must carry rename guidance: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_legacy_outputs_key_is_tolerated() {
+        let yaml = "outputs:\n";
+        let cfg = serde_yaml::from_str::<ProjectConfig>(yaml).expect("parse ok");
+        reject_legacy_outputs(&cfg.outputs_legacy, "himitsu.yaml")
+            .expect("empty/null legacy outputs block must be tolerated");
     }
 
     #[test]
     fn project_config_full_yaml_parses() {
         let yaml = r#"
 default_store: acme/secrets
-outputs:
+codegen:
   pci-prod:
     selectors:
       - tag:pci
@@ -1053,7 +1131,7 @@ recipients_path: keys/recipients
 "#;
         let cfg: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
-        assert!(cfg.outputs.contains_key("pci-prod"));
+        assert!(cfg.codegen.contains_key("pci-prod"));
 
         let gen = cfg.generate.unwrap();
         assert_eq!(gen.target, ".generated");

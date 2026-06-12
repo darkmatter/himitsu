@@ -198,7 +198,7 @@ fn migrate_envs_full_roundtrip() {
     assert!(store.path().join(".himitsu.yaml.bak").exists());
     assert!(!home.path().join("state/envs.db").exists());
     let migrated_config = std::fs::read_to_string(config_path).unwrap();
-    assert!(migrated_config.contains("outputs:"));
+    assert!(migrated_config.contains("codegen:"));
     assert!(!migrated_config.contains("envs:"));
     assert!(migrated_config.contains("selectors:"));
     assert!(migrated_config.contains("aliases:"));
@@ -307,8 +307,8 @@ fn migrate_envs_rewrites_project_config() {
         "envs: should be gone: {migrated}"
     );
     assert!(
-        migrated.contains("outputs:"),
-        "outputs: missing: {migrated}"
+        migrated.contains("codegen:"),
+        "codegen: missing: {migrated}"
     );
     assert!(migrated.contains("dev:"), "dev env missing: {migrated}");
     assert!(
@@ -357,8 +357,8 @@ fn migrate_envs_rewrites_project_config_in_project_mode() {
         "envs: should be gone from project config: {migrated}"
     );
     assert!(
-        migrated.contains("outputs:"),
-        "outputs: missing from project config: {migrated}"
+        migrated.contains("codegen:"),
+        "codegen: missing from project config: {migrated}"
     );
     assert!(
         migrated.contains("dev/*"),
@@ -408,8 +408,8 @@ fn migrate_envs_rewrites_project_config_via_explicit_project_flag() {
         "envs: should be gone: {migrated}"
     );
     assert!(
-        migrated.contains("outputs:"),
-        "outputs: missing: {migrated}"
+        migrated.contains("codegen:"),
+        "codegen: missing: {migrated}"
     );
     assert!(
         migrated.contains("dev/*"),
@@ -550,7 +550,7 @@ fn codegen_ts_from_outputs() {
     let project_dir = tempfile::tempdir().unwrap();
     write_project_config(
         project_dir.path(),
-        "outputs:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
     );
 
     himitsu()
@@ -581,7 +581,7 @@ fn codegen_ts_requires_outputs_config() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 /// `--env` flag filters to a specific output name; other outputs' keys are
@@ -605,7 +605,7 @@ fn codegen_ts_env_filter_selects_output() {
     let project_dir = tempfile::tempdir().unwrap();
     write_project_config(
         project_dir.path(),
-        "outputs:\n  prod:\n    selectors:\n      - prod/PROD_KEY\n  dev:\n    selectors:\n      - dev/DEV_KEY\n",
+        "codegen:\n  prod:\n    selectors:\n      - prod/PROD_KEY\n  dev:\n    selectors:\n      - dev/DEV_KEY\n",
     );
 
     himitsu()
@@ -2235,7 +2235,7 @@ fn generate_basic_stdout() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2252,7 +2252,7 @@ fn generate_alias_entry() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2269,7 +2269,7 @@ fn generate_glob_entry() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2286,7 +2286,7 @@ fn generate_single_entry_only_that_key() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2327,7 +2327,7 @@ fn generate_unknown_env_errors() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2382,7 +2382,7 @@ fn generate_all_envs_stdout() {
         .current_dir(project_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outputs"));
+        .stderr(predicate::str::contains("codegen"));
 }
 
 #[test]
@@ -2399,7 +2399,7 @@ fn generate_output_flag_works() {
     let project_dir = tempfile::tempdir().unwrap();
     write_project_config(
         project_dir.path(),
-        "outputs:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - dev/MY_SECRET\n",
     );
 
     himitsu()
@@ -2438,7 +2438,7 @@ fn generate_tag_selector_output_resolves() {
     let project_dir = tempfile::tempdir().unwrap();
     write_project_config(
         project_dir.path(),
-        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
     );
 
     himitsu()
@@ -2476,7 +2476,7 @@ fn generate_tag_selector_alias_resolves() {
     let project_dir = tempfile::tempdir().unwrap();
     write_project_config(
         project_dir.path(),
-        "outputs:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
+        "codegen:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
     );
 
     himitsu()
@@ -3289,17 +3289,85 @@ fn config_envs_key_warns_but_does_not_hard_error() {
 }
 
 #[test]
-fn config_outputs_key_parses_ok() {
+fn config_codegen_key_parses_ok() {
     let (home, store) = setup();
     let cfg_path = home.path().join("config.yaml");
     std::fs::write(
         &cfg_path,
-        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
     )
     .unwrap();
 
     himitsu()
         .env("HIMITSU_CONFIG", &cfg_path)
+        .args(["--store", &store_flag(&store), "ls"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_with_legacy_outputs_key_errors_with_rename_guidance() {
+    // hm-66a: the `outputs:` config key was hard-renamed to `codegen:`.
+    // A non-empty legacy `outputs:` block must fail typed config loads
+    // with guidance instead of being silently ignored. Use a command that
+    // resolves the store from config (no `--store` override) so the global
+    // config loads with error propagation (with `--store`, only best-effort
+    // loads run and errors are swallowed by design).
+    let (home, _store) = setup();
+    let cfg_path = home.path().join("config.yaml");
+    std::fs::write(
+        &cfg_path,
+        "default_store: org/secrets\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_HOME", home.path())
+        .env("HIMITSU_CONFIG", &cfg_path)
+        .args(["get", "prod/x"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("renamed to 'codegen:'"));
+}
+
+#[test]
+fn migrate_envs_renames_outputs_key_to_codegen() {
+    // hm-66a: `himitsu migrate envs` must also rename a legacy top-level
+    // `outputs:` block to `codegen:` (value preserved verbatim), and the
+    // converted config must load cleanly afterwards.
+    let (home, store) = setup();
+    let config_path = store.path().join(".himitsu.yaml");
+    std::fs::write(
+        &config_path,
+        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+    )
+    .unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "migrate", "envs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output blocks rewritten: 1"));
+
+    let migrated = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        !migrated.contains("outputs:"),
+        "outputs: should be gone: {migrated}"
+    );
+    assert!(
+        migrated.contains("codegen:"),
+        "codegen: missing: {migrated}"
+    );
+    assert!(
+        migrated.contains("tag:pci"),
+        "selector must be preserved verbatim: {migrated}"
+    );
+
+    // The converted config now loads cleanly (no hard error).
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .current_dir(store.path())
         .args(["--store", &store_flag(&store), "ls"])
         .assert()
         .success();
@@ -3403,7 +3471,7 @@ fn exec_output_label_resolves_tag_selector() {
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
-        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
     )
     .unwrap();
 
@@ -3455,7 +3523,7 @@ fn exec_output_label_resolves_via_explicit_project_flag() {
     std::fs::write(
         project_dir.path().join("himitsu.yaml"),
         format!(
-            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+            "default_store: \"{slug}\"\ncodegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
         ),
     )
     .unwrap();
@@ -3506,7 +3574,7 @@ fn generate_resolves_outputs_via_explicit_project_flag() {
     std::fs::write(
         project_dir.path().join("himitsu.yaml"),
         format!(
-            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+            "default_store: \"{slug}\"\ncodegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
         ),
     )
     .unwrap();
@@ -3559,7 +3627,7 @@ fn exec_multiple_refs_injects_union() {
 
     std::fs::write(
         store.path().join("himitsu.yaml"),
-        "outputs:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
+        "codegen:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
     )
     .unwrap();
 
@@ -3725,7 +3793,7 @@ fn codegen_sops_warns_on_duplicate_keys() {
 
     std::fs::write(
         store.path().join("himitsu.yaml"),
-        "outputs:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
+        "codegen:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
     )
     .unwrap();
 
@@ -3764,7 +3832,7 @@ fn codegen_lang_resolves_outputs_via_explicit_project_flag() {
     std::fs::write(
         project_dir.path().join("himitsu.yaml"),
         format!(
-            "default_store: \"{slug}\"\noutputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
+            "default_store: \"{slug}\"\ncodegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n"
         ),
     )
     .unwrap();
@@ -3807,7 +3875,7 @@ fn exec_output_label_resolves_alias() {
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
-        "outputs:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
+        "codegen:\n  app:\n    selectors: []\n    aliases:\n      MY_STRIPE: prod/stripe-key\n",
     )
     .unwrap();
 
@@ -3847,7 +3915,7 @@ fn exec_output_label_resolves_tag_selector_alias() {
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
-        "outputs:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
+        "codegen:\n  app:\n    selectors: []\n    aliases:\n      STRIPE: tag:stripe\n",
     )
     .unwrap();
 
@@ -3930,7 +3998,7 @@ fn exec_unknown_label_falls_through_to_selector_and_fails() {
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
-        "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+        "codegen:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
     )
     .unwrap();
 
@@ -3999,7 +4067,7 @@ fn exec_cross_store_output_alias_is_rejected_without_impossible_workaround() {
     let project_cfg = store.path().join("himitsu.yaml");
     std::fs::write(
         &project_cfg,
-        "outputs:\n  app:\n    selectors: []\n    aliases:\n      REMOTE_STRIPE: github:acme/secrets#prod/stripe-key\n",
+        "codegen:\n  app:\n    selectors: []\n    aliases:\n      REMOTE_STRIPE: github:acme/secrets#prod/stripe-key\n",
     )
     .unwrap();
 
@@ -4012,7 +4080,7 @@ fn exec_cross_store_output_alias_is_rejected_without_impossible_workaround() {
         .stderr(predicate::str::contains("cross-store"))
         // Must NOT suggest the impossible outputs:-alias workaround.
         .stderr(predicate::str::contains("define a local").not())
-        .stderr(predicate::str::contains("outputs:` alias").not());
+        .stderr(predicate::str::contains("codegen:` alias").not());
 }
 
 #[test]

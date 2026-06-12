@@ -49,7 +49,7 @@ Use himitsu when you want:
 - **Fast local workflows**<br/>
   Use the TUI for browsing and editing, or the CLI for scripts, CI, and shell automation.
 - **Generated outputs**<br/>
-  Resolve named `outputs:` blocks into SOPS-encrypted YAML files for apps, CI, and deploy tooling.
+  Resolve named `codegen:` blocks into SOPS-encrypted YAML files for apps, CI, and deploy tooling.
 - **Nix-friendly secret injection**<br/>
   Wrap devShells, packages, and entrypoints without introducing a long-running secrets service.
 
@@ -154,7 +154,7 @@ himitsu solves duplication and eases maintenance, and is made for the following 
 ```yaml
 # .himitsu.yaml
 ...
-outputs:
+codegen:
   web-service-{dev,staging,prod}:
     selectors:
       - common/*
@@ -174,7 +174,7 @@ outputs:
 
 With this config you can run `himitsu generate --target gen` which will build SOPS-compatible yaml files to the `gen/` directory, or `himitsu exec <output-label> -- <cmd>` to launch a process with the resolved secrets injected as environment variables. Note: `exec` resolves only local-store secrets; outputs whose aliases reference another store (`github:org/repo#path`) are supported by `generate` but not yet by `exec`.
 
-### Migrating from `envs:` to `outputs:`
+### Migrating from `envs:` to `codegen:`
 
 Existing stores: run `himitsu migrate envs` once. See [migration guide](docs/migrating-envs-to-tags.md).
 
@@ -184,7 +184,7 @@ Existing stores: run `himitsu migrate envs` once. See [migration guide](docs/mig
 - **Age-only encryption** -- no KMS, no GPG, no SOPS. One `.age` file per secret.
 - **One file per secret** -- `.himitsu/secrets/<path>.age` keeps diffs readable.
 - **Path-based recipients** -- organize keys into directories (e.g. `ops/alice`, `team/*`); re-encrypt for all with `rekey`.
-- **Generated outputs** -- generate SOPS-encrypted YAML files from `outputs:` definitions in project config.
+- **Generated outputs** -- generate SOPS-encrypted YAML files from `codegen:` definitions in project config.
 - **Cross-store search** -- `himitsu search` reads every known store directly; results are live, no index to rebuild.
 - **Tags** -- attach free-form labels to secrets (`pci`, `stripe`, `rotate-2026-q1`); filter with `--tag` on `set`, `search`, `ls`, and `exec`, or compose outputs with `tag:foo` entries.
 - **Run with secrets** -- `himitsu exec <ref> -- <cmd>` resolves an output label, glob, or single secret and launches a process with the values injected as environment variables.
@@ -485,7 +485,7 @@ Run a command with secrets injected as environment variables. One or more
 refs may be passed; the union of all refs is injected. Each `<REF>` is
 one of:
 
-1. **Output label** from project config `outputs:` (e.g. `pci-prod`) -- uses
+1. **Output label** from project config `codegen:` (e.g. `pci-prod`) -- uses
    the output's alias key (or path-derived key) as the variable name. Resolves
    local-store secrets only.
 2. **Path glob** ending in `/*` (e.g. `prod/*`).
@@ -494,7 +494,7 @@ one of:
 
 Cross-store / provider-qualified refs (e.g. `github:org/repo/prod/API_KEY`)
 are not yet supported by `exec` and return a clear error -- run from the owning
-store with `-r <org/repo> exec <local-ref>`. Output (`outputs:`) entries that
+store with `-r <org/repo> exec <local-ref>`. Output (`codegen:`) entries that
 reference a cross-store secret are likewise not yet supported by `exec`.
 
 ```bash
@@ -558,7 +558,7 @@ himitsu context clear
 
 ### `himitsu migrate envs`
 
-Migrate legacy environment-based stores to `outputs:` and tags.
+Migrate legacy environment-based stores to `codegen:` and tags.
 
 ```bash
 himitsu migrate envs --dry-run
@@ -566,7 +566,7 @@ himitsu migrate envs
 ```
 
 The migration folds legacy secret `environment` fields into tags, rewrites
-legacy `envs:` config blocks to `outputs:`, removes the old env-cache file,
+legacy `envs:` and `outputs:` config blocks to `codegen:`, removes the old env-cache file,
 and writes a config backup before changing project YAML.
 
 ### `himitsu sync [store]`
@@ -609,13 +609,13 @@ himitsu export "prod/*" -o prod.sops.yaml
 
 ### `himitsu generate`
 
-Generate SOPS-encrypted output files from `outputs:` definitions in project
+Generate SOPS-encrypted output files from `codegen:` definitions in project
 config. Also requires `sops` on `PATH` -- same pipe-through-stdin contract as
 `export`. Pass `--stdout` to print plaintext YAML instead of writing encrypted
 files.
 
 ```bash
-himitsu generate           # all outputs defined in himitsu.yaml
+himitsu generate           # all codegen outputs defined in himitsu.yaml
 himitsu generate --output prod
 himitsu generate --output prod --stdout
 ```
@@ -844,7 +844,7 @@ binding immediately.
 The full action list (with defaults) is in
 [`rust/src/tui/keymap.rs`](rust/src/tui/keymap.rs):
 `quit`, `help`, `command_palette`, `new_secret`, `switch_store`,
-`copy_selected`, `copy_ref_selected`, `outputs` (legacy alias: `envs`),
+`copy_selected`, `copy_ref_selected`, `codegen` (legacy aliases: `outputs`, `envs`),
 `collapse_paths`, `expand_paths`, `toggle_autocomplete`, `refine_tag`,
 `sort_column`, `reveal`, `copy_value`, `copy_ref`, `rekey`, `edit`,
 `delete`, `back`, `save_secret`, `next_field`, `prev_field`, `cancel`.
@@ -907,7 +907,7 @@ build artifact (`vhs-demo-renders`) for inspection. Commit a refreshed
 
 The Nix helper library currently exposes the older env-oriented packing API
 (`env`, `mergeEnvs`, and `.himitsu/vars/<env>`). The CLI's current project
-output model is `outputs:`; use `himitsu generate` for new SOPS output files
+output model is `codegen:`; use `himitsu generate` for new SOPS output files
 and the Nix helpers for existing devShell / entrypoint integration.
 
 ```nix

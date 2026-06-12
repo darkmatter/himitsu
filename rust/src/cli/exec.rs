@@ -89,7 +89,7 @@ pub fn run(args: ExecArgs, ctx: &Context) -> Result<()> {
 
     let outputs = super::output_resolver::OutputResolver::open(ctx)?;
 
-    // Union of every ref's resolution. Each ref is tried as an `outputs:`
+    // Union of every ref's resolution. Each ref is tried as a `codegen:`
     // label first (`env_map` is tri-state: `Ok(None)` means not a defined
     // output name) and falls through to selector/glob/path parsing. Each ref
     // must match at least one secret. The same env-var arriving from two refs

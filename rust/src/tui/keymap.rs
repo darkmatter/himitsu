@@ -572,10 +572,10 @@ pub struct KeyMap {
     /// clipboard for the selected row. Useful when sharing how to fetch a
     /// secret without putting plaintext on the clipboard.
     pub copy_ref_selected: Vec<KeyChord>,
-    /// Open the outputs browser. The serde alias
-    /// accepts the pre-rename `envs` config key, so existing user keymaps
-    /// keep working.
-    #[serde(alias = "envs")]
+    /// Open the codegen browser. The serde aliases accept the pre-rename
+    /// `outputs` and `envs` config keys, so existing user keymaps keep
+    /// working.
+    #[serde(rename = "codegen", alias = "outputs", alias = "envs")]
     pub outputs: Vec<KeyChord>,
     /// Collapse all secret paths to top-level folders.
     pub collapse_paths: Vec<KeyChord>,
@@ -771,7 +771,7 @@ pub fn row(action: KeyAction) -> Row {
         },
         KeyAction::Outputs => Row {
             field: |km| &km.outputs,
-            help: "browse outputs",
+            help: "browse codegen",
             scope: Scope::Search,
             palette: Some(Command::Outputs),
         },

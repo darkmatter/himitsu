@@ -98,7 +98,7 @@ impl<'ctx> OutputResolver<'ctx> {
     pub fn open(ctx: &'ctx Context) -> Result<Self> {
         let outputs_map = ctx
             .project_config()?
-            .map(|(cfg, _)| cfg.outputs)
+            .map(|(cfg, _)| cfg.codegen)
             .unwrap_or_default();
         if outputs_map.is_empty() {
             return Ok(Self {
@@ -400,7 +400,7 @@ mod tests {
         std::fs::remove_file(ctx.data_dir.join("key")).unwrap();
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors:\n      - tag:pci\n  direct:\n    selectors:\n      - prod/api-key\n",
+            "codegen:\n  app:\n    selectors:\n      - tag:pci\n  direct:\n    selectors:\n      - prod/api-key\n",
         );
 
         let outputs = OutputResolver::open(&ctx).expect("open tolerates no identities");
@@ -416,7 +416,7 @@ mod tests {
         let (_tmp, ctx) = test_ctx();
         let recipients = store_recipients(&ctx);
         write_secret_with(&ctx.store, "prod/api-key", b"v1", &["pci"], &recipients);
-        write_project_outputs(&ctx, "outputs:\n  app:\n    selectors:\n      - tag:pci\n");
+        write_project_outputs(&ctx, "codegen:\n  app:\n    selectors:\n      - tag:pci\n");
 
         let outputs = OutputResolver::open(&ctx).unwrap();
         // Unknown label: not an error — the caller falls through to
@@ -445,7 +445,7 @@ mod tests {
         );
         write_project_outputs(
             &ctx,
-            "outputs:\n  tagged:\n    selectors:\n      - tag:pci\n  direct:\n    selectors: []\n    aliases:\n      LOCKED: prod/foreign\n",
+            "codegen:\n  tagged:\n    selectors:\n      - tag:pci\n  direct:\n    selectors: []\n    aliases:\n      LOCKED: prod/foreign\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();
@@ -466,7 +466,7 @@ mod tests {
         write_secret_with(&ctx.store, "prod/local", b"v", &[], &recipients);
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors: []\n    aliases:\n      SHARED: github:acme/other#prod/key\n",
+            "codegen:\n  app:\n    selectors: []\n    aliases:\n      SHARED: github:acme/other#prod/key\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();
@@ -493,7 +493,7 @@ mod tests {
         write_secret_with(&ctx.store, "staging/api-key", b"s", &[], &recipients);
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
+            "codegen:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();
@@ -524,7 +524,7 @@ mod tests {
         // fails at open, even though a caller may want a different output.
         write_project_outputs(
             &ctx,
-            "outputs:\n  ok:\n    selectors:\n      - prod/x\n  broken:\n    selectors: []\n    aliases:\n      K: tag:nomatch\n",
+            "codegen:\n  ok:\n    selectors:\n      - prod/x\n  broken:\n    selectors: []\n    aliases:\n      K: tag:nomatch\n",
         );
 
         assert!(OutputResolver::open(&ctx).is_err());
@@ -538,7 +538,7 @@ mod tests {
         write_secret_with(&ctx.store, "staging/api-key", b"s", &[], &recipients);
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
+            "codegen:\n  app:\n    selectors:\n      - prod/*\n      - staging/*\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();
@@ -567,7 +567,7 @@ mod tests {
         );
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors:\n      - prod/blob\n",
+            "codegen:\n  app:\n    selectors:\n      - prod/blob\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();
@@ -589,7 +589,7 @@ mod tests {
         write_secret_with(&ctx.store, "prod/api-key", b"v", &["pci"], &recipients);
         write_project_outputs(
             &ctx,
-            "outputs:\n  app:\n    selectors:\n      - prod/api-key\n",
+            "codegen:\n  app:\n    selectors:\n      - prod/api-key\n",
         );
 
         let outputs = OutputResolver::open(&ctx).unwrap();

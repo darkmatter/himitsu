@@ -73,7 +73,7 @@ impl Command {
             Command::AddRemote => "add remote",
             Command::SwitchStore => "switch store",
             Command::ToggleStoreColumn => "toggle store column",
-            Command::Outputs => "browse outputs",
+            Command::Outputs => "browse codegen",
             Command::Help => "show help",
             Command::Quit => "quit",
 
@@ -132,7 +132,7 @@ impl Command {
             Command::AddRemote => "Clone and register a remote git store",
             Command::SwitchStore => "Pick a different remote / checkout",
             Command::ToggleStoreColumn => "Show/hide the STORE column in the results table",
-            Command::Outputs => "Browse output presets defined in himitsu.yaml",
+            Command::Outputs => "Browse codegen presets defined in himitsu.yaml",
             Command::Help => "Open the contextual key reference",
             Command::Quit => "Exit the TUI",
 

@@ -1,4 +1,4 @@
-//! Config mutation helpers for the `outputs:` block.
+//! Config mutation helpers for the `codegen:` block.
 //!
 //! YAML fidelity matches `envs_mut`: mutations use a lossy serde_yaml
 //! round-trip, so comments and custom formatting are not preserved. Map order
@@ -123,14 +123,17 @@ fn load_outputs(resolved: &ResolvedScope) -> Result<OutputsMap> {
         return Ok(OutputsMap::new());
     }
     let contents = std::fs::read_to_string(&resolved.config_path)?;
+    let source = resolved.config_path.display().to_string();
     match resolved.scope {
         Scope::Project => {
             let cfg: ProjectConfig = serde_yaml::from_str(&contents)?;
-            Ok(cfg.outputs)
+            cfg.reject_legacy_outputs(&source)?;
+            Ok(cfg.codegen)
         }
         Scope::Global => {
             let cfg: Config = serde_yaml::from_str(&contents)?;
-            Ok(cfg.outputs)
+            cfg.reject_legacy_outputs(&source)?;
+            Ok(cfg.codegen)
         }
     }
 }
@@ -142,6 +145,10 @@ fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<(
         }
     }
 
+    // Re-serializing the typed struct silently drops `skip_serializing`
+    // legacy fields, so a lingering legacy `outputs:` block must be a
+    // hard error here — otherwise a mutation would destroy it.
+    let source = resolved.config_path.display().to_string();
     let serialized = match resolved.scope {
         Scope::Project => {
             let mut cfg: ProjectConfig = if resolved.config_path.exists() {
@@ -150,7 +157,8 @@ fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<(
             } else {
                 ProjectConfig::default()
             };
-            cfg.outputs = new_outputs.clone();
+            cfg.reject_legacy_outputs(&source)?;
+            cfg.codegen = new_outputs.clone();
             cfg.validate()?;
             serde_yaml::to_string(&cfg)?
         }
@@ -161,7 +169,8 @@ fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<(
             } else {
                 Config::default()
             };
-            cfg.outputs = new_outputs.clone();
+            cfg.reject_legacy_outputs(&source)?;
+            cfg.codegen = new_outputs.clone();
             cfg.validate()?;
             serde_yaml::to_string(&cfg)?
         }
@@ -291,5 +300,38 @@ mod tests {
         add_output_entry(&mut twice, "prod", output("tag:prod")).unwrap();
 
         assert_eq!(twice, once);
+    }
+
+    /// hm-66a: load/write must hard-error on a legacy `outputs:` block.
+    /// Re-serializing the typed struct drops `skip_serializing` legacy
+    /// fields, so silently proceeding would destroy the user's block.
+    #[test]
+    fn load_and_write_reject_legacy_outputs_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("himitsu.yaml");
+        std::fs::write(
+            &path,
+            "outputs:\n  pci-prod:\n    selectors:\n      - tag:pci\n",
+        )
+        .unwrap();
+        let resolved = ResolvedScope {
+            scope: Scope::Project,
+            config_path: path,
+        };
+
+        let load_err = load_outputs(&resolved).unwrap_err();
+        assert!(
+            load_err.to_string().contains("renamed to 'codegen:'"),
+            "load must reject with rename guidance: {load_err}"
+        );
+
+        let write_err = write_outputs(&resolved, &OutputsMap::new()).unwrap_err();
+        assert!(
+            write_err.to_string().contains("renamed to 'codegen:'"),
+            "write must reject instead of destroying the legacy block: {write_err}"
+        );
+        // The original file is untouched.
+        let contents = std::fs::read_to_string(&resolved.config_path).unwrap();
+        assert!(contents.contains("outputs:"));
     }
 }

@@ -1669,7 +1669,7 @@ mod tests {
         let proj_cfg = proj.join(".himitsu.yaml");
         std::fs::write(
             &proj_cfg,
-            "outputs:\n  dev:\n    selectors:\n      - dev/API_KEY\n  prod:\n    selectors:\n      - prod/API_KEY\n",
+            "codegen:\n  dev:\n    selectors:\n      - dev/API_KEY\n  prod:\n    selectors:\n      - prod/API_KEY\n",
         )
         .unwrap();
 
@@ -1678,7 +1678,7 @@ mod tests {
         std::fs::create_dir_all(global_cfg.parent().unwrap()).unwrap();
         std::fs::write(
             &global_cfg,
-            "outputs:\n  shared:\n    selectors:\n      - shared/TOKEN\n",
+            "codegen:\n  shared:\n    selectors:\n      - shared/TOKEN\n",
         )
         .unwrap();
 
@@ -1939,7 +1939,7 @@ mod tests {
         let proj = seed_two_project_one_global(&home);
         std::fs::write(
             proj.join(".himitsu.yaml"),
-            "outputs:\n  multi:\n    selectors:\n      - dev/API_KEY\n      - dev/DB_PASS\n",
+            "codegen:\n  multi:\n    selectors:\n      - dev/API_KEY\n      - dev/DB_PASS\n",
         )
         .unwrap();
         let empty_store = home.path.join("empty-store");

@@ -1,4 +1,4 @@
-//! Resolution engine for `outputs:` definitions.
+//! Resolution engine for `codegen:` definitions.
 
 use std::collections::BTreeMap;
 
