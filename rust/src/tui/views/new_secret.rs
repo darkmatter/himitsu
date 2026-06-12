@@ -10,9 +10,11 @@
 //! 4. **Tags** — comma-separated labels (`pci,stripe`). Each tag must match
 //!    the grammar `[A-Za-z0-9_.-]+`, 1-64 chars.
 //! 5. **URL** — associated website or API.
-//! 6. **TOTP** — `otpauth://` URI or base32 secret (validated).
-//! 7. **Env key** — default env-var name (validated).
-//! 8. **Expires at** — `never`, relative duration (`30d`/`6mo`/`1y`), or an
+//! 6. **More options** — toggle row; Enter/Space expands or collapses the
+//!    advanced fields below. When collapsed, Tab skips straight to Submit.
+//! 7. **TOTP** — `otpauth://` URI or base32 secret (validated).
+//! 8. **Env key** — default env-var name (validated).
+//! 9. **Expires at** — `never`, relative duration (`30d`/`6mo`/`1y`), or an
 //!    RFC 3339 timestamp.
 //!
 //! Tab / Shift-Tab move between fields with wrap-around. `Ctrl+S` or `Ctrl+W`
@@ -90,6 +92,9 @@ pub enum Step {
     Description,
     Tags,
     Url,
+    /// Collapsible toggle for advanced fields (totp, env_key, expires_at).
+    /// Enter/Space toggles the section; Tab advances past it.
+    MoreOptions,
     Totp,
     EnvKey,
     ExpiresAt,
@@ -101,12 +106,13 @@ pub enum Step {
 impl Step {
     /// All steps in display/tab order. Used for Tab / Shift-Tab cycling
     /// and for tests asserting the cycle visits every field.
-    const ORDER: [Step; 9] = [
+    const ORDER: [Step; 10] = [
         Step::Path,
         Step::Value,
         Step::Description,
         Step::Tags,
         Step::Url,
+        Step::MoreOptions,
         Step::Totp,
         Step::EnvKey,
         Step::ExpiresAt,
@@ -120,14 +126,26 @@ impl Step {
             .expect("step is always in ORDER")
     }
 
-    fn next(self) -> Step {
+    fn next(self, more_options_open: bool) -> Step {
         let i = self.index();
-        Self::ORDER[(i + 1) % Self::ORDER.len()]
+        let candidate = Self::ORDER[(i + 1) % Self::ORDER.len()];
+        if !more_options_open && matches!(candidate, Step::Totp | Step::EnvKey | Step::ExpiresAt) {
+            // Skip advanced fields when collapsed; jump to Submit.
+            Step::Submit
+        } else {
+            candidate
+        }
     }
 
-    fn prev(self) -> Step {
+    fn prev(self, more_options_open: bool) -> Step {
         let i = self.index();
-        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+        let candidate = Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()];
+        if !more_options_open && matches!(candidate, Step::Totp | Step::EnvKey | Step::ExpiresAt) {
+            // Skip advanced fields when collapsed; jump to MoreOptions.
+            Step::MoreOptions
+        } else {
+            candidate
+        }
     }
 }
 
@@ -183,6 +201,10 @@ pub struct NewSecretView {
     expires_at: String,
     status: Option<String>,
     path_corpus: Vec<String>,
+    /// `true` when the advanced fields (totp, env_key, expires_at) are
+    /// visible in the form. `false` collapses them behind the MoreOptions
+    /// toggle row.
+    more_options_open: bool,
     /// `Some(focused_button)` while the unsaved-changes modal is up.
     /// `None` means the modal is closed and the form behaves normally.
     confirm_exit: Option<ConfirmButton>,
@@ -208,6 +230,7 @@ impl NewSecretView {
             expires_at: String::new(),
             status: None,
             path_corpus,
+            more_options_open: false,
             confirm_exit: None,
             ctx: ctx.clone(),
         }
@@ -262,6 +285,7 @@ impl NewSecretView {
             Step::Description => Some(&mut self.description),
             Step::Tags => Some(&mut self.tags),
             Step::Url => Some(&mut self.url),
+            Step::MoreOptions => None,
             Step::Totp => Some(&mut self.totp),
             Step::EnvKey => Some(&mut self.env_key),
             Step::ExpiresAt => Some(&mut self.expires_at),
@@ -312,6 +336,7 @@ impl NewSecretView {
         let inner = match self.step {
             Step::Value => self.handle_value_key(key, keymap),
             Step::Submit => self.handle_submit_step_key(key, keymap),
+            Step::MoreOptions => self.handle_more_options_key(key, keymap),
             _ => self.handle_single_line_key(key, keymap),
         };
         self.maybe_swap_for_hint(inner, before)
@@ -364,7 +389,7 @@ impl NewSecretView {
             }
             KeyAction::SaveSecret => Some(self.submit()),
             KeyAction::PrevField => {
-                self.move_to(self.step.prev());
+                self.move_to(self.step.prev(self.more_options_open));
                 Some(NewSecretAction::None)
             }
             _ => None,
@@ -375,17 +400,17 @@ impl NewSecretView {
     /// every other key is ignored (no buffer to type into).
     fn handle_submit_step_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
         if keymap.next_field.matches(&key) {
-            self.move_to(self.step.next());
+            self.move_to(self.step.next(self.more_options_open));
             return NewSecretAction::None;
         }
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => self.submit(),
             (KeyCode::Up, _) => {
-                self.move_to(self.step.prev());
+                self.move_to(self.step.prev(self.more_options_open));
                 NewSecretAction::None
             }
             (KeyCode::Down, _) => {
-                self.move_to(self.step.next());
+                self.move_to(self.step.next(self.more_options_open));
                 NewSecretAction::None
             }
             _ => NewSecretAction::None,
@@ -444,7 +469,7 @@ impl NewSecretView {
                 return NewSecretAction::None;
             }
             self.status = None;
-            self.move_to(self.step.next());
+            self.move_to(self.step.next(self.more_options_open));
             return NewSecretAction::None;
         }
         match (key.code, key.modifiers) {
@@ -454,7 +479,7 @@ impl NewSecretView {
                     return NewSecretAction::None;
                 }
                 self.status = None;
-                self.move_to(self.step.next());
+                self.move_to(self.step.next(self.more_options_open));
                 NewSecretAction::None
             }
             (KeyCode::Up, _) => {
@@ -463,7 +488,7 @@ impl NewSecretView {
                     return NewSecretAction::None;
                 }
                 self.status = None;
-                self.move_to(self.step.prev());
+                self.move_to(self.step.prev(self.more_options_open));
                 NewSecretAction::None
             }
             (KeyCode::Down, _) => {
@@ -472,7 +497,7 @@ impl NewSecretView {
                     return NewSecretAction::None;
                 }
                 self.status = None;
-                self.move_to(self.step.next());
+                self.move_to(self.step.next(self.more_options_open));
                 NewSecretAction::None
             }
             (KeyCode::Backspace, _) => {
@@ -501,6 +526,7 @@ impl NewSecretView {
     fn accepts_char(step: Step, c: char) -> bool {
         match step {
             Step::Tags => c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ',',
+            Step::MoreOptions => false,
             _ => true,
         }
     }
@@ -512,7 +538,7 @@ impl NewSecretView {
         // `next_field` is checked before the `Enter` case so a configured
         // `Tab`/custom binding advances instead of inserting a newline.
         if keymap.next_field.matches(&key) {
-            self.move_to(self.step.next());
+            self.move_to(self.step.next(self.more_options_open));
             return NewSecretAction::None;
         }
         match (key.code, key.modifiers) {
@@ -526,6 +552,37 @@ impl NewSecretView {
             }
             (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
                 self.value.push(c);
+                NewSecretAction::None
+            }
+            _ => NewSecretAction::None,
+        }
+    }
+
+    /// MoreOptions toggle: Enter/Space toggles the section open/closed;
+    /// Tab advances to the next visible step; Up/Down navigate.
+    fn handle_more_options_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> NewSecretAction {
+        if keymap.next_field.matches(&key) {
+            self.move_to(self.step.next(self.more_options_open));
+            return NewSecretAction::None;
+        }
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) | (KeyCode::Char(' '), _) => {
+                self.more_options_open = !self.more_options_open;
+                // If collapsing while focus would be on a hidden field,
+                // snap back to MoreOptions.
+                if !self.more_options_open
+                    && matches!(self.step, Step::Totp | Step::EnvKey | Step::ExpiresAt)
+                {
+                    self.step = Step::MoreOptions;
+                }
+                NewSecretAction::None
+            }
+            (KeyCode::Up, _) => {
+                self.move_to(self.step.prev(self.more_options_open));
+                NewSecretAction::None
+            }
+            (KeyCode::Down, _) => {
+                self.move_to(self.step.next(self.more_options_open));
                 NewSecretAction::None
             }
             _ => NewSecretAction::None,
@@ -550,6 +607,7 @@ impl NewSecretView {
             Step::Value => Ok(()),
             Step::Description | Step::Url => Ok(()),
             Step::Tags => parse_tags_input(&self.tags).map(|_| ()),
+            Step::MoreOptions => Ok(()),
             Step::Totp => {
                 if self.totp.trim().is_empty() {
                     return Ok(());
@@ -625,6 +683,11 @@ impl NewSecretView {
             if let Err(msg) = check {
                 self.status = Some(msg);
                 self.step = step;
+                // Auto-expand if the failing field is an advanced field
+                // that is currently hidden behind the collapsed toggle.
+                if matches!(step, Step::Totp | Step::EnvKey | Step::ExpiresAt) {
+                    self.more_options_open = true;
+                }
                 return Err(NewSecretAction::None);
             }
         }
@@ -667,76 +730,99 @@ impl NewSecretView {
 
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = standard_canvas(frame.area());
+
+        // Build constraints dynamically based on whether advanced
+        // fields are visible.
+        let mut constraints = vec![
+            Constraint::Length(HEADER_HEIGHT),     // header
+            Constraint::Length(FORM_FIELD_HEIGHT), // path
+            Constraint::Min(FORM_FIELD_HEIGHT),    // value
+            Constraint::Length(FORM_FIELD_HEIGHT), // description
+            Constraint::Length(FORM_FIELD_HEIGHT), // tags
+            Constraint::Length(FORM_FIELD_HEIGHT), // url
+            Constraint::Length(FORM_FIELD_HEIGHT), // more options toggle
+        ];
+        if self.more_options_open {
+            constraints.push(Constraint::Length(FORM_FIELD_HEIGHT)); // totp
+            constraints.push(Constraint::Length(FORM_FIELD_HEIGHT)); // env_key
+            constraints.push(Constraint::Length(FORM_FIELD_HEIGHT)); // expires_at
+        }
+        constraints.push(Constraint::Length(FORM_FIELD_HEIGHT)); // submit button
+        constraints.push(Constraint::Length(FOOTER_HEIGHT)); // footer
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(HEADER_HEIGHT),     // header
-                Constraint::Length(FORM_FIELD_HEIGHT), // path
-                Constraint::Min(FORM_FIELD_HEIGHT),    // value
-                Constraint::Length(FORM_FIELD_HEIGHT), // description
-                Constraint::Length(FORM_FIELD_HEIGHT), // tags
-                Constraint::Length(FORM_FIELD_HEIGHT), // url
-                Constraint::Length(FORM_FIELD_HEIGHT), // totp
-                Constraint::Length(FORM_FIELD_HEIGHT), // env_key
-                Constraint::Length(FORM_FIELD_HEIGHT), // expires_at
-                Constraint::Length(FORM_FIELD_HEIGHT), // submit button
-                Constraint::Length(FOOTER_HEIGHT),     // footer
-            ])
+            .constraints(constraints)
             .split(area);
 
-        self.draw_header(frame, chunks[0]);
-        self.draw_path_field(frame, chunks[1]);
-        self.draw_value_field(frame, chunks[2]);
+        let mut i = 0;
+        self.draw_header(frame, chunks[i]);
+        i += 1;
+        self.draw_path_field(frame, chunks[i]);
+        i += 1;
+        self.draw_value_field(frame, chunks[i]);
+        i += 1;
         self.draw_single_line(
             frame,
-            chunks[3],
+            chunks[i],
             Step::Description,
             " description ",
             &self.description,
             "human-readable note (optional)",
         );
+        i += 1;
         self.draw_single_line(
             frame,
-            chunks[4],
+            chunks[i],
             Step::Tags,
             " tags ",
             &self.tags,
             "comma-separated, e.g. pci,stripe",
         );
+        i += 1;
         self.draw_single_line(
             frame,
-            chunks[5],
+            chunks[i],
             Step::Url,
             " url ",
             &self.url,
             "https://example.com",
         );
-        self.draw_single_line(
-            frame,
-            chunks[6],
-            Step::Totp,
-            " totp ",
-            &self.totp,
-            "otpauth://... or base32 secret",
-        );
-        self.draw_single_line(
-            frame,
-            chunks[7],
-            Step::EnvKey,
-            " env_key ",
-            &self.env_key,
-            "STRIPE_KEY",
-        );
-        self.draw_single_line(
-            frame,
-            chunks[8],
-            Step::ExpiresAt,
-            " expires_at ",
-            &self.expires_at,
-            "never | 30d | 6mo | 2027-01-01T00:00:00Z",
-        );
-        self.draw_submit_button(frame, chunks[9]);
-        self.draw_footer(frame, chunks[10]);
+        i += 1;
+        self.draw_more_options_toggle(frame, chunks[i]);
+        i += 1;
+        if self.more_options_open {
+            self.draw_single_line(
+                frame,
+                chunks[i],
+                Step::Totp,
+                " totp ",
+                &self.totp,
+                "otpauth://... or base32 secret",
+            );
+            i += 1;
+            self.draw_single_line(
+                frame,
+                chunks[i],
+                Step::EnvKey,
+                " env_key ",
+                &self.env_key,
+                "STRIPE_KEY",
+            );
+            i += 1;
+            self.draw_single_line(
+                frame,
+                chunks[i],
+                Step::ExpiresAt,
+                " expires_at ",
+                &self.expires_at,
+                "never | 30d | 6mo | 2027-01-01T00:00:00Z",
+            );
+            i += 1;
+        }
+        self.draw_submit_button(frame, chunks[i]);
+        i += 1;
+        self.draw_footer(frame, chunks[i]);
 
         // Modal overlay paints last so it sits above the form.
         if let Some(focused) = self.confirm_exit {
@@ -752,6 +838,28 @@ impl NewSecretView {
             Style::default().add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    fn draw_more_options_toggle(&self, frame: &mut Frame<'_>, area: Rect) {
+        let focused = self.step == Step::MoreOptions;
+        let arrow = if self.more_options_open { "▾" } else { "▸" };
+        let label = if self.more_options_open {
+            format!(" {arrow} more options ")
+        } else {
+            format!(" {arrow} more options (totp, env_key, expires_at) ")
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(label)
+            .title_style(Style::default().fg(theme::border_label()))
+            .border_style(Self::border_style(focused));
+        let hint = if self.more_options_open {
+            "press enter or space to collapse"
+        } else {
+            "press enter or space to expand"
+        };
+        let para = Self::field_paragraph("", hint, focused).block(block);
+        frame.render_widget(para, area);
     }
 
     fn draw_single_line(
@@ -1184,8 +1292,9 @@ mod tests {
     #[test]
     fn tab_cycle_visits_every_field_and_wraps_to_path() {
         let km = KeyMap::default();
-        // hm-r4i + hm-3rr: cycling forward must hit every metadata field,
-        // pass through the new submit step, and wrap back to path.
+        // hm-r4i + hm-3rr: cycling forward must hit every visible field
+        // and wrap back to path. When collapsed, Totp/EnvKey/ExpiresAt
+        // are skipped.
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
         let expected = [
@@ -1194,9 +1303,7 @@ mod tests {
             Step::Description,
             Step::Tags,
             Step::Url,
-            Step::Totp,
-            Step::EnvKey,
-            Step::ExpiresAt,
+            Step::MoreOptions,
             Step::Submit,
             Step::Path, // wrap-around
         ];
@@ -1214,10 +1321,11 @@ mod tests {
         let mut view = NewSecretView::new(&empty_ctx());
         assert_eq!(view.step(), Step::Path);
         view.on_key(back_tab(), &km);
-        // Submit is now the last tab stop.
+        // Submit is the last tab stop when collapsed.
         assert_eq!(view.step(), Step::Submit);
         view.on_key(back_tab(), &km);
-        assert_eq!(view.step(), Step::ExpiresAt);
+        // Submit → MoreOptions (collapsed skips advanced fields).
+        assert_eq!(view.step(), Step::MoreOptions);
     }
 
     #[test]
@@ -1225,8 +1333,9 @@ mod tests {
         let km = KeyMap::default();
         let mut view = NewSecretView::new(&empty_ctx());
         typ(&mut view, "prod/KEY");
-        // Walk all the way to Submit (8 Tab presses from Path).
-        for _ in 0..8 {
+        // Walk to Submit (6 Tab presses from Path when collapsed:
+        // Path→Value→Desc→Tags→Url→MoreOptions→Submit).
+        for _ in 0..6 {
             view.on_key(press(KeyCode::Tab), &km);
         }
         assert_eq!(view.step(), Step::Submit);
@@ -1310,6 +1419,10 @@ mod tests {
         typ(&mut view, "pci,stripe");
         view.on_key(press(KeyCode::Tab), &km); // -> url
         typ(&mut view, "https://api.example.com");
+        view.on_key(press(KeyCode::Tab), &km); // -> more options
+                                               // Expand the advanced section.
+        view.on_key(press(KeyCode::Enter), &km);
+        // Enter toggles but stays on MoreOptions; Tab to advance to Totp.
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
         view.on_key(press(KeyCode::Tab), &km);
@@ -1351,11 +1464,14 @@ mod tests {
         typ(&mut view, "prod/KEY");
         view.on_key(press(KeyCode::Tab), &km);
         typ(&mut view, "value");
-        // Walk to the TOTP field.
+        // Walk to the TOTP field: value→desc→tags→url→more options
         view.on_key(press(KeyCode::Tab), &km); // value -> description
         view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
-        view.on_key(press(KeyCode::Tab), &km); // -> totp
+        view.on_key(press(KeyCode::Tab), &km); // -> more options
+                                               // Expand and advance to Totp.
+        view.on_key(press(KeyCode::Enter), &km);
+        view.on_key(press(KeyCode::Tab), &km); // MoreOptions -> Totp
         assert_eq!(view.step(), Step::Totp);
         typ(&mut view, "short!!!");
         let out = view.on_key(ctrl('s'), &km);
@@ -1374,6 +1490,8 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km); // -> description
         view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
+        view.on_key(press(KeyCode::Tab), &km); // -> more options
+        view.on_key(press(KeyCode::Enter), &km); // expand
         view.on_key(press(KeyCode::Tab), &km); // -> totp
         view.on_key(press(KeyCode::Tab), &km); // -> env_key
         assert_eq!(view.step(), Step::EnvKey);
@@ -1394,6 +1512,8 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km); // -> description
         view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
+        view.on_key(press(KeyCode::Tab), &km); // -> more options
+        view.on_key(press(KeyCode::Enter), &km); // expand
         view.on_key(press(KeyCode::Tab), &km); // -> totp
         view.on_key(press(KeyCode::Tab), &km); // -> env_key
         view.on_key(press(KeyCode::Tab), &km); // -> expires_at
@@ -1415,12 +1535,155 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km); // description
         view.on_key(press(KeyCode::Tab), &km); // tags
         view.on_key(press(KeyCode::Tab), &km); // url
+        view.on_key(press(KeyCode::Tab), &km); // more options
+        view.on_key(press(KeyCode::Enter), &km); // expand
         view.on_key(press(KeyCode::Tab), &km); // totp
         view.on_key(press(KeyCode::Tab), &km); // env_key
         view.on_key(press(KeyCode::Tab), &km); // expires_at
         typ(&mut view, "never");
         let sv = view.build_secret_value().expect("valid build");
         assert!(sv.expires_at.is_none());
+    }
+
+    // ── MoreOptions toggle ──────────────────────────────────────────────
+
+    #[test]
+    fn more_options_enter_toggles_expanded_state() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        // Walk to MoreOptions (Path→Value→Desc→Tags→Url→MoreOptions).
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        assert_eq!(view.step(), Step::MoreOptions);
+        assert!(!view.more_options_open);
+        // Expand.
+        view.on_key(press(KeyCode::Enter), &km);
+        assert!(view.more_options_open);
+        // Collapse.
+        view.on_key(press(KeyCode::Enter), &km);
+        assert!(!view.more_options_open);
+    }
+
+    #[test]
+    fn more_options_space_also_toggles() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        assert_eq!(view.step(), Step::MoreOptions);
+        let space = KeyCode::Char(' ');
+        view.on_key(press(space), &km);
+        assert!(view.more_options_open);
+    }
+
+    #[test]
+    fn collapsed_tab_skips_advanced_fields() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        // Tab through collapsed: Path→Value→Desc→Tags→Url→MoreOptions→Submit.
+        for expected in [
+            Step::Value,
+            Step::Description,
+            Step::Tags,
+            Step::Url,
+            Step::MoreOptions,
+            Step::Submit,
+        ] {
+            view.on_key(press(KeyCode::Tab), &km);
+            assert_eq!(view.step(), expected);
+        }
+    }
+
+    #[test]
+    fn expanded_tab_visits_advanced_fields() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        // Walk to MoreOptions and expand.
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Enter), &km);
+        // Now Tab visits Totp→EnvKey→ExpiresAt→Submit.
+        for expected in [Step::Totp, Step::EnvKey, Step::ExpiresAt, Step::Submit] {
+            view.on_key(press(KeyCode::Tab), &km);
+            assert_eq!(view.step(), expected);
+        }
+    }
+
+    #[test]
+    fn collapsing_while_on_advanced_field_snaps_to_more_options() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Enter), &km); // expand
+        view.on_key(press(KeyCode::Tab), &km); // -> Totp
+        view.on_key(press(KeyCode::Tab), &km); // -> EnvKey
+        assert_eq!(view.step(), Step::EnvKey);
+        // Collapse via Enter on MoreOptions — but we're on EnvKey.
+        // Shift-Tab back to MoreOptions, then collapse.
+        view.on_key(back_tab(), &km); // EnvKey -> Totp
+        view.on_key(back_tab(), &km); // Totp -> MoreOptions
+        assert_eq!(view.step(), Step::MoreOptions);
+        view.on_key(press(KeyCode::Enter), &km); // collapse
+        assert!(!view.more_options_open);
+        // Focus stays on MoreOptions after collapse.
+        assert_eq!(view.step(), Step::MoreOptions);
+    }
+
+    #[test]
+    fn validate_all_auto_expands_on_advanced_field_error() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "value");
+        // Write an invalid totp directly (bypassing typing filter) while collapsed.
+        view.totp = "short!!!".to_string();
+        assert!(!view.more_options_open);
+        // Submit should auto-expand and focus Totp.
+        let out = view.on_key(ctrl('s'), &km);
+        assert!(matches!(out, NewSecretAction::None));
+        assert!(view.more_options_open);
+        assert_eq!(view.step(), Step::Totp);
+    }
+
+    #[test]
+    fn more_options_rejects_char_input() {
+        let km = KeyMap::default();
+        let mut view = NewSecretView::new(&empty_ctx());
+        typ(&mut view, "prod/KEY");
+        view.on_key(press(KeyCode::Tab), &km);
+        typ(&mut view, "v");
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        view.on_key(press(KeyCode::Tab), &km);
+        assert_eq!(view.step(), Step::MoreOptions);
+        // Typing a char on MoreOptions should not change any buffer.
+        view.on_key(press(KeyCode::Char('x')), &km);
+        assert_eq!(view.step(), Step::MoreOptions);
+        // No buffer to inspect directly, but step stays and no crash.
     }
 
     // ── Tags step ───────────────────────────────────────────────────────

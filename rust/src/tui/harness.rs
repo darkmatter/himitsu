@@ -577,6 +577,45 @@ mod tests {
         );
     }
 
+    /// hm-agw: the new-secret form opens with the advanced fields (totp,
+    /// env_key, expires_at) collapsed behind the "more options" row;
+    /// they only render after the toggle is expanded.
+    #[test]
+    fn new_secret_form_collapses_advanced_fields_by_default() {
+        let fx = Fixture::new();
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 40, KeyMap::default());
+        h.press_ctrl('n');
+        assert_eq!(h.app.current_view(), "new_secret");
+
+        assert!(
+            h.contains("more options"),
+            "collapsed toggle row missing:\n{}",
+            h.rendered()
+        );
+        // The toggle label names the fields, so assert on the bordered
+        // block titles ("┌ <name> ") which only render when expanded.
+        assert!(
+            !h.contains("┌ totp") && !h.contains("┌ env_key") && !h.contains("┌ expires_at"),
+            "advanced field rows should be hidden while collapsed:\n{}",
+            h.rendered()
+        );
+
+        // Fill the required fields, then Tab to the toggle row
+        // (path→value→desc→tags→url→more options) and expand it.
+        h.type_str("prod/NEW_KEY");
+        h.press(KeyCode::Tab);
+        h.type_str("v");
+        for _ in 0..4 {
+            h.press(KeyCode::Tab);
+        }
+        h.press(KeyCode::Enter);
+        assert!(
+            h.contains("┌ totp") && h.contains("┌ env_key") && h.contains("┌ expires_at"),
+            "advanced field rows should render after expanding:\n{}",
+            h.rendered()
+        );
+    }
+
     #[test]
     fn default_keymap_question_mark_opens_search_help() {
         let fx = Fixture::new();
