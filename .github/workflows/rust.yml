@@ -31,10 +31,7 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
-  cache:
-    runs-on: ${{ matrix.os }}
-    steps:
       - uses: cachix/cachix-action@v17
         with:
-          name: mycache
+          name: darkmatter
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
