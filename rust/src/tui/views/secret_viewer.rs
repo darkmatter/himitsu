@@ -26,7 +26,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
-use crate::tui::layout::{FOOTER_HEIGHT, HEADER_HEIGHT};
+use crate::tui::layout::{centered_length_rect, FOOTER_HEIGHT, HEADER_HEIGHT};
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -491,15 +491,7 @@ impl SecretViewerView {
         // layout has already been rendered, so this acts as an overlay.
         let prompt = format!(" Delete {}? (y/N) ", self.path);
         let width = (prompt.len() as u16 + 4).min(area.width.saturating_sub(2));
-        let height: u16 = 3;
-        let x = area.x + area.width.saturating_sub(width) / 2;
-        let y = area.y + area.height.saturating_sub(height) / 2;
-        let rect = Rect {
-            x,
-            y,
-            width,
-            height,
-        };
+        let rect = centered_length_rect(area, width, 3);
 
         let block = Block::default()
             .borders(Borders::ALL)

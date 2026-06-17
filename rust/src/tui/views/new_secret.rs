@@ -35,7 +35,8 @@ use ratatui::style::{Modifier, Style};
 use super::standard_canvas;
 
 use crate::tui::layout::{
-    CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, FOOTER_HEIGHT, FORM_FIELD_HEIGHT, HEADER_HEIGHT,
+    centered_length_rect, CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, FOOTER_HEIGHT,
+    FORM_FIELD_HEIGHT, HEADER_HEIGHT,
 };
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
@@ -978,7 +979,7 @@ impl NewSecretView {
     /// Centered "unsaved changes" popup. Painted on top of the form when the
     /// user presses Esc with at least one populated field.
     fn draw_confirm_exit(&self, frame: &mut Frame<'_>, focused: ConfirmButton) {
-        let area = confirm_popup_rect(frame.area());
+        let area = centered_length_rect(frame.area(), CONFIRM_POPUP_WIDTH, CONFIRM_POPUP_HEIGHT);
         frame.render_widget(Clear, area);
 
         let block = Block::default()
@@ -1078,19 +1079,6 @@ impl NewSecretView {
 
     pub fn help_title() -> &'static str {
         "new secret · keys"
-    }
-}
-
-/// Centered rect for the unsaved-changes popup. ~50 columns × 7 rows keeps
-/// the dialog readable on small terminals while staying compact.
-fn confirm_popup_rect(area: Rect) -> Rect {
-    let width = CONFIRM_POPUP_WIDTH.min(area.width);
-    let height = CONFIRM_POPUP_HEIGHT.min(area.height);
-    Rect {
-        x: area.x + (area.width.saturating_sub(width) / 2),
-        y: area.y + (area.height.saturating_sub(height) / 2),
-        width,
-        height,
     }
 }
 

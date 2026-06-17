@@ -18,6 +18,8 @@ use ratatui::style::{Modifier, Style};
 
 use super::{render_distributed_footer, standard_canvas};
 
+use crate::tui::layout::centered_percent_rect;
+
 use crate::tui::theme;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
@@ -1449,7 +1451,7 @@ impl OutputsView {
         let Some(pending) = self.confirm.as_ref() else {
             return;
         };
-        let area = centered_rect(50, 20, frame.area());
+        let area = centered_percent_rect(frame.area(), 50, 20);
         frame.render_widget(Clear, area);
         let block = Block::default().borders(Borders::ALL).title(Span::styled(
             " confirm delete ",
@@ -1488,7 +1490,7 @@ impl OutputsView {
     }
 
     fn draw_cancel_create_confirm(&self, frame: &mut Frame<'_>) {
-        let area = centered_rect(50, 20, frame.area());
+        let area = centered_percent_rect(frame.area(), 50, 20);
         frame.render_widget(Clear, area);
         let block = Block::default().borders(Borders::ALL).title(Span::styled(
             " discard new env? ",
@@ -1512,25 +1514,6 @@ impl OutputsView {
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(text), inner);
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(v[1])[1]
 }
 
 fn scope_key(scope: Scope) -> u8 {
