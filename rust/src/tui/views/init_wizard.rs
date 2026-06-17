@@ -238,11 +238,11 @@ impl InitWizardView {
             Step::RemoteGlobal => match key.code {
                 KeyCode::Enter => {
                     let trimmed = self.global_remote_input.trim();
-                    if !trimmed.is_empty() {
-                        if let Err(e) = config::validate_remote_slug(trimmed) {
-                            self.error = Some(e.to_string());
-                            return;
-                        }
+                    if !trimmed.is_empty()
+                        && let Err(e) = config::validate_remote_slug(trimmed)
+                    {
+                        self.error = Some(e.to_string());
+                        return;
                     }
                     self.step = self.after_global_step();
                     if self.step == Step::Provider && self.provider_options.len() <= 1 {
@@ -258,11 +258,11 @@ impl InitWizardView {
             Step::RemoteProject => match key.code {
                 KeyCode::Enter => {
                     let trimmed = self.project_remote_input.trim();
-                    if !trimmed.is_empty() {
-                        if let Err(e) = config::validate_remote_slug(trimmed) {
-                            self.error = Some(e.to_string());
-                            return;
-                        }
+                    if !trimmed.is_empty()
+                        && let Err(e) = config::validate_remote_slug(trimmed)
+                    {
+                        self.error = Some(e.to_string());
+                        return;
                     }
                     if self.provider_options.len() > 1 {
                         self.step = Step::Provider;

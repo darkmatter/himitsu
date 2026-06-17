@@ -67,16 +67,15 @@ pub fn run_mutation<T>(
 /// to the same effective store so the write is never stranded dirty.
 pub fn set_secret(ctx: &Context, path: &str, sv: &SecretValue) -> Result<String> {
     let mut chain_ctx = ctx.clone();
-    if let Ok(secret_ref) = crate::reference::SecretRef::parse(path) {
-        if secret_ref.is_qualified() {
-            if let Ok(store) = secret_ref.resolve_store() {
-                chain_ctx.store = store;
-            }
-            // Resolution errors fall through with the ambient store: the
-            // mutation body re-parses and surfaces the real error before
-            // anything is written.
-        }
+    if let Ok(secret_ref) = crate::reference::SecretRef::parse(path)
+        && secret_ref.is_qualified()
+        && let Ok(store) = secret_ref.resolve_store()
+    {
+        chain_ctx.store = store;
     }
+    // Resolution errors fall through with the ambient store: the
+    // mutation body re-parses and surfaces the real error before
+    // anything is written.
     run_mutation(&chain_ctx, &format!("set {path}"), false, || {
         if !sv.env_key.is_empty() {
             super::set::validate_env_key(&sv.env_key)?;

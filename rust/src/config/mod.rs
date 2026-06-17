@@ -78,8 +78,14 @@ pub struct Config {
     pub key_provider: KeyProvider,
 
     /// Override for the himitsu data directory.
-    /// Defaults to `~/.local/share/himitsu` or `~/Library/Application Support/himitsu`
-    /// when outside a repo. Otherwise, its .himitsu
+    ///
+    /// Defaults (global):
+    /// - `~/.local/share/himitsu` on Linux
+    /// - `~/Library/Application Support/himitsu` on macOS
+    ///
+    /// If working directory (or parent) is a git repository, use `.himitsu` in
+    /// the repository root. Otherwise, use `.himitsu` in the home directory.
+    ///
     /// Override: `HIMITSU_DATA_DIR=/custom/path`
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -498,14 +504,13 @@ pub fn config_dir() -> PathBuf {
 /// 3. XDG default (`$XDG_DATA_HOME/himitsu` on Linux, Application Support on macOS).
 pub fn data_dir() -> PathBuf {
     // Best-effort: read custom data_dir from the config file.
-    if let Ok(contents) = std::fs::read_to_string(config_path()) {
-        if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
-            if let Some(custom) = cfg.data_dir {
-                let p = custom.trim().to_string();
-                if !p.is_empty() {
-                    return PathBuf::from(p);
-                }
-            }
+    if let Ok(contents) = std::fs::read_to_string(config_path())
+        && let Ok(cfg) = serde_yaml::from_str::<Config>(&contents)
+        && let Some(custom) = cfg.data_dir
+    {
+        let p = custom.trim().to_string();
+        if !p.is_empty() {
+            return PathBuf::from(p);
         }
     }
     if std::env::var("HIMITSU_CONFIG").is_ok() {
@@ -525,14 +530,13 @@ pub fn data_dir() -> PathBuf {
 ///    dedicated state dir).
 pub fn state_dir() -> PathBuf {
     // When a custom data_dir is configured, state lives alongside it.
-    if let Ok(contents) = std::fs::read_to_string(config_path()) {
-        if let Ok(cfg) = serde_yaml::from_str::<Config>(&contents) {
-            if let Some(custom) = cfg.data_dir {
-                let p = custom.trim().to_string();
-                if !p.is_empty() {
-                    return PathBuf::from(p).join("state");
-                }
-            }
+    if let Ok(contents) = std::fs::read_to_string(config_path())
+        && let Ok(cfg) = serde_yaml::from_str::<Config>(&contents)
+        && let Some(custom) = cfg.data_dir
+    {
+        let p = custom.trim().to_string();
+        if !p.is_empty() {
+            return PathBuf::from(p).join("state");
         }
     }
     if std::env::var("HIMITSU_CONFIG").is_ok() {
@@ -813,18 +817,18 @@ pub fn resolve_store(remote_override: Option<&str>) -> Result<PathBuf> {
                 })
                 .collect();
 
-            if let Ok(cwd) = std::env::current_dir() {
-                if let Some(matched) = found.iter().find(|p| cwd.starts_with(*p)) {
-                    let slug = matched
-                        .strip_prefix(stores_dir())
-                        .ok()
-                        .map(|r| r.to_string_lossy().replace('\\', "/"))
-                        .unwrap_or_else(|| matched.to_string_lossy().into_owned());
-                    eprintln!(
-                        "note: multiple stores found — using '{slug}' because you are inside it.\n      Set a default with `himitsu context remote {slug}` to silence this."
-                    );
-                    return Ok(matched.clone());
-                }
+            if let Ok(cwd) = std::env::current_dir()
+                && let Some(matched) = found.iter().find(|p| cwd.starts_with(*p))
+            {
+                let slug = matched
+                    .strip_prefix(stores_dir())
+                    .ok()
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|| matched.to_string_lossy().into_owned());
+                eprintln!(
+                    "note: multiple stores found — using '{slug}' because you are inside it.\n      Set a default with `himitsu context remote {slug}` to silence this."
+                );
+                return Ok(matched.clone());
             }
 
             Err(HimitsuError::AmbiguousStore(slugs))
@@ -934,23 +938,23 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
+        crate::test_env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
 
         // Config absent → default false. Env override forces true.
-        std::env::remove_var("HIMITSU_AUTO_PULL");
+        crate::test_env::remove_var("HIMITSU_AUTO_PULL");
         assert!(!auto_pull_enabled());
 
         for truthy in ["1", "true", "TRUE", "yes"] {
-            std::env::set_var("HIMITSU_AUTO_PULL", truthy);
+            crate::test_env::set_var("HIMITSU_AUTO_PULL", truthy);
             assert!(auto_pull_enabled(), "expected {truthy} to enable");
         }
         for falsy in ["0", "false", "no", ""] {
-            std::env::set_var("HIMITSU_AUTO_PULL", falsy);
+            crate::test_env::set_var("HIMITSU_AUTO_PULL", falsy);
             assert!(!auto_pull_enabled(), "expected {falsy} to disable");
         }
 
-        std::env::remove_var("HIMITSU_AUTO_PULL");
-        std::env::remove_var("HIMITSU_CONFIG");
+        crate::test_env::remove_var("HIMITSU_AUTO_PULL");
+        crate::test_env::remove_var("HIMITSU_CONFIG");
     }
 
     #[test]

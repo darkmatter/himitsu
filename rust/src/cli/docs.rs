@@ -10,10 +10,10 @@ pub fn run() -> Result<()> {
         let skin = termimad::MadSkin::default_dark();
         let rendered = skin.term_text(README);
         // Pipe through $PAGER if available, otherwise print directly.
-        if let Some(pager) = pager_cmd() {
-            if pipe_to_pager(&pager, &rendered.to_string()).is_ok() {
-                return Ok(());
-            }
+        if let Some(pager) = pager_cmd()
+            && pipe_to_pager(&pager, &rendered.to_string()).is_ok()
+        {
+            return Ok(());
         }
         print!("{rendered}");
     } else {

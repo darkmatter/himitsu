@@ -137,10 +137,10 @@ fn collect_stores_from_project_config(cfg: &config::ProjectConfig) -> BTreeSet<S
 
 fn collect_store_slugs(default_store: Option<&String>) -> BTreeSet<String> {
     let mut slugs = BTreeSet::new();
-    if let Some(s) = default_store {
-        if config::validate_remote_slug(s).is_ok() {
-            slugs.insert(s.clone());
-        }
+    if let Some(s) = default_store
+        && config::validate_remote_slug(s).is_ok()
+    {
+        slugs.insert(s.clone());
     }
     slugs
 }

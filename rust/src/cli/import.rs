@@ -116,10 +116,10 @@ pub fn run(args: ImportArgs, ctx: &Context) -> Result<()> {
 
     // Plain YAML file import: positional path is a file on disk (no --op/--sops).
     if args.op.is_none() && args.sops.is_none() {
-        if let Some(ref file_path) = args.path {
-            if std::path::Path::new(file_path).exists() {
-                return run_yaml_file(file_path, &args, ctx);
-            }
+        if let Some(ref file_path) = args.path
+            && std::path::Path::new(file_path).exists()
+        {
+            return run_yaml_file(file_path, &args, ctx);
         }
         // Fall through to "missing source" error.
         return Err(HimitsuError::InvalidReference(

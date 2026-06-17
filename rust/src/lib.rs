@@ -12,4 +12,6 @@ pub mod proto;
 pub mod reference;
 pub mod remote;
 pub mod suggest;
+#[cfg(test)]
+mod test_env;
 pub mod tui;

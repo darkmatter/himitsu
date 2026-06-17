@@ -163,10 +163,10 @@ impl SecretViewerView {
         // Resolve the keymap action in view-defined priority order so
         // overlapping bindings (Shift+R vs `r`, copy_ref vs copy_value)
         // match the way they did before chord support landed.
-        if let Some(action) = match_keymap_action(keymap, &key) {
-            if let Some(outcome) = self.dispatch_action(action) {
-                return outcome;
-            }
+        if let Some(action) = match_keymap_action(keymap, &key)
+            && let Some(outcome) = self.dispatch_action(action)
+        {
+            return outcome;
         }
         SecretViewerAction::None
     }
@@ -578,12 +578,11 @@ impl SecretViewerView {
             if !d.env_key.is_empty() {
                 lines.push(labeled_line("env_key     ", d.env_key.clone()));
             }
-            if let Some(ts) = d.expires_at.as_ref() {
-                if !duration::is_unset(ts) {
-                    if let Some(dt) = duration::from_proto_timestamp(ts) {
-                        lines.push(expires_line(dt));
-                    }
-                }
+            if let Some(ts) = d.expires_at.as_ref()
+                && !duration::is_unset(ts)
+                && let Some(dt) = duration::from_proto_timestamp(ts)
+            {
+                lines.push(expires_line(dt));
             }
             // Tags render as inline accent bracket-chips on a single
             // labeled row, e.g. `tags  [pci] [stripe]`. Empty tags emit no

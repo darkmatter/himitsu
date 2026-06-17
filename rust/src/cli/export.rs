@@ -313,10 +313,10 @@ fn write_encrypted(
         )));
     }
 
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = out_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     std::fs::write(out_path, &result.stdout)?;
     eprintln!("Exported: {}", out_path.display());

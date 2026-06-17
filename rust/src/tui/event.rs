@@ -201,14 +201,14 @@ mod tests {
     #[test]
     fn run_editor_with_noop_editor_returns_none() {
         // `true` exits 0 without touching the file ⇒ no change.
-        std::env::set_var("EDITOR", "true");
+        crate::test_env::set_var("EDITOR", "true");
         let out = run_editor("hello").unwrap();
         assert_eq!(out, None);
     }
 
     #[test]
     fn run_editor_with_failing_editor_returns_none_as_cancel() {
-        std::env::set_var("EDITOR", "false");
+        crate::test_env::set_var("EDITOR", "false");
         let out = run_editor("hello").unwrap();
         assert_eq!(out, None);
     }

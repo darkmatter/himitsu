@@ -293,15 +293,15 @@ pub fn read_secret_payload(store: &Path, secret_path: &str) -> Result<SecretPayl
     let age_path = secrets_dir(store).join(format!("{secret_path}.age"));
     if age_path.exists() {
         let bytes = std::fs::read(&age_path)?;
-        if let Ok(envelope) = proto::SecretEnvelope::decode(bytes.as_slice()) {
-            if !envelope.ciphertext.is_empty() {
-                return Ok(SecretPayload {
-                    ciphertext: envelope.ciphertext,
-                    legacy_environment: (!envelope.environment.is_empty())
-                        .then_some(envelope.environment),
-                    legacy_proto_envelope: true,
-                });
-            }
+        if let Ok(envelope) = proto::SecretEnvelope::decode(bytes.as_slice())
+            && !envelope.ciphertext.is_empty()
+        {
+            return Ok(SecretPayload {
+                ciphertext: envelope.ciphertext,
+                legacy_environment: (!envelope.environment.is_empty())
+                    .then_some(envelope.environment),
+                legacy_proto_envelope: true,
+            });
         }
         return Ok(SecretPayload {
             ciphertext: bytes,
@@ -481,12 +481,12 @@ fn collect_pub_strings_recursive(dir: &Path, out: &mut Vec<String>) {
         let ft = entry.file_type().ok();
         if ft.as_ref().map(|t| t.is_dir()).unwrap_or(false) {
             collect_pub_strings_recursive(&path, out);
-        } else if path.extension().is_some_and(|e| e == "pub") {
-            if let Ok(s) = std::fs::read_to_string(&path) {
-                let trimmed = s.trim().to_string();
-                if !trimmed.is_empty() {
-                    out.push(trimmed);
-                }
+        } else if path.extension().is_some_and(|e| e == "pub")
+            && let Ok(s) = std::fs::read_to_string(&path)
+        {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() {
+                out.push(trimmed);
             }
         }
     }

@@ -323,15 +323,15 @@ impl NewSecretView {
         // are forwarded untouched — submission/save can refocus fields
         // internally (e.g. snap back to Path on validation error), and
         // we don't want that internal step churn to clobber the action.
-        if let Some(action) = keymap.action_for_key_in(&key, FORM_ACTION_PRIORITY) {
-            if let Some(outcome) = self.dispatch_action(action) {
-                // Only `PrevField` is purely navigational; map its `None`
-                // outcome to a hint sync if the step actually moved.
-                if matches!(action, KeyAction::PrevField) {
-                    return self.maybe_swap_for_hint(outcome, before);
-                }
-                return outcome;
+        if let Some(action) = keymap.action_for_key_in(&key, FORM_ACTION_PRIORITY)
+            && let Some(outcome) = self.dispatch_action(action)
+        {
+            // Only `PrevField` is purely navigational; map its `None`
+            // outcome to a hint sync if the step actually moved.
+            if matches!(action, KeyAction::PrevField) {
+                return self.maybe_swap_for_hint(outcome, before);
             }
+            return outcome;
         }
 
         let inner = match self.step {

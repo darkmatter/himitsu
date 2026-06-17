@@ -263,12 +263,11 @@ fn parse_code(s: &str) -> Option<KeyCode> {
         "delete" | "del" => Some(KeyCode::Delete),
         "insert" | "ins" => Some(KeyCode::Insert),
         _ => {
-            if let Some(rest) = lower.strip_prefix('f') {
-                if let Ok(n) = rest.parse::<u8>() {
-                    if (1..=24).contains(&n) {
-                        return Some(KeyCode::F(n));
-                    }
-                }
+            if let Some(rest) = lower.strip_prefix('f')
+                && let Ok(n) = rest.parse::<u8>()
+                && (1..=24).contains(&n)
+            {
+                return Some(KeyCode::F(n));
             }
             let mut chars = s.chars();
             let first = chars.next()?;

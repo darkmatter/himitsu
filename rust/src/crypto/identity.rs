@@ -78,14 +78,14 @@ mod tests {
     impl Drop for EnvRestore {
         fn drop(&mut self) {
             if let Some(home) = &self.home {
-                std::env::set_var("HOME", home);
+                crate::test_env::set_var("HOME", home);
             } else {
-                std::env::remove_var("HOME");
+                crate::test_env::remove_var("HOME");
             }
             if let Some(xdg_config_home) = &self.xdg_config_home {
-                std::env::set_var("XDG_CONFIG_HOME", xdg_config_home);
+                crate::test_env::set_var("XDG_CONFIG_HOME", xdg_config_home);
             } else {
-                std::env::remove_var("XDG_CONFIG_HOME");
+                crate::test_env::remove_var("XDG_CONFIG_HOME");
             }
         }
     }
@@ -93,8 +93,8 @@ mod tests {
     fn isolate_home() -> (tempfile::TempDir, EnvRestore) {
         let env = EnvRestore::capture();
         let home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        crate::test_env::set_var("HOME", home.path());
+        crate::test_env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
         (home, env)
     }
 

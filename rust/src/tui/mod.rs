@@ -112,12 +112,11 @@ pub fn run_init_flow() -> Result<()> {
             continue;
         }
 
-        if crossterm::event::poll(POLL_INTERVAL)? {
-            if let Event::Key(key) = crossterm::event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    wizard.on_key(key, &keymap);
-                }
-            }
+        if crossterm::event::poll(POLL_INTERVAL)?
+            && let Event::Key(key) = crossterm::event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            wizard.on_key(key, &keymap);
         }
     }
 

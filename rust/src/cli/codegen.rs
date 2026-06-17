@@ -71,10 +71,10 @@ struct SecretInventory {
 
 pub fn run(args: CodegenArgs, ctx: &Context) -> Result<()> {
     // Dispatch: sops mode (positional env, no --lang) vs language mode.
-    if let Some(ref label) = args.env_positional {
-        if args.lang.is_none() {
-            return run_sops(label, args.output.as_deref(), ctx);
-        }
+    if let Some(ref label) = args.env_positional
+        && args.lang.is_none()
+    {
+        return run_sops(label, args.output.as_deref(), ctx);
     }
 
     // 1. Resolve language and output path from CLI flags or project config.
@@ -182,10 +182,10 @@ fn run_sops(label: &str, output_override: Option<&str>, ctx: &Context) -> Result
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(default_sops_output_name(label)));
 
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&output_path, out.as_bytes())?;
     debug!("wrote plaintext to {}", output_path.display());
@@ -329,10 +329,8 @@ fn effective_keys(
 ) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
 
-    if merge_common {
-        if let Some(common) = inventory.keys_by_env.get("common") {
-            keys.extend(common.iter().cloned());
-        }
+    if merge_common && let Some(common) = inventory.keys_by_env.get("common") {
+        keys.extend(common.iter().cloned());
     }
 
     match env {

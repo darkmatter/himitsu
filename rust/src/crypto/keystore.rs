@@ -133,10 +133,10 @@ pub fn load_identities(
                     }
                 };
 
-                if let Some(secret) = found {
-                    if let Ok(id) = crypto_age::parse_identity(&secret) {
-                        identities.push(id);
-                    }
+                if let Some(secret) = found
+                    && let Ok(id) = crypto_age::parse_identity(&secret)
+                {
+                    identities.push(id);
                 }
             }
 
@@ -194,19 +194,18 @@ fn probe_recipient_pubkeys(
         }
         // Try the stable SHA-256 fingerprint.
         let fp = fingerprint(&pubkey);
-        if let Ok(Some(secret)) = MacOSKeychain.load_key(&fp) {
-            if let Ok(id) = crypto_age::parse_identity(&secret) {
-                identities.push(id);
-            }
+        if let Ok(Some(secret)) = MacOSKeychain.load_key(&fp)
+            && let Ok(id) = crypto_age::parse_identity(&secret)
+        {
+            identities.push(id);
         }
         // Also try legacy fingerprint for migrated entries.
         let fp_legacy = fingerprint_v1_legacy(&pubkey);
-        if fp_legacy != fp {
-            if let Ok(Some(secret)) = MacOSKeychain.load_key(&fp_legacy) {
-                if let Ok(id) = crypto_age::parse_identity(&secret) {
-                    identities.push(id);
-                }
-            }
+        if fp_legacy != fp
+            && let Ok(Some(secret)) = MacOSKeychain.load_key(&fp_legacy)
+            && let Ok(id) = crypto_age::parse_identity(&secret)
+        {
+            identities.push(id);
         }
     }
 }
@@ -388,8 +387,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
         let home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        crate::test_env::set_var("HOME", home.path());
+        crate::test_env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
 
         let paths = disk_identity_fallback_paths();
 
@@ -423,8 +422,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
         let home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        crate::test_env::set_var("HOME", home.path());
+        crate::test_env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
 
         let data_dir = tempfile::tempdir().unwrap();
         let (secret1, public1) = crate::crypto::age::keygen();
@@ -460,8 +459,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
         let home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        crate::test_env::set_var("HOME", home.path());
+        crate::test_env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
 
         let data_dir = tempfile::tempdir().unwrap();
         let (himitsu_secret, himitsu_public) = crate::crypto::age::keygen();
@@ -509,15 +508,15 @@ mod tests {
     impl Drop for EnvRestore {
         fn drop(&mut self) {
             if let Some(home) = &self.home {
-                std::env::set_var("HOME", home);
+                crate::test_env::set_var("HOME", home);
             } else {
-                std::env::remove_var("HOME");
+                crate::test_env::remove_var("HOME");
             }
 
             if let Some(xdg_config_home) = &self.xdg_config_home {
-                std::env::set_var("XDG_CONFIG_HOME", xdg_config_home);
+                crate::test_env::set_var("XDG_CONFIG_HOME", xdg_config_home);
             } else {
-                std::env::remove_var("XDG_CONFIG_HOME");
+                crate::test_env::remove_var("XDG_CONFIG_HOME");
             }
         }
     }
@@ -531,8 +530,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let _env = EnvRestore::capture();
         let home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        crate::test_env::set_var("HOME", home.path());
+        crate::test_env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
 
         let data_dir = tempfile::tempdir().unwrap();
         let (sops_secret, sops_public) = crate::crypto::age::keygen();

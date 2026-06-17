@@ -147,12 +147,10 @@ fn origin_default_branch(cwd: &Path) -> Result<String> {
     if let Ok(default) = run(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         cwd,
-    ) {
-        if let Some(branch) = default.trim().strip_prefix("origin/") {
-            if !branch.is_empty() {
-                return Ok(branch.to_string());
-            }
-        }
+    ) && let Some(branch) = default.trim().strip_prefix("origin/")
+        && !branch.is_empty()
+    {
+        return Ok(branch.to_string());
     }
 
     for branch in ["main", "master"] {

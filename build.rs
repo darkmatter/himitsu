@@ -94,13 +94,13 @@ fn emit_git_build_info() {
         println!("cargo:rerun-if-changed={}", packed_refs.display());
     }
 
-    if let Ok(head) = std::fs::read_to_string(&head_path) {
-        if let Some(reference) = head.strip_prefix("ref: ").map(str::trim) {
-            println!(
-                "cargo:rerun-if-changed={}",
-                git_dir.join(reference).display()
-            );
-        }
+    if let Ok(head) = std::fs::read_to_string(&head_path)
+        && let Some(reference) = head.strip_prefix("ref: ").map(str::trim)
+    {
+        println!(
+            "cargo:rerun-if-changed={}",
+            git_dir.join(reference).display()
+        );
     }
 }
 

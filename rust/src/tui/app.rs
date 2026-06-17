@@ -615,10 +615,10 @@ impl App {
         // so we don't need a background tick — any `draw` call (triggered by
         // a key event, window resize, etc.) sweeps a stale toast.
         let now = std::time::Instant::now();
-        if let Some(t) = self.toast.as_ref() {
-            if t.is_expired(now) {
-                self.toast = None;
-            }
+        if let Some(t) = self.toast.as_ref()
+            && t.is_expired(now)
+        {
+            self.toast = None;
         }
         if let Some(t) = self.toast.as_ref() {
             let area = frame.area();

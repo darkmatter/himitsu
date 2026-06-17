@@ -219,10 +219,10 @@ impl SearchView {
         // new_secret to a printable character still has an escape hatch.
         // All matches route through `dispatch_action` so leader-key chord
         // completions (resolved at the App layer) take the same code path.
-        if let Some(action) = match_keymap_action(keymap, &key) {
-            if let Some(outcome) = self.dispatch_action(action, keymap) {
-                return outcome;
-            }
+        if let Some(action) = match_keymap_action(keymap, &key)
+            && let Some(outcome) = self.dispatch_action(action, keymap)
+        {
+            return outcome;
         }
 
         // Autocomplete toggle, tag refine, and column sort are keymap-driven

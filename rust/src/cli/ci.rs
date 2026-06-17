@@ -183,10 +183,10 @@ fn trigger(args: RunArgs) -> Result<()> {
 }
 
 fn push_optional_field(fields: &mut Vec<String>, name: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        if !value.is_empty() {
-            fields.push(format!("{name}={value}"));
-        }
+    if let Some(value) = value
+        && !value.is_empty()
+    {
+        fields.push(format!("{name}={value}"));
     }
 }
 

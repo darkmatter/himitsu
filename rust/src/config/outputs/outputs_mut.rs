@@ -139,10 +139,11 @@ fn load_outputs(resolved: &ResolvedScope) -> Result<OutputsMap> {
 }
 
 fn write_outputs(resolved: &ResolvedScope, new_outputs: &OutputsMap) -> Result<()> {
-    if let Some(parent) = resolved.config_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = resolved.config_path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     // Re-serializing the typed struct silently drops `skip_serializing`

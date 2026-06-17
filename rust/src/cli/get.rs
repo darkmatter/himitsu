@@ -130,16 +130,15 @@ fn emit_metadata_block(decoded: &secret_value::Decoded) {
         let _ = writeln!(out, "tags:        {}", decoded.tags.join(", "));
     }
 
-    if let Some(ref ts) = decoded.expires_at {
-        if !duration::is_unset(ts) {
-            if let Some(dt) = duration::from_proto_timestamp(ts) {
-                let now = chrono::Utc::now();
-                let (msg, sev) = duration::describe_remaining(dt, now);
-                let rfc = dt.to_rfc3339();
-                let line = format!("expires:     {rfc}  ({msg})");
-                let _ = writeln!(out, "{}", colorize(&line, sev, is_tty));
-            }
-        }
+    if let Some(ref ts) = decoded.expires_at
+        && !duration::is_unset(ts)
+        && let Some(dt) = duration::from_proto_timestamp(ts)
+    {
+        let now = chrono::Utc::now();
+        let (msg, sev) = duration::describe_remaining(dt, now);
+        let rfc = dt.to_rfc3339();
+        let line = format!("expires:     {rfc}  ({msg})");
+        let _ = writeln!(out, "{}", colorize(&line, sev, is_tty));
     }
 }
 

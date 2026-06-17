@@ -915,22 +915,22 @@ fn load_recipients_path_override(
         return None;
     }
 
-    if let Ok(cfg) = crate::remote::store::load_store_config(store) {
-        if cfg.recipients_path.is_some() {
-            return cfg.recipients_path;
-        }
+    if let Ok(cfg) = crate::remote::store::load_store_config(store)
+        && cfg.recipients_path.is_some()
+    {
+        return cfg.recipients_path;
     }
 
-    if let ContextSelector::Project(root) = selector {
-        if let Ok(loaded) = crate::config::load_project_config_from(root) {
-            // Seed the invocation's memo so `Context::project_config()`
-            // doesn't re-read (or re-warn about) the same file.
-            let _ = project_config_cell.set(loaded.clone());
-            if let Some((project_cfg, _)) = loaded {
-                if project_cfg.recipients_path.is_some() {
-                    return project_cfg.recipients_path;
-                }
-            }
+    if let ContextSelector::Project(root) = selector
+        && let Ok(loaded) = crate::config::load_project_config_from(root)
+    {
+        // Seed the invocation's memo so `Context::project_config()`
+        // doesn't re-read (or re-warn about) the same file.
+        let _ = project_config_cell.set(loaded.clone());
+        if let Some((project_cfg, _)) = loaded
+            && project_cfg.recipients_path.is_some()
+        {
+            return project_cfg.recipients_path;
         }
     }
 

@@ -654,10 +654,10 @@ impl OutputsView {
 
         // If the editor was opened on a single original label and that
         // label is no longer present, delete it.
-        if let Some(orig) = original {
-            if !envs.contains_key(&orig) {
-                let _ = outputs_mut::delete_output(&orig, ScopeHint::Auto, &cwd);
-            }
+        if let Some(orig) = original
+            && !envs.contains_key(&orig)
+        {
+            let _ = outputs_mut::delete_output(&orig, ScopeHint::Auto, &cwd);
         }
 
         self.dsl = None;
@@ -791,19 +791,17 @@ impl OutputsView {
                     original_label,
                     original_scope,
                 } = &editor.mode
+                    && (original_label != &label || *original_scope != resolved.scope)
                 {
-                    if original_label != &label || *original_scope != resolved.scope {
-                        let original_hint = match original_scope {
-                            Scope::Project => ScopeHint::Project,
-                            Scope::Global => ScopeHint::Global,
-                        };
-                        if let Err(e) =
-                            outputs_mut::delete_output(original_label, original_hint, &cwd)
-                        {
-                            return OutputsAction::CreateFailed(format!(
-                                "save failed while removing old label: {e}"
-                            ));
-                        }
+                    let original_hint = match original_scope {
+                        Scope::Project => ScopeHint::Project,
+                        Scope::Global => ScopeHint::Global,
+                    };
+                    if let Err(e) = outputs_mut::delete_output(original_label, original_hint, &cwd)
+                    {
+                        return OutputsAction::CreateFailed(format!(
+                            "save failed while removing old label: {e}"
+                        ));
                     }
                 }
                 self.create = None;
@@ -1227,16 +1225,16 @@ impl OutputsView {
                 },
             )),
             CreateFocus::EntryKind | CreateFocus::AliasKey => None,
-        } {
-            if inner.width > 2 && row < inner.height {
-                let input_width = input.chars().count() as u16;
-                let x = inner
-                    .x
-                    .saturating_add(2)
-                    .saturating_add(input_width)
-                    .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
-                frame.set_cursor_position((x, inner.y.saturating_add(row)));
-            }
+        } && inner.width > 2
+            && row < inner.height
+        {
+            let input_width = input.chars().count() as u16;
+            let x = inner
+                .x
+                .saturating_add(2)
+                .saturating_add(input_width)
+                .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
+            frame.set_cursor_position((x, inner.y.saturating_add(row)));
         }
     }
 
@@ -1602,7 +1600,7 @@ mod tests {
         fn new() -> Self {
             let guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
             let tmp = tempfile::tempdir().unwrap();
-            std::env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
+            crate::test_env::set_var("HIMITSU_CONFIG", tmp.path().join("config.yaml"));
             let path = tmp.path().to_path_buf();
             let orig_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             Self {
@@ -1618,7 +1616,7 @@ mod tests {
         fn drop(&mut self) {
             // Restore cwd first so other tests don't inherit a deleted dir.
             let _ = std::env::set_current_dir(&self._orig_cwd);
-            std::env::remove_var("HIMITSU_CONFIG");
+            crate::test_env::remove_var("HIMITSU_CONFIG");
         }
     }
 
