@@ -3,6 +3,8 @@ name: Rust CI
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
 
@@ -35,3 +37,7 @@ jobs:
         with:
           name: darkmatter
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+      - uses: katyo/publish-crates@v2
+        if: ${{ github.ref_type == 'tag' && !github.event.pull_request }}
+        with:
+          ignore-unpublished-changes: true
