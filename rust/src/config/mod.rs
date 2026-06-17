@@ -410,8 +410,8 @@ impl Config {
     /// itself and is handled by [`config_path`], not deserialized as a field.
     pub fn load(path: &Path) -> Result<Self> {
         use figment::{
-            providers::{Env, Serialized},
             Figment,
+            providers::{Env, Serialized},
         };
 
         // Read the file first (best-effort; fall back to defaults if absent).
@@ -1133,10 +1133,10 @@ recipients_path: keys/recipients
         assert_eq!(cfg.default_store.as_deref(), Some("acme/secrets"));
         assert!(cfg.codegen.contains_key("pci-prod"));
 
-        let gen = cfg.generate.unwrap();
-        assert_eq!(gen.target, ".generated");
-        assert_eq!(gen.format, "sops");
-        assert_eq!(gen.age_recipients, vec!["age1abc", "age1def"]);
+        let generate_cfg = cfg.generate.unwrap();
+        assert_eq!(generate_cfg.target, ".generated");
+        assert_eq!(generate_cfg.format, "sops");
+        assert_eq!(generate_cfg.age_recipients, vec!["age1abc", "age1def"]);
 
         assert_eq!(cfg.recipients_path.as_deref(), Some("keys/recipients"));
     }

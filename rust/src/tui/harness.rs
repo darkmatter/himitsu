@@ -23,9 +23,9 @@
 //! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::Terminal;
 
 use crate::cli::Context;
 use crate::tui::app::App;
@@ -111,7 +111,15 @@ impl TuiHarness {
         self.tick();
     }
 
+    /// Run one draw tick plus chord-timeout housekeeping — for tests that
+    /// need to advance time without injecting a key event.
+    #[cfg(test)]
+    pub fn run_tick(&mut self) {
+        self.tick();
+    }
+
     fn tick(&mut self) {
+        self.app.tick_chord_timeout();
         self.terminal
             .draw(|frame| self.app.draw(frame))
             .expect("draw tick");
@@ -751,6 +759,39 @@ save_secret: ["ctrl+x s"]
         // key is consumed by the abort path (no view-side typing).
         h.press(KeyCode::Char('q'));
         assert_eq!(h.app.pending_chord_len(), 0);
+        assert_eq!(h.app.current_view(), "new_secret");
+    }
+
+    /// A pending leader chord must cancel silently once the continuation
+    /// window expires, without treating the next key as an abort.
+    #[test]
+    fn leader_key_chord_times_out_when_no_continuation() {
+        let fx = Fixture::new();
+        let yaml = r#"
+save_secret: ["ctrl+x s"]
+"#;
+        let keymap: KeyMap = serde_yaml::from_str(yaml).expect("parse keymap");
+        let mut h = TuiHarness::with_keymap(&fx.ctx, 120, 30, keymap);
+
+        h.press_ctrl('n');
+        h.press_ctrl('x');
+        assert_eq!(h.app.pending_chord_len(), 1);
+
+        h.app.expire_chord_timeout_now();
+        h.run_tick();
+        assert_eq!(
+            h.app.pending_chord_len(),
+            0,
+            "expired leader chord should clear pending state"
+        );
+
+        // After timeout, `s` should type into the form — not complete a chord.
+        h.press(KeyCode::Char('s'));
+        assert_eq!(
+            h.app.pending_chord_len(),
+            0,
+            "post-timeout key should not revive chord state"
+        );
         assert_eq!(h.app.current_view(), "new_secret");
     }
 

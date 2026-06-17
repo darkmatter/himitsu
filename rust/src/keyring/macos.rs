@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use crate::error::{HimitsuError, Result};
-use crate::keyring::{KeyProvider, KEY_SERVICE};
+use crate::keyring::{KEY_SERVICE, KeyProvider};
 
 /// macOS Keychain adapter using the `security` CLI.
 pub struct MacOSKeychain;

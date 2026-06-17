@@ -48,7 +48,7 @@ pub struct EncValue(pub Vec<u8>);
 
 impl Serialize for EncValue {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let b64 = STANDARD.encode(&self.0);
         s.serialize_str(&format!("ENC[age,{b64}]"))
     }
@@ -56,7 +56,7 @@ impl Serialize for EncValue {
 
 impl<'de> Deserialize<'de> for EncValue {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let s = String::deserialize(d)?;
         let inner = s
             .strip_prefix("ENC[age,")
@@ -683,10 +683,12 @@ mod tests {
     fn write_creates_yaml_file() {
         let store = make_store();
         write_secret(store.path(), "prod/API_KEY", b"secret").unwrap();
-        assert!(store
-            .path()
-            .join(".himitsu/secrets/prod/API_KEY.yaml")
-            .exists());
+        assert!(
+            store
+                .path()
+                .join(".himitsu/secrets/prod/API_KEY.yaml")
+                .exists()
+        );
     }
 
     #[test]

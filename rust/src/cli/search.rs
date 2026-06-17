@@ -504,11 +504,7 @@ fn is_slug_like(slug: &str) -> bool {
 }
 
 fn plural(n: i64) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]

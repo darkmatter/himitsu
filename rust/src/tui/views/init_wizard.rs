@@ -8,9 +8,9 @@ use super::standard_canvas;
 
 use crate::tui::layout::{FOOTER_HEIGHT, WIZARD_HEADER_HEIGHT};
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use crate::cli::init::{self, InitArgs};
 use crate::config::{self, KeyProvider};
@@ -339,19 +339,11 @@ impl InitWizardView {
             None
         } else {
             let r = self.global_remote_input.trim().to_string();
-            if r.is_empty() {
-                None
-            } else {
-                Some(r)
-            }
+            if r.is_empty() { None } else { Some(r) }
         };
         let project = if self.git_root.is_some() {
             let r = self.project_remote_input.trim().to_string();
-            if r.is_empty() {
-                None
-            } else {
-                Some(r)
-            }
+            if r.is_empty() { None } else { Some(r) }
         } else {
             None
         };

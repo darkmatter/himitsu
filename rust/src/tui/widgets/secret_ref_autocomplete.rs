@@ -6,11 +6,11 @@
 //! host view keeps every key event and merely calls [`update_query`] /
 //! [`move_selection`] / [`accepted`] as appropriate.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::suggest;
 use crate::tui::theme;

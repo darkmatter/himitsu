@@ -29,9 +29,9 @@ use super::standard_canvas;
 
 use crate::tui::layout::{FORM_FIELD_HEIGHT, PICKER_FOOTER_HEIGHT};
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 /// Outcome of forwarding a key event to the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -21,9 +21,9 @@ use super::{render_distributed_footer, standard_canvas};
 use crate::tui::layout::centered_percent_rect;
 
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::cli::Context;
 use crate::config::outputs::dsl as env_dsl;
@@ -31,7 +31,7 @@ use crate::config::outputs::dsl::{AliasMap, OutputDef, SelectorEntry};
 use crate::config::outputs::outputs_mut::Scope;
 use crate::config::outputs::outputs_mut::{self, OutputScopeHint as ScopeHint};
 use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, SecretCandidate,
+    Context as ResolverContext, SecretCandidate, resolve_outputs,
 };
 use crate::config::validate_env_label;
 use crate::tui::keymap::{Bindings, KeyMap};
@@ -647,7 +647,7 @@ impl OutputsView {
                     last_label = Some(label.clone());
                 }
                 Err(e) => {
-                    return OutputsAction::CreateFailed(format!("save failed for '{label}': {e}"))
+                    return OutputsAction::CreateFailed(format!("save failed for '{label}': {e}"));
                 }
             }
         }

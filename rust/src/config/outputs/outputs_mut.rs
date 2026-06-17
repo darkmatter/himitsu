@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::outputs::{OutputDef, OutputsMap};
-use crate::config::{config_path, Config, ProjectConfig};
+use crate::config::{Config, ProjectConfig, config_path};
 use crate::error::{HimitsuError, Result};
 
 /// Candidate filenames checked when walking up for a project config.

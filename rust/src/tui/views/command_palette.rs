@@ -11,16 +11,16 @@
 //! handlers.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::tui::keymap::{KeyAction, KeyMap};
 #[cfg(test)]
 use crate::tui::keymap::{KeyBinding, KeyChord};
-use crate::tui::layout::{centered_percent_rect, PALETTE_HEIGHT_PCT, PALETTE_WIDTH_PCT};
+use crate::tui::layout::{PALETTE_HEIGHT_PCT, PALETTE_WIDTH_PCT, centered_percent_rect};
 use crate::tui::theme;
 
 /// One command exposed in the palette. Mirrors the visible top-level

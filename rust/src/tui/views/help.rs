@@ -15,9 +15,9 @@ use ratatui::style::{Modifier, Style};
 use super::standard_canvas;
 
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 /// Outcome of handling a key while the help overlay is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

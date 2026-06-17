@@ -893,10 +893,12 @@ fn set_normalizes_leading_slash() {
         .stdout(predicate::str::contains("Set dev/hello"));
 
     // The age file lands at the normalized path, not any absolute location
-    assert!(store
-        .path()
-        .join(".himitsu/secrets/dev/hello.yaml")
-        .exists());
+    assert!(
+        store
+            .path()
+            .join(".himitsu/secrets/dev/hello.yaml")
+            .exists()
+    );
 }
 
 #[test]
@@ -945,10 +947,12 @@ fn set_creates_age_file() {
         .assert()
         .success();
 
-    assert!(store
-        .path()
-        .join(".himitsu/secrets/prod/DB_PASS.yaml")
-        .exists());
+    assert!(
+        store
+            .path()
+            .join(".himitsu/secrets/prod/DB_PASS.yaml")
+            .exists()
+    );
 }
 
 #[test]
@@ -1144,10 +1148,12 @@ fn recipient_rm() {
         .assert()
         .success();
 
-    assert!(!store
-        .path()
-        .join(".himitsu/recipients/todelete.pub")
-        .exists());
+    assert!(
+        !store
+            .path()
+            .join(".himitsu/recipients/todelete.pub")
+            .exists()
+    );
 }
 
 #[test]

@@ -220,7 +220,7 @@ pub(super) fn add_core(
         None => {
             return Err(HimitsuError::Recipient(
                 "either --self or --age-key must be provided".into(),
-            ))
+            ));
         }
     };
 
@@ -243,11 +243,7 @@ pub(super) fn add_core(
     // Only write a sidecar for a non-empty description.
     let final_description = description.and_then(|d| {
         let t = d.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     });
     if final_description.is_some() {
         let sidecar_path = recipients_dir.join(format!("{name}.yaml"));
@@ -792,8 +788,10 @@ mod tests {
         let (_tmp, ctx) = mk_ctx();
         crate::cli::store_ops::recipient_add(&ctx, "alice", AGE_KEY_1, None).unwrap();
         crate::cli::store_ops::recipient_rm(&ctx, "alice").unwrap();
-        assert!(!rstore::recipients_dir(&ctx.store)
-            .join("alice.pub")
-            .exists());
+        assert!(
+            !rstore::recipients_dir(&ctx.store)
+                .join("alice.pub")
+                .exists()
+        );
     }
 }

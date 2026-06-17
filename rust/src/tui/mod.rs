@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use crossterm::event::{Event, KeyEventKind};
 
-use crate::cli::{init, Context};
-use crate::config::{config_path, Config};
+use crate::cli::{Context, init};
+use crate::config::{Config, config_path};
 use crate::error::Result;
 use views::init_wizard::{InitWizardView, Outcome};
 

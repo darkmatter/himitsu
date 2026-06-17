@@ -2,8 +2,8 @@ use std::io::{self, IsTerminal, Write};
 
 use clap::Args;
 
-use super::duration::{self, ExpirySeverity};
 use super::Context;
+use super::duration::{self, ExpirySeverity};
 use crate::crypto::secret_value;
 use crate::error::Result;
 

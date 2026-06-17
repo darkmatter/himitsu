@@ -1,9 +1,9 @@
 //! Top-level view modules for the ratatui TUI.
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 pub(crate) use crate::tui::layout::standard_canvas;
 

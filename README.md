@@ -933,11 +933,11 @@ and the Nix helpers for existing devShell / entrypoint integration.
 |--------|-------------|
 | `packages.default` | The `himitsu` CLI binary. |
 | `packages.age-key-cmd` | Prints the local age private key (useful as `SOPS_AGE_KEY_CMD`). |
-| `lib.mkDevShell` | Wrap a devShell with automatic secret decryption. |
-| `lib.packSecrets` | Collect `.age` files into a Nix derivation. |
-| `lib.wrapAge` | `age` pre-configured with the local identity. |
-| `lib.wrapSops` | `sops` pre-configured to discover the himitsu key. |
-| `lib.mkEntrypoint` | Container entrypoint that decrypts then execs. |
+| `lib.${system}.mkDevShell` | Wrap a devShell with automatic secret decryption. |
+| `lib.${system}.packSecrets` | Collect `.age` files into a Nix derivation. |
+| `lib.${system}.wrapAge` | `age` pre-configured with the local identity. |
+| `lib.${system}.wrapSops` | `sops` pre-configured to discover the himitsu key. |
+| `lib.${system}.mkEntrypoint` | Container entrypoint that decrypts then execs. |
 
 ## Development
 

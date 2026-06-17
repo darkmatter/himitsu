@@ -30,7 +30,7 @@ use nucleo_matcher::{Config as MatcherConfig, Matcher};
 
 use super::outputs_text::TextBuffer;
 use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate,
+    Context as ResolverContext, ResolvedOutput, SecretCandidate, resolve_outputs,
 };
 
 use crate::config::outputs::dsl::OutputsMap;

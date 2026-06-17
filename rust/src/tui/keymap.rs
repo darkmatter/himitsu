@@ -30,11 +30,30 @@
 //! to [`KeyMap::default`]. Parsing happens at deserialisation time, so a
 //! malformed binding string surfaces as a clear config error rather than a
 //! silent no-op at runtime.
+//!
+//! ## Leader-key chords
+//!
+//! [`LEADER`] (`ctrl+x`) is the only chord prefix. Multi-step bindings must
+//! start with it; the leader cannot be bound as a standalone action. After
+//! the leader is pressed, the next key within [`CHORD_TIMEOUT_MS`] completes
+//! or aborts the chord; otherwise the pending sequence cancels silently.
 
 use std::fmt;
+use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Leader key for multi-step chords (`ctrl+x`). Every chord binding must
+/// begin with this step; it cannot be used as a standalone binding.
+pub const LEADER: KeyBinding = KeyBinding::ctrl('x');
+
+/// Wall-clock window after the leader key during which the next keypress
+/// completes the chord. Expiry clears the pending buffer silently.
+pub const CHORD_TIMEOUT_MS: u64 = 1000;
+
+/// [`Duration`] counterpart of [`CHORD_TIMEOUT_MS`] for deadline arithmetic.
+pub const CHORD_TIMEOUT: Duration = Duration::from_millis(CHORD_TIMEOUT_MS);
 
 /// A single chord step: a [`KeyCode`] plus a set of [`KeyModifiers`].
 ///
@@ -62,12 +81,17 @@ impl KeyBinding {
         Self::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 
+    /// Is this binding the chord leader (`ctrl+x`)?
+    pub fn is_leader(self) -> bool {
+        self.code == KeyCode::Char('x') && self.modifiers.contains(KeyModifiers::CONTROL)
+    }
+
     /// Does this binding match a live `KeyEvent`?
     ///
-    /// For printable characters we compare case-insensitively when no
-    /// `SHIFT` modifier is declared, so a binding like `"y"` matches both
-    /// `y` and `Y` without the user having to enumerate both forms.
-    /// `Shift+<char>` explicitly requires the uppercase form.
+    /// Ascii letters compare case-insensitively (`"y"`/`"Y"`, `"shift+y"`/
+    /// `"shift+Y"`, `"ctrl+y"`/`"ctrl+Y"` are equivalent). Shift is never
+    /// inferred from an uppercase letter — only an explicit `shift` modifier
+    /// counts. Bare bindings ignore an incidental `SHIFT` on the event.
     pub fn matches(&self, key: &KeyEvent) -> bool {
         // Mask away modifiers we don't track (e.g. META) so cross-platform
         // events still match cleanly.
@@ -76,34 +100,15 @@ impl KeyBinding {
 
         match (self.code, key.code) {
             (KeyCode::Char(a), KeyCode::Char(b)) => {
-                // Ascii-letter chars are treated case-insensitively and the
-                // SHIFT flag is inferred from whichever form we see — so a
-                // binding like `shift+r` matches both a raw
-                // `Char('R') + SHIFT` event (common on macOS) and a
-                // normalised `Char('r') + SHIFT` event.
-                let self_lower = a.to_ascii_lowercase();
-                let ev_lower = b.to_ascii_lowercase();
                 if !a.eq_ignore_ascii_case(&b) {
                     return false;
                 }
 
-                // Fold the uppercase-char shortcut into an explicit SHIFT so
-                // comparisons are purely modifier-based.
-                let mut self_mods = self.modifiers;
-                if a.is_ascii_uppercase() {
-                    self_mods |= KeyModifiers::SHIFT;
-                }
-                let mut ev_mods = event_mods;
-                if b.is_ascii_uppercase() {
-                    ev_mods |= KeyModifiers::SHIFT;
-                }
-
-                if self_mods.contains(KeyModifiers::SHIFT) {
-                    let _ = (self_lower, ev_lower);
-                    ev_mods == self_mods
+                if self.modifiers.contains(KeyModifiers::SHIFT) {
+                    event_mods == self.modifiers
                 } else {
                     let strip = KeyModifiers::SHIFT;
-                    (self_mods & !strip) == (ev_mods & !strip)
+                    (self.modifiers & !strip) == (event_mods & !strip)
                 }
             }
             // BackTab on one side is only equivalent to `Tab + Shift` on
@@ -219,7 +224,7 @@ impl std::str::FromStr for KeyBinding {
                     return Err(KeyBindingParseError::UnknownModifier {
                         input: input.to_string(),
                         modifier: part.to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -229,12 +234,9 @@ impl std::str::FromStr for KeyBinding {
             code: code_part.to_string(),
         })?;
 
-        let (code, modifiers) = match code {
-            KeyCode::Char(c) if c.is_ascii_uppercase() => (
-                KeyCode::Char(c.to_ascii_lowercase()),
-                modifiers | KeyModifiers::SHIFT,
-            ),
-            other => (other, modifiers),
+        let code = match code {
+            KeyCode::Char(c) if c.is_ascii_alphabetic() => KeyCode::Char(c.to_ascii_lowercase()),
+            other => other,
         };
 
         Ok(KeyBinding { code, modifiers })
@@ -358,22 +360,20 @@ impl KeyChord {
         }
     }
 
-    /// Lift a sequence of live `KeyEvent`s into a chord. The shift-from-
-    /// uppercase-char fixup mirrors `KeyBinding::FromStr` so the resulting
-    /// chord round-trips cleanly through `Display` — i.e. `format("{c}")`
-    /// on a chord built from the events of `Ctrl+X` then `Y` produces
-    /// `"ctrl+x shift+y"`, matching the user-facing config syntax.
+    /// Lift a sequence of live `KeyEvent`s into a chord. Ascii letters are
+    /// lower-cased to mirror [`KeyBinding::from_str`] so the resulting chord
+    /// round-trips cleanly through `Display`.
     pub fn from_events(events: &[KeyEvent]) -> Option<Self> {
         let steps: Vec<KeyBinding> = events
             .iter()
             .map(|ev| {
-                let mut mods = ev.modifiers;
-                if let KeyCode::Char(c) = ev.code {
-                    if c.is_ascii_uppercase() {
-                        mods |= KeyModifiers::SHIFT;
+                let code = match ev.code {
+                    KeyCode::Char(c) if c.is_ascii_alphabetic() => {
+                        KeyCode::Char(c.to_ascii_lowercase())
                     }
-                }
-                KeyBinding::new(ev.code, mods)
+                    other => other,
+                };
+                KeyBinding::new(code, ev.modifiers)
             })
             .collect();
         Self::try_new(steps)
@@ -400,6 +400,15 @@ impl KeyChord {
     /// chord" hint without exposing the whole sequence.
     pub fn first_step(&self) -> &KeyBinding {
         &self.steps[0]
+    }
+
+    pub fn starts_with_leader(&self) -> bool {
+        self.steps.first().is_some_and(|step| step.is_leader())
+    }
+
+    /// Multi-step chord whose first step is [`LEADER`].
+    pub fn is_leader_chord(&self) -> bool {
+        !self.is_single_step() && self.starts_with_leader()
     }
 
     /// Does the supplied event sequence (length N) match the chord's first
@@ -466,6 +475,12 @@ impl<'de> Deserialize<'de> for KeyChord {
     }
 }
 
+/// Single-step chords that participate in direct key matching. The chord
+/// [`LEADER`] is excluded — it only opens multi-step sequences.
+fn is_bindable_single_step(chord: &KeyChord) -> bool {
+    chord.is_single_step() && !chord.first_step().is_leader()
+}
+
 /// Helper so views can take either a `&Vec<KeyChord>` or `&[KeyChord]` and
 /// test against a live `KeyEvent` with `.matches(&key)`.
 ///
@@ -479,14 +494,14 @@ pub trait Bindings {
 impl Bindings for Vec<KeyChord> {
     fn matches(&self, key: &KeyEvent) -> bool {
         self.iter()
-            .any(|c| c.is_single_step() && c.first_step().matches(key))
+            .any(|c| is_bindable_single_step(c) && c.first_step().matches(key))
     }
 }
 
 impl Bindings for [KeyChord] {
     fn matches(&self, key: &KeyEvent) -> bool {
         self.iter()
-            .any(|c| c.is_single_step() && c.first_step().matches(key))
+            .any(|c| is_bindable_single_step(c) && c.first_step().matches(key))
     }
 }
 
@@ -920,7 +935,7 @@ impl KeyMap {
         for (action, chords) in self.entries() {
             if chords
                 .iter()
-                .any(|c| c.is_single_step() && c.first_step().matches(key))
+                .any(|c| is_bindable_single_step(c) && c.first_step().matches(key))
             {
                 return Some(action);
             }
@@ -947,41 +962,32 @@ impl KeyMap {
         (row(action).field)(self)
     }
 
-    /// Drive the leader-key state machine.
+    /// Drive the leader-key (`ctrl+x`) chord state machine.
+    ///
+    /// Only multi-step chords beginning with [`LEADER`] participate. The
+    /// leader itself never fires an action — it only opens a pending
+    /// sequence that must complete (or time out) within
+    /// [`CHORD_TIMEOUT_MS`].
     ///
     /// `pending` is the buffer of events accumulated from previously-pending
     /// chord steps; `key` is the just-arrived event. Returns:
     ///
     /// - [`Dispatch::Match`] when `pending + [key]` exactly matches some
-    ///   **multi-step** chord. Caller should fire the action and clear
-    ///   `pending`.
-    /// - [`Dispatch::Pending`] when at least one chord has `pending + [key]`
-    ///   as a strict prefix (i.e. more keys could complete a chord). Caller
-    ///   should append `key` to `pending` and swallow it.
+    ///   leader chord. Caller should fire the action and clear `pending`.
+    /// - [`Dispatch::Pending`] when at least one leader chord has
+    ///   `pending + [key]` as a strict prefix. Caller should append `key`
+    ///   to `pending` and swallow it.
     /// - [`Dispatch::Unmatched`] otherwise. Caller should clear `pending`
-    ///   and treat `key` as a normal non-chord input.
+    ///   and treat `key` as a normal (non-chord) keystroke.
     ///
     /// Single-step chords are deliberately invisible to this dispatcher:
     /// they're already handled by each view's existing per-action priority
-    /// match (which knows which actions that view cares about). Letting
-    /// `dispatch` claim single-step bindings would steal plain typing
-    /// keys (e.g. `e` matching the viewer's `edit` while the user is
-    /// typing into the new-secret form's `path` field).
-    ///
-    /// Caveat — multi-step chords always shadow single-step bindings on
-    /// the same first key: if a user binds both `edit: ["e"]` and
-    /// `delete: ["e d"]`, pressing `e` enters Pending state because the
-    /// `e d` chord has `e` as a prefix. The single-step `e` binding can
-    /// then never fire without a continuation that aborts the chord.
-    /// This is by design — leader chords need to swallow their first
-    /// step or they wouldn't work.
-    ///
-    /// Resolution rule when several chords match:
-    /// - If both an exact multi-step match and a longer prefix-match exist
-    ///   for the same buffer, the exact match wins (greedy short-match).
-    ///   Practical implication: don't bind both `ctrl+x s` and
-    ///   `ctrl+x s ctrl+w` — the shorter chord will always fire first.
+    /// match (which knows which actions that view cares about).
     pub fn dispatch(&self, pending: &[KeyEvent], key: &KeyEvent) -> Dispatch {
+        if pending.is_empty() && !LEADER.matches(key) {
+            return Dispatch::Unmatched;
+        }
+
         let mut buf: Vec<KeyEvent> = Vec::with_capacity(pending.len() + 1);
         buf.extend_from_slice(pending);
         buf.push(*key);
@@ -991,7 +997,10 @@ impl KeyMap {
 
         for (action, chords) in self.entries() {
             for chord in chords {
-                if !chord.is_single_step() && chord.matches_exact(&buf) {
+                if !chord.is_leader_chord() {
+                    continue;
+                }
+                if chord.matches_exact(&buf) {
                     if exact.is_none() {
                         exact = Some(action);
                     }
@@ -1094,36 +1103,46 @@ mod tests {
         );
         assert_eq!(chord_strings(&km.copy_ref), ["ctrl+x shift+y"]);
 
-        assert!(!km
-            .help
-            .matches(&key(KeyCode::Char('?'), KeyModifiers::NONE)));
-        assert!(!km
-            .switch_store
-            .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL)));
-        assert!(!km
-            .toggle_autocomplete
-            .matches(&key(KeyCode::Char(' '), KeyModifiers::CONTROL)));
-        assert!(!km
-            .refine_tag
-            .matches(&key(KeyCode::Char('t'), KeyModifiers::CONTROL)));
-        assert!(!km
-            .copy_ref_selected
-            .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT)));
-        assert!(!km
-            .outputs
-            .matches(&key(KeyCode::Char('E'), KeyModifiers::SHIFT)));
-        assert!(!km
-            .collapse_paths
-            .matches(&key(KeyCode::Char('-'), KeyModifiers::CONTROL)));
-        assert!(!km
-            .expand_paths
-            .matches(&key(KeyCode::Char('+'), KeyModifiers::CONTROL)));
-        assert!(!km
-            .expand_paths
-            .matches(&key(KeyCode::Char('='), KeyModifiers::CONTROL)));
-        assert!(!km
-            .copy_ref
-            .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT)));
+        assert!(
+            !km.help
+                .matches(&key(KeyCode::Char('?'), KeyModifiers::NONE))
+        );
+        assert!(
+            !km.switch_store
+                .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.toggle_autocomplete
+                .matches(&key(KeyCode::Char(' '), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.refine_tag
+                .matches(&key(KeyCode::Char('t'), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.copy_ref_selected
+                .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT))
+        );
+        assert!(
+            !km.outputs
+                .matches(&key(KeyCode::Char('E'), KeyModifiers::SHIFT))
+        );
+        assert!(
+            !km.collapse_paths
+                .matches(&key(KeyCode::Char('-'), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.expand_paths
+                .matches(&key(KeyCode::Char('+'), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.expand_paths
+                .matches(&key(KeyCode::Char('='), KeyModifiers::CONTROL))
+        );
+        assert!(
+            !km.copy_ref
+                .matches(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT))
+        );
     }
 
     #[test]
@@ -1134,9 +1153,10 @@ mod tests {
 envs: ["ctrl+l"]
 "#;
         let km: KeyMap = serde_yaml::from_str(yaml).unwrap();
-        assert!(km
-            .outputs
-            .matches(&key(KeyCode::Char('l'), KeyModifiers::CONTROL)));
+        assert!(
+            km.outputs
+                .matches(&key(KeyCode::Char('l'), KeyModifiers::CONTROL))
+        );
     }
 
     #[test]
@@ -1214,9 +1234,27 @@ envs: ["ctrl+l"]
     }
 
     #[test]
-    fn parses_uppercase_char_as_shift() {
-        let b: KeyBinding = "Y".parse().unwrap();
-        assert_eq!(b, KeyBinding::new(KeyCode::Char('y'), KeyModifiers::SHIFT));
+    fn parses_uppercase_letter_equivalent_to_lowercase() {
+        let lower: KeyBinding = "y".parse().unwrap();
+        let upper: KeyBinding = "Y".parse().unwrap();
+        assert_eq!(lower, upper);
+        assert_eq!(lower, KeyBinding::bare(KeyCode::Char('y')));
+    }
+
+    #[test]
+    fn parses_shift_and_ctrl_letter_case_insensitive() {
+        let shift_lower: KeyBinding = "shift+y".parse().unwrap();
+        let shift_upper: KeyBinding = "shift+Y".parse().unwrap();
+        assert_eq!(
+            shift_lower,
+            KeyBinding::new(KeyCode::Char('y'), KeyModifiers::SHIFT)
+        );
+        assert_eq!(shift_lower, shift_upper);
+
+        let ctrl_lower: KeyBinding = "ctrl+y".parse().unwrap();
+        let ctrl_upper: KeyBinding = "ctrl+Y".parse().unwrap();
+        assert_eq!(ctrl_lower, KeyBinding::ctrl('y'));
+        assert_eq!(ctrl_lower, ctrl_upper);
     }
 
     #[test]
@@ -1258,16 +1296,19 @@ envs: ["ctrl+l"]
     #[test]
     fn default_keymap_has_expected_entries() {
         let km = KeyMap::default();
-        assert!(km
-            .new_secret
-            .matches(&key(KeyCode::Char('n'), KeyModifiers::CONTROL)));
+        assert!(
+            km.new_secret
+                .matches(&key(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        );
         assert!(km.quit.matches(&key(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(km
-            .reveal
-            .matches(&key(KeyCode::Char('r'), KeyModifiers::NONE)));
-        assert!(km
-            .rekey
-            .matches(&key(KeyCode::Char('R'), KeyModifiers::SHIFT)));
+        assert!(
+            km.reveal
+                .matches(&key(KeyCode::Char('r'), KeyModifiers::NONE))
+        );
+        assert!(
+            km.rekey
+                .matches(&key(KeyCode::Char('R'), KeyModifiers::SHIFT))
+        );
     }
 
     #[test]
@@ -1283,12 +1324,14 @@ envs: ["ctrl+l"]
 new_secret: ["F2"]
 "#;
         let km: KeyMap = serde_yaml::from_str(yaml).unwrap();
-        assert!(km
-            .new_secret
-            .matches(&key(KeyCode::F(2), KeyModifiers::NONE)));
-        assert!(!km
-            .new_secret
-            .matches(&key(KeyCode::Char('n'), KeyModifiers::CONTROL)));
+        assert!(
+            km.new_secret
+                .matches(&key(KeyCode::F(2), KeyModifiers::NONE))
+        );
+        assert!(
+            !km.new_secret
+                .matches(&key(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        );
         assert!(km.quit.matches(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
 
@@ -1366,20 +1409,23 @@ save_secret: ["ctrl+x s", "ctrl+w"]
         // `s` keypress — multi-step chords go through dispatch, never the
         // single-key matcher.
         let km: KeyMap = serde_yaml::from_str(r#"save_secret: ["ctrl+x s"]"#).unwrap();
-        assert!(!km
-            .save_secret
-            .matches(&key(KeyCode::Char('s'), KeyModifiers::NONE)));
-        assert!(!km
-            .save_secret
-            .matches(&key(KeyCode::Char('x'), KeyModifiers::CONTROL)));
+        assert!(
+            !km.save_secret
+                .matches(&key(KeyCode::Char('s'), KeyModifiers::NONE))
+        );
+        assert!(
+            !km.save_secret
+                .matches(&key(KeyCode::Char('x'), KeyModifiers::CONTROL))
+        );
     }
 
     #[test]
     fn bindings_match_allows_single_step_chords() {
         let km: KeyMap = serde_yaml::from_str(r#"save_secret: ["ctrl+s"]"#).unwrap();
-        assert!(km
-            .save_secret
-            .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL)));
+        assert!(
+            km.save_secret
+                .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        );
     }
 
     // ── KeyMap::dispatch state machine ─────────────────────────────────
@@ -1428,19 +1474,25 @@ save_secret: ["ctrl+x s", "ctrl+w"]
     }
 
     #[test]
-    fn dispatch_lets_chord_take_precedence_over_single_step_prefix() {
-        // User binds both `ctrl+x` (single-step) and `ctrl+x s` (chord)
-        // to different actions. Pressing Ctrl+X enters Pending state
-        // because the chord dispatcher only fires on multi-step matches —
-        // the single-step `quit` is left to the per-view path, which the
-        // App would only consult if the chord aborts.
+    fn leader_cannot_bind_as_single_step_action() {
         let yaml = r#"
 quit: ["ctrl+x"]
 save_secret: ["ctrl+x s"]
 "#;
         let km: KeyMap = serde_yaml::from_str(yaml).unwrap();
-        let r = km.dispatch(&[], &key(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        assert_eq!(r, Dispatch::Pending);
+        let ctrl_x = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(km.action_for_key(&ctrl_x), None);
+        assert_eq!(km.dispatch(&[], &ctrl_x), Dispatch::Pending);
+    }
+
+    #[test]
+    fn non_leader_multi_step_chords_are_ignored_by_dispatch() {
+        let yaml = r#"
+edit: ["e d"]
+"#;
+        let km: KeyMap = serde_yaml::from_str(yaml).unwrap();
+        let e = key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert_eq!(km.dispatch(&[], &e), Dispatch::Unmatched);
     }
 
     #[test]

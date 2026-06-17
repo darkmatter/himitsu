@@ -7,7 +7,7 @@
 
 use crate::cli::search::SearchResult;
 
-use super::result_sort::{compare_strings, sort_results, SearchColumn, SortDirection, SortState};
+use super::result_sort::{SearchColumn, SortDirection, SortState, compare_strings, sort_results};
 
 /// A row in the rendered results list. `Store` headers group secrets by
 /// origin (`org/repo` slug or local path) and are never selectable;

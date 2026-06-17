@@ -4,145 +4,133 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    treefmt.url = "github:numtide/treefmt-nix";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
   };
 
   outputs =
-    {
+    inputs@{
       self,
       nixpkgs,
       flake-utils,
+      treefmt,
+      flake-parts,
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-
-        # ── Core binary ──────────────────────────────────────────────
-        himitsu = pkgs.rustPlatform.buildRustPackage {
-          pname = "himitsu";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [
-            pkgs.git
-            pkgs.protobuf
-          ];
-
-          meta = with pkgs.lib; {
-            description = "Age-based secrets management with transport-agnostic sharing";
-            license = licenses.mit;
-            platforms = platforms.unix;
-          };
-        };
-
-        # ── Helper: emit the raw age secret key from the local keyring ─
-        age-key-cmd = pkgs.writeShellScriptBin "himitsu-age-key-cmd" ''
-          HIMITSU_HOME="''${HIMITSU_HOME:-$HOME/.himitsu}"
-          KEY_FILE="$HIMITSU_HOME/keys/age.txt"
-
-          if [ -f "$KEY_FILE" ]; then
-            grep -v '^#' "$KEY_FILE"
-          else
-            echo "No age key found at $KEY_FILE" >&2
-            exit 1
-          fi
-        '';
-
-        # ── Library: mkDevShell, packSecrets, wrapAge, … ─────────────
-        himitsuLib = import ./nix/lib {
-          inherit pkgs himitsu age-key-cmd;
-        };
-      in
+    flake-parts.lib.mkFlake { inherit inputs; } (
       {
-        # ── packages ───────────────────────────────────────────────────
-        packages = {
-          default = himitsu;
-          himitsu = himitsu;
-          inherit age-key-cmd;
-        };
+        config,
+        ...
+      }:
+      {
+        systems = flake-utils.lib.defaultSystems;
+        imports = [
+          treefmt.flakeModule
+        ];
+        perSystem =
+          {
+            self',
+            pkgs,
+            system,
+            ...
+          }:
+          {
+            # _module.args.pkgs = import inputs.nixpkgs { inherit system; };
 
-        # ── lib ────────────────────────────────────────────────────────
-        #
-        # Consumer usage (in a downstream flake):
-        #
-        #   # Simplest — point at a store dir, get a wired-up devShell:
-        #   devShells.default = himitsu.lib.${system}.mkDevShell {
-        #     devShell = pkgs.mkShell { packages = [ nodejs ]; };
-        #     store    = ./.himitsu;
-        #     env      = "dev";
-        #   };
-        #
-        #   # With pre-packed secrets:
-        #   let secrets = himitsu.lib.${system}.packSecrets ./.himitsu/vars/dev;
-        #   in himitsu.lib.${system}.mkDevShell {
-        #     devShell = myShell;
-        #     secrets  = secrets;
-        #   };
-        #
-        #   # Credential server OCI image:
-        #   packages.secrets-server = himitsu.lib.${system}.mkCredentialServerImage {
-        #     store = ./.himitsu;
-        #     env   = "prod";
-        #     port  = 9292;
-        #   };
-        #
-        # Full API surface:
-        #
-        #   packSecrets              — collect .age files into a derivation
-        #   mkDevShell               — wrap any devShell with secret injection
-        #   wrapAge                  — age binary that auto-injects identity
-        #   wrapSops                 — sops binary that auto-discovers key
-        #   mkCredentialServer       — standalone HTTP credential server script
-        #   mkEntrypoint             — container ENTRYPOINT that decrypts + exec's CMD
-        #   mkSecretsLayer           — encrypted .age tar layer for OCI images / skopeo / crane
-        #   mkCredentialServerImage  — minimal OCI image with the credential server
-        #
-        lib = himitsuLib;
+            treefmt = {
+              programs.rustfmt.enable = true;
+              settings.formatter.rustfmt.options = pkgs.lib.mkForce [
+                "--config"
+                "skip_children=true"
+                "--edition"
+                "2024"
+              ];
+            };
 
-        # ── apps ───────────────────────────────────────────────────────
-        apps.default = {
-          type = "app";
-          program = "${himitsu}/bin/himitsu";
-        };
+            packages.himitsu = pkgs.rustPlatform.buildRustPackage {
+              pname = "himitsu";
+              version = "0.1.0";
+              src = ./.;
+              cargoLock.lockFile = ./Cargo.lock;
+              nativeBuildInputs = [
+                pkgs.git
+                pkgs.protobuf
+              ];
 
-        # ── devShells ──────────────────────────────────────────────────
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            cargo
-            rustc
-            clippy
-            rustfmt
-            git
-            gh
-            age
-            protobuf
-          ];
-          shellHook = ''
-            alias himitsu="$(git rev-parse --show-toplevel)/target/debug/himitsu"
-          '';
-        };
+              meta = with pkgs.lib; {
+                description = "Age-based secrets management with transport-agnostic sharing";
+                license = licenses.mit;
+                platforms = platforms.unix;
+              };
+            };
+            packages.default = self'.packages.himitsu;
+            # ── Helper: emit the raw age secret key from the local keyring ─
+            packages.age-key-cmd = pkgs.writeShellScriptBin "himitsu-age-key-cmd" ''
+              HIMITSU_HOME="''${HIMITSU_HOME:-$HOME/.himitsu}"
+              KEY_FILE="$HIMITSU_HOME/keys/age.txt"
 
-        devShells.coverage = pkgs.mkShell {
-          inputsFrom = [
-            self.devShells.${system}.default
-          ];
-        };
+              if [ -f "$KEY_FILE" ]; then
+                grep -v '^#' "$KEY_FILE"
+              else
+                echo "No age key found at $KEY_FILE" >&2
+                exit 1
+              fi
+            '';
 
-        # ── checks ─────────────────────────────────────────────────────
-        checks = {
-          himitsu = himitsu; # build runs cargo test
-          himitsu-smoke =
-            pkgs.runCommand "himitsu-smoke"
-              {
-                buildInputs = [ himitsu ];
-              }
-              ''
-                himitsu --help
-                touch $out
+            apps.default = {
+              type = "app";
+              program = "${self'.packages.himitsu}/bin/himitsu";
+            };
+
+            devShells.default = pkgs.mkShell {
+              packages = with pkgs; [
+                cargo
+                rustc
+                clippy
+                rustfmt
+                git
+                gh
+                age
+                protobuf
+              ];
+              shellHook = ''
+                alias himitsu="$(git rev-parse --show-toplevel)/target/debug/himitsu"
               '';
-        };
+            };
+
+            devShells.coverage = pkgs.mkShell {
+              inputsFrom = [
+                self'.devShells.default
+              ];
+            };
+
+            checks = {
+              himitsu = self'.packages.himitsu;
+              himitsu-smoke = (
+                pkgs.runCommand "himitsu-smoke" { buildInputs = [ self'.packages.himitsu ]; } ''
+                  himitsu --help
+                  touch $out
+                ''
+              );
+            };
+          };
+
+        # Per-system lib for downstream flakes: himitsu.lib.${system}.mkDevShell, etc.
+        # See nix/lib/default.nix and docs/nix-integration.md for the full API.
+        flake.lib = nixpkgs.lib.genAttrs config.systems (
+          system:
+          let
+            s = config.allSystems.${system};
+          in
+          import ./nix/lib {
+            pkgs = s.pkgs;
+            himitsu = s.packages.himitsu;
+            age-key-cmd = s.packages.age-key-cmd;
+          }
+        );
       }
     )
+
     // {
       herculesCI = {
         onPush = { };

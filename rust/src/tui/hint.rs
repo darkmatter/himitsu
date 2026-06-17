@@ -13,11 +13,11 @@
 //! hint lane is reserved for ambient context that helps the user understand
 //! what the focused field expects.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use super::theme;
 
@@ -148,8 +148,8 @@ mod tests {
     fn render_into_zero_width_area_is_a_noop() {
         // We only need to verify it doesn't panic — the buffer is unchanged
         // because `render` returns early for zero-width areas.
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(20, 3);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn render_paints_only_left_third_of_strip() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(30, 1);
         let mut terminal = Terminal::new(backend).unwrap();

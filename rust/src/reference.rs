@@ -21,17 +21,17 @@ fn normalize_path(raw: &str) -> Result<String> {
             ".." => {
                 return Err(HimitsuError::InvalidReference(format!(
                     "'..' is not a valid secret path component in {raw:?}"
-                )))
+                )));
             }
             "." => {
                 return Err(HimitsuError::InvalidReference(format!(
                     "'.' is not a valid secret path component in {raw:?}"
-                )))
+                )));
             }
             "" => {
                 return Err(HimitsuError::InvalidReference(format!(
                     "empty path component (consecutive slashes) in {raw:?}"
-                )))
+                )));
             }
             _ => {}
         }

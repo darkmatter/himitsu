@@ -26,7 +26,7 @@ use crate::config::KeyProvider as ProviderChoice;
 use crate::crypto::age as crypto_age;
 use crate::error::{HimitsuError, Result};
 use crate::keyring::macos::MacOSKeychain;
-use crate::keyring::{fingerprint, fingerprint_v1_legacy, KeyProvider};
+use crate::keyring::{KeyProvider, fingerprint, fingerprint_v1_legacy};
 
 /// Path to the on-disk public-key file. Always written, regardless of
 /// which provider holds the secret.
@@ -393,23 +393,27 @@ mod tests {
 
         let paths = disk_identity_fallback_paths();
 
-        assert!(paths.contains(
-            &home
-                .path()
-                .join(".config")
-                .join("sops")
-                .join("age")
-                .join("keys.txt")
-        ));
-        assert!(paths.contains(
-            &home
-                .path()
-                .join("Library")
-                .join("Application Support")
-                .join("sops")
-                .join("age")
-                .join("keys.txt")
-        ));
+        assert!(
+            paths.contains(
+                &home
+                    .path()
+                    .join(".config")
+                    .join("sops")
+                    .join("age")
+                    .join("keys.txt")
+            )
+        );
+        assert!(
+            paths.contains(
+                &home
+                    .path()
+                    .join("Library")
+                    .join("Application Support")
+                    .join("sops")
+                    .join("age")
+                    .join("keys.txt")
+            )
+        );
     }
 
     #[test]

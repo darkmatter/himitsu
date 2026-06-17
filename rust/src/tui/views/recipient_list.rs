@@ -8,15 +8,15 @@
 //! drift.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use super::standard_canvas;
-use crate::cli::recipient::{self, RecipientEntry};
 use crate::cli::Context;
+use crate::cli::recipient::{self, RecipientEntry};
 use crate::tui::keymap::KeyMap;
 use crate::tui::theme;
 

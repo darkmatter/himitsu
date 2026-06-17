@@ -19,23 +19,23 @@ use crate::tui::layout::{
     FOOTER_HEIGHT, HEADER_HEIGHT, HEADER_LEFT_MIN_WIDTH, SEARCH_INPUT_HEIGHT, SPACER_HEIGHT,
 };
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use chrono::Utc;
 
-use crate::cli::search::{humanize_age_compact, parse_ts, search_core, SearchResult};
 use crate::cli::Context;
+use crate::cli::search::{SearchResult, humanize_age_compact, parse_ts, search_core};
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
 use crate::tui::keymap::{KeyAction, KeyMap};
-use crate::tui::model::path_folding::{build_rows, prefix_of, split_shared_prefix, Row};
+use crate::tui::model::path_folding::{Row, build_rows, prefix_of, split_shared_prefix};
 use crate::tui::model::result_sort::{SearchColumn, SortDirection, SortState};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
 use crate::tui::widgets::secret_ref_autocomplete::SecretRefAutocomplete;
-use crate::tui::widgets::store_health::{check_store_health_pair, render_health_pill, StoreHealth};
+use crate::tui::widgets::store_health::{StoreHealth, check_store_health_pair, render_health_pill};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
 #[derive(Debug, Clone)]
@@ -1570,8 +1570,8 @@ mod tests {
 
     #[test]
     fn tab_and_shift_tab_move_the_selected_column_without_folding() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let km = KeyMap::default();
         let dir = seeded_store();
@@ -1690,10 +1690,11 @@ mod tests {
         view.on_key(key(KeyCode::Char('a')), &km);
         view.on_key(key(KeyCode::Char('t')), &km);
         view.refresh_results(); // debounce flush
-        assert!(view
-            .results
-            .iter()
-            .all(|r| r.path.to_lowercase().contains("dat")));
+        assert!(
+            view.results
+                .iter()
+                .all(|r| r.path.to_lowercase().contains("dat"))
+        );
         assert_eq!(view.results.len(), 1);
         assert_eq!(view.results[0].path, "prod/DATABASE_URL");
     }
@@ -1786,8 +1787,8 @@ mod tests {
     }
 
     fn render_view(view: &mut SearchView, width: u16, height: u16) -> String {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
@@ -1916,8 +1917,8 @@ mod tests {
 
     #[test]
     fn column_headers_are_rendered_above_results() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));

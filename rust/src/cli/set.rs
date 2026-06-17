@@ -1,7 +1,7 @@
 use clap::Args;
 
-use super::duration::{self, ExpiresAt};
 use super::Context;
+use super::duration::{self, ExpiresAt};
 use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::{HimitsuError, Result};
 use crate::proto::SecretValue;
@@ -224,10 +224,10 @@ mod tests {
 
     #[test]
     fn totp_accepts_otpauth_uri() {
-        assert!(validate_totp(
-            "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example"
-        )
-        .is_ok());
+        assert!(
+            validate_totp("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example")
+                .is_ok()
+        );
     }
 
     #[test]

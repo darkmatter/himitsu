@@ -53,6 +53,8 @@ pub fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
             app.search_dirty = false;
         }
 
+        app.tick_chord_timeout();
+
         if let Some(last_key) = pending_refresh {
             let now = Instant::now();
             if now.duration_since(last_key) >= SEARCH_DEBOUNCE {

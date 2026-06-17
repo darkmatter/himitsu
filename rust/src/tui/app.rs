@@ -8,14 +8,14 @@
 //! fresh search view.
 
 use crossterm::event::KeyEvent;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Clear};
-use ratatui::Frame;
 
 use crate::cli::Context;
 pub use crate::tui::hint::Hint;
-use crate::tui::keymap::{Dispatch, KeyAction, KeyMap};
+use crate::tui::keymap::{CHORD_TIMEOUT, Dispatch, KeyAction, KeyMap};
 use crate::tui::theme;
 pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::help::{HelpAction, HelpView};
@@ -69,8 +69,10 @@ pub struct App {
     hint: Option<Hint>,
     /// Buffer of chord steps already pressed but not yet resolved. Set by
     /// [`KeyMap::dispatch`] returning [`Dispatch::Pending`]; cleared on the
-    /// next match, abort, or non-chord keypress.
+    /// next match, abort, timeout, or non-chord keypress.
     pending_chord: Vec<KeyEvent>,
+    /// When the current pending chord expires if no continuation arrives.
+    pending_chord_deadline: Option<std::time::Instant>,
     /// `true` while the active toast is the chord-progress breadcrumb.
     /// Tracked explicitly so [`Self::dismiss_chord_breadcrumb`] doesn't
     /// have to inspect the toast's text — an unrelated info toast that
@@ -92,6 +94,7 @@ impl App {
             toast: None,
             hint: None,
             pending_chord: Vec::new(),
+            pending_chord_deadline: None,
             chord_breadcrumb_active: false,
         }
     }
@@ -137,18 +140,20 @@ impl App {
             return None;
         }
 
+        self.tick_chord_timeout();
+
         // ── Leader-key chord dispatcher ───────────────────────────────
         // Drives the multi-step chord state machine. If the key is part
         // of an in-flight chord (or starts one), it's swallowed here.
         // Only `Unmatched` falls through to the legacy per-key flow.
         match self.keymap.dispatch(&self.pending_chord, &key) {
             Dispatch::Match(action) => {
-                self.pending_chord.clear();
-                self.dismiss_chord_breadcrumb();
+                self.clear_pending_chord();
                 return self.run_keymap_action(action);
             }
             Dispatch::Pending => {
                 self.pending_chord.push(key);
+                self.pending_chord_deadline = Some(std::time::Instant::now() + CHORD_TIMEOUT);
                 self.show_chord_breadcrumb();
                 return None;
             }
@@ -158,7 +163,7 @@ impl App {
                     // continuation. Surface the abort so the user knows
                     // their leader sequence didn't fire anything.
                     let summary = format_pending(&self.pending_chord);
-                    self.pending_chord.clear();
+                    self.clear_pending_chord();
                     self.push_toast(format!("chord aborted: {summary}"), ToastKind::Info);
                     return None;
                 }
@@ -479,6 +484,29 @@ impl App {
         None
     }
 
+    fn clear_pending_chord(&mut self) {
+        self.pending_chord.clear();
+        self.pending_chord_deadline = None;
+        self.dismiss_chord_breadcrumb();
+    }
+
+    /// Drop an expired pending chord. Called from the event loop on every
+    /// tick and at the start of each keypress. Returns `true` when a chord
+    /// was cleared.
+    pub fn tick_chord_timeout(&mut self) -> bool {
+        if self.pending_chord.is_empty() {
+            return false;
+        }
+        let Some(deadline) = self.pending_chord_deadline else {
+            return false;
+        };
+        if std::time::Instant::now() < deadline {
+            return false;
+        }
+        self.clear_pending_chord();
+        true
+    }
+
     fn show_chord_breadcrumb(&mut self) {
         let summary = format_pending(&self.pending_chord);
         // Set the toast directly (don't go through `push_toast`, which
@@ -525,6 +553,16 @@ impl App {
     pub fn expire_toast_now(&mut self) {
         if let Some(t) = self.toast.as_mut() {
             t.expires_at = std::time::Instant::now();
+        }
+    }
+
+    /// Force-expire the active chord continuation window. The next
+    /// [`Self::tick_chord_timeout`] call clears the pending buffer.
+    #[cfg(test)]
+    pub fn expire_chord_timeout_now(&mut self) {
+        if self.pending_chord_deadline.is_some() {
+            self.pending_chord_deadline =
+                Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         }
     }
 

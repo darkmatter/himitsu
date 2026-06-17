@@ -35,17 +35,17 @@ use ratatui::style::{Modifier, Style};
 use super::standard_canvas;
 
 use crate::tui::layout::{
-    centered_length_rect, CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, FOOTER_HEIGHT,
-    FORM_FIELD_HEIGHT, HEADER_HEIGHT,
+    CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, FOOTER_HEIGHT, FORM_FIELD_HEIGHT, HEADER_HEIGHT,
+    centered_length_rect,
 };
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 
+use crate::cli::Context;
 use crate::cli::duration::{self, ExpiresAt};
 use crate::cli::set::{validate_env_key, validate_totp};
-use crate::cli::Context;
 use crate::crypto::tags as tag_grammar;
 use crate::proto::SecretValue;
 use crate::remote::store;
@@ -1408,7 +1408,7 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km); // -> url
         typ(&mut view, "https://api.example.com");
         view.on_key(press(KeyCode::Tab), &km); // -> more options
-                                               // Expand the advanced section.
+        // Expand the advanced section.
         view.on_key(press(KeyCode::Enter), &km);
         // Enter toggles but stays on MoreOptions; Tab to advance to Totp.
         view.on_key(press(KeyCode::Tab), &km);
@@ -1457,7 +1457,7 @@ mod tests {
         view.on_key(press(KeyCode::Tab), &km); // -> tags
         view.on_key(press(KeyCode::Tab), &km); // -> url
         view.on_key(press(KeyCode::Tab), &km); // -> more options
-                                               // Expand and advance to Totp.
+        // Expand and advance to Totp.
         view.on_key(press(KeyCode::Enter), &km);
         view.on_key(press(KeyCode::Tab), &km); // MoreOptions -> Totp
         assert_eq!(view.step(), Step::Totp);

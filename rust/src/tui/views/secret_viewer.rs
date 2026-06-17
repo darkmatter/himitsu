@@ -26,13 +26,13 @@ use ratatui::style::{Modifier, Style};
 
 use super::standard_canvas;
 
-use crate::tui::layout::{centered_length_rect, FOOTER_HEIGHT, HEADER_HEIGHT};
+use crate::tui::layout::{FOOTER_HEIGHT, HEADER_HEIGHT, centered_length_rect};
 use crate::tui::theme;
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
-use crate::cli::{duration, Context};
+use crate::cli::{Context, duration};
 use crate::crypto::{age, secret_value, tags as tag_grammar};
 use crate::error::HimitsuError;
 use crate::proto::SecretValue;
@@ -1074,10 +1074,12 @@ mod tests {
         let action = view.on_key(press(KeyCode::Char('y')), &km);
         assert_eq!(action, SecretViewerAction::Deleted);
         // Underlying store should no longer contain the secret.
-        assert!(store::list_secrets(&ctx.store, None)
-            .unwrap()
-            .iter()
-            .all(|p| p != &path));
+        assert!(
+            store::list_secrets(&ctx.store, None)
+                .unwrap()
+                .iter()
+                .all(|p| p != &path)
+        );
     }
 
     #[test]
@@ -1414,8 +1416,8 @@ s3cret";
     fn tag_chips_render_in_metadata_pane_for_decoded_with_tags() {
         // Drive the same code path the viewer uses (`draw` → `meta_lines`)
         // so we catch regressions in the `meta_lines → tag_chips_line` glue.
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);
@@ -1539,8 +1541,8 @@ body";
         // The footer is drawn via ratatui's Line; we can cheaply assert by
         // rendering the viewer into a TestBackend buffer and searching the
         // text content for the expected hint tokens.
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let (_dir, ctx, path) = seeded_store_with_secret();
         let mut view = SecretViewerView::new(&ctx, "test/repo".into(), ctx.store.clone(), path);

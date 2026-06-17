@@ -142,8 +142,10 @@ mod tests {
         let resolver = IdentityResolver::new(data_dir.path(), &provider, &store, None);
 
         let identities = resolver.load_all().unwrap();
-        assert!(identities
-            .iter()
-            .any(|id| id.to_public().to_string() == public));
+        assert!(
+            identities
+                .iter()
+                .any(|id| id.to_public().to_string() == public)
+        );
     }
 }

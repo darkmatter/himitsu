@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::Args;
 
-use super::{rekey, Context};
+use super::{Context, rekey};
 use crate::config;
 use crate::error::Result;
 

@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use super::dsl::{derive_env_key, expand_brace_label};
 use super::dsl::{OutputDef, OutputsMap, SelectorEntry};
+use super::dsl::{derive_env_key, expand_brace_label};
 use super::selector::{SecretMatch, Selector};
 use crate::error::HimitsuError;
 use crate::reference::SecretRef;

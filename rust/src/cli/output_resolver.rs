@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use super::Context;
 use crate::config::outputs::dsl::OutputsMap;
 use crate::config::outputs::resolver::{
-    resolve_outputs, Context as ResolverContext, ResolvedOutput, SecretCandidate,
+    Context as ResolverContext, ResolvedOutput, SecretCandidate, resolve_outputs,
 };
 use crate::crypto::secret_value;
 use crate::error::{HimitsuError, Result};

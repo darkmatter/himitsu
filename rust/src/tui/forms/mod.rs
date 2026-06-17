@@ -17,11 +17,11 @@
 //! widget itself stays command-agnostic.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::tui::keymap::{Bindings, KeyMap};
 use crate::tui::theme;
@@ -606,8 +606,8 @@ mod tests {
     // ── Placeholder rendering ──────────────────────────────────────────
 
     fn render_field(form: &FormView, focused: bool, field_idx: usize) -> String {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
         let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
         let area = Rect::new(0, 0, 40, 3);
         terminal

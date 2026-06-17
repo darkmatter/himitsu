@@ -6,8 +6,8 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::Args;
 
 use crate::cli::Context;
-use crate::config::outputs::resolver::ResolvedOutput;
 use crate::config::ProjectConfig;
+use crate::config::outputs::resolver::ResolvedOutput;
 use crate::error::{HimitsuError, Result};
 
 /// Generate SOPS-encrypted (or plaintext) output files from codegen definitions.
@@ -58,7 +58,7 @@ pub fn run(args: GenerateArgs, ctx: &Context) -> Result<()> {
             None => {
                 return Err(HimitsuError::GenerateError(format!(
                     "output '{name}' not found in project config"
-                )))
+                )));
             }
         }
     } else {

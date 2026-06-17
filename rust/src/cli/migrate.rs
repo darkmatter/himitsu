@@ -229,7 +229,7 @@ fn migrate_project_config(path: &Path, dry_run: bool) -> Result<usize> {
             return Err(HimitsuError::InvalidConfig(format!(
                 "legacy `outputs` block in {} must be a mapping",
                 path.display()
-            )))
+            )));
         }
     };
     if let Some(envs) = legacy_envs {
@@ -267,7 +267,7 @@ fn migrate_project_config(path: &Path, dry_run: bool) -> Result<usize> {
                 return Err(HimitsuError::InvalidReference(format!(
                     "{} has no file name",
                     path.display()
-                )))
+                )));
             }
         };
         let backup_path = path.with_file_name(backup_name);
