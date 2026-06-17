@@ -33,10 +33,6 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
-      - uses: cachix/cachix-action@v17
-        with:
-          name: darkmatter
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - uses: katyo/publish-crates@v2
         if: ${{ github.ref_type == 'tag' && !github.event.pull_request }}
         with:
