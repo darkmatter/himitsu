@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches: [main]
 
@@ -33,7 +33,23 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+
+  publish:
+    if: github.ref_type == 'tag' && github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+      - name: Set crate version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./scripts/set-version.sh "$VERSION"
       - uses: katyo/publish-crates@v2
-        if: ${{ github.ref_type == 'tag' && !github.event.pull_request }}
         with:
+          # registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           ignore-unpublished-changes: true

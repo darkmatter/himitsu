@@ -1233,7 +1233,11 @@ fn version_prints_with_short_commit_sha_and_date() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("himitsu 0.1.0 (commit "))
+        .stdout(predicate::str::contains(concat!(
+            "himitsu ",
+            env!("CARGO_PKG_VERSION"),
+            " (commit "
+        )))
         .stdout(
             predicate::str::is_match(r"(?:[0-9a-f]{7,}|unknown), (?:\d{4}-\d{2}-\d{2}|unknown)")
                 .unwrap(),
@@ -1249,7 +1253,11 @@ fn version_subcommand_prints_without_initializing() {
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("himitsu 0.1.0 (commit "))
+        .stdout(predicate::str::contains(concat!(
+            "himitsu ",
+            env!("CARGO_PKG_VERSION"),
+            " (commit "
+        )))
         .stdout(
             predicate::str::is_match(r"(?:[0-9a-f]{7,}|unknown), (?:\d{4}-\d{2}-\d{2}|unknown)")
                 .unwrap(),

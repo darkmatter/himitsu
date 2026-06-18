@@ -1,3 +1,16 @@
+# Bump version, commit, and tag for a crates.io release (pushes tag to trigger publish).
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="{{version}}"
+    tag="v${version}"
+    ./scripts/set-version.sh "$version"
+    cargo check --quiet
+    git add Cargo.toml
+    git commit -m "chore: release ${tag}"
+    git tag -a "$tag" -m "$tag"
+    echo "Created ${tag}. Push with: git push && git push origin ${tag}"
+
 watch-build:
     #!/usr/bin/env bash
     set -euo pipefail

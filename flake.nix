@@ -49,7 +49,7 @@
 
             packages.himitsu = pkgs.rustPlatform.buildRustPackage {
               pname = "himitsu";
-              version = "0.1.0";
+              version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
               src = ./.;
               cargoLock.lockFile = ./Cargo.lock;
               nativeBuildInputs = [

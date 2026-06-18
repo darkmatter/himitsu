@@ -133,6 +133,31 @@ impl KeyBinding {
             (a, b) => a == b && event_mods == self.modifiers,
         }
     }
+
+    /// Palette/help style: modifiers joined with `-` so punctuation key names
+    /// (`+`, `-`, `=`) are not confused with the separator.
+    pub fn display_dash_separated(self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            parts.push("ctrl");
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            parts.push("alt");
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            parts.push("shift");
+        }
+        let code = if self.modifiers.is_empty() {
+            code_to_string(self.code)
+        } else {
+            code_to_human_string(self.code)
+        };
+        if parts.is_empty() {
+            code
+        } else {
+            format!("{}-{}", parts.join("-"), code)
+        }
+    }
 }
 
 impl fmt::Display for KeyBinding {
@@ -187,6 +212,16 @@ fn code_to_string(code: KeyCode) -> String {
         KeyCode::Menu => "menu".to_string(),
         KeyCode::KeypadBegin => "keypadbegin".to_string(),
         KeyCode::Media(_) | KeyCode::Modifier(_) => "unsupported".to_string(),
+    }
+}
+
+/// Punctuation keys rendered with modifier prefixes — avoids `ctrl--` etc.
+fn code_to_human_string(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char('+') => "plus".to_string(),
+        KeyCode::Char('-') => "minus".to_string(),
+        KeyCode::Char('=') => "equals".to_string(),
+        other => code_to_string(other),
     }
 }
 
@@ -252,6 +287,9 @@ fn parse_code(s: &str) -> Option<KeyCode> {
         "backtab" => Some(KeyCode::BackTab),
         "backspace" | "bs" => Some(KeyCode::Backspace),
         "space" | "spc" => Some(KeyCode::Char(' ')),
+        "plus" => Some(KeyCode::Char('+')),
+        "minus" => Some(KeyCode::Char('-')),
+        "equals" | "eq" => Some(KeyCode::Char('=')),
         "left" => Some(KeyCode::Left),
         "right" => Some(KeyCode::Right),
         "up" => Some(KeyCode::Up),
@@ -645,8 +683,8 @@ impl Default for KeyMap {
             copy_selected: vec![ctrl('y')],
             copy_ref_selected: vec![chord_shift('y')],
             outputs: vec![chord_shift('e')],
-            collapse_paths: vec![chord_ctrl('-')],
-            expand_paths: vec![chord_ctrl('+'), chord_ctrl('=')],
+            collapse_paths: vec![chord_bare('-')],
+            expand_paths: vec![chord_bare('+'), chord_bare('=')],
             toggle_autocomplete: vec![chord_ctrl(' ')],
             refine_tag: vec![chord_ctrl('t')],
             sort_column: vec![ctrl('o')],
@@ -906,13 +944,19 @@ pub fn help_row(keymap: &KeyMap, action: KeyAction) -> (String, String) {
 }
 
 /// Human-facing display of every chord bound to `action`, joined with
-/// ` / ` — e.g. `ctrl-- / ctrl-x -`. The keymap's `+` separator renders
-/// as `-` to match the command palette's established style.
+/// ` / `. Modifier `+` separators within each step render as `-` to match
+/// the command palette's established style (e.g. `ctrl+x -`).
 pub fn chords_display(keymap: &KeyMap, action: KeyAction) -> String {
     keymap
         .chords_for(action)
         .iter()
-        .map(|c| c.to_string().replace('+', "-"))
+        .map(|c| {
+            c.steps()
+                .iter()
+                .map(|step| step.display_dash_separated())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .collect::<Vec<_>>()
         .join(" / ")
 }
@@ -1095,10 +1139,10 @@ mod tests {
         assert_eq!(chord_strings(&km.refine_tag), ["ctrl+x ctrl+t"]);
         assert_eq!(chord_strings(&km.copy_ref_selected), ["ctrl+x shift+y"]);
         assert_eq!(chord_strings(&km.outputs), ["ctrl+x shift+e"]);
-        assert_eq!(chord_strings(&km.collapse_paths), ["ctrl+x ctrl+-"]);
+        assert_eq!(chord_strings(&km.collapse_paths), ["ctrl+x -"]);
         assert_eq!(
             chord_strings(&km.expand_paths),
-            ["ctrl+x ctrl++", "ctrl+x ctrl+="]
+            ["ctrl+x +", "ctrl+x ="]
         );
         assert_eq!(chord_strings(&km.copy_ref), ["ctrl+x shift+y"]);
 
@@ -1128,15 +1172,15 @@ mod tests {
         );
         assert!(
             !km.collapse_paths
-                .matches(&key(KeyCode::Char('-'), KeyModifiers::CONTROL))
+                .matches(&key(KeyCode::Char('-'), KeyModifiers::NONE))
         );
         assert!(
             !km.expand_paths
-                .matches(&key(KeyCode::Char('+'), KeyModifiers::CONTROL))
+                .matches(&key(KeyCode::Char('+'), KeyModifiers::NONE))
         );
         assert!(
             !km.expand_paths
-                .matches(&key(KeyCode::Char('='), KeyModifiers::CONTROL))
+                .matches(&key(KeyCode::Char('='), KeyModifiers::NONE))
         );
         assert!(
             !km.copy_ref
@@ -1172,11 +1216,11 @@ envs: ["ctrl+l"]
     fn fold_actions_have_chord_only_defaults() {
         let km = KeyMap::default();
 
-        let collapse_single = key(KeyCode::Char('-'), KeyModifiers::CONTROL);
+        let collapse_single = key(KeyCode::Char('-'), KeyModifiers::NONE);
         assert_eq!(km.action_for_key(&collapse_single), None);
 
-        let expand_plus = key(KeyCode::Char('+'), KeyModifiers::CONTROL);
-        let expand_eq = key(KeyCode::Char('='), KeyModifiers::CONTROL);
+        let expand_plus = key(KeyCode::Char('+'), KeyModifiers::NONE);
+        let expand_eq = key(KeyCode::Char('='), KeyModifiers::NONE);
         assert_eq!(km.action_for_key(&expand_plus), None);
         assert_eq!(km.action_for_key(&expand_eq), None);
     }
@@ -1189,22 +1233,35 @@ envs: ["ctrl+l"]
         // Ctrl+x is a prefix of the fold leader chords — pending, not a match.
         assert_eq!(km.dispatch(&[], &ctrl_x), Dispatch::Pending);
 
-        let plus = key(KeyCode::Char('+'), KeyModifiers::CONTROL);
+        let plus = key(KeyCode::Char('+'), KeyModifiers::NONE);
         assert_eq!(
             km.dispatch(&[ctrl_x], &plus),
             Dispatch::Match(KeyAction::ExpandPaths)
         );
 
-        let equals = key(KeyCode::Char('='), KeyModifiers::CONTROL);
+        let equals = key(KeyCode::Char('='), KeyModifiers::NONE);
         assert_eq!(
             km.dispatch(&[ctrl_x], &equals),
             Dispatch::Match(KeyAction::ExpandPaths)
         );
 
-        let minus = key(KeyCode::Char('-'), KeyModifiers::CONTROL);
+        let minus = key(KeyCode::Char('-'), KeyModifiers::NONE);
         assert_eq!(
             km.dispatch(&[ctrl_x], &minus),
             Dispatch::Match(KeyAction::CollapsePaths)
+        );
+    }
+
+    #[test]
+    fn chords_display_formats_each_step_separately() {
+        let km = KeyMap::default();
+        assert_eq!(
+            chords_display(&km, KeyAction::CollapsePaths),
+            "ctrl-x -"
+        );
+        assert_eq!(
+            chords_display(&km, KeyAction::ExpandPaths),
+            "ctrl-x + / ctrl-x ="
         );
     }
 
