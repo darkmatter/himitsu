@@ -791,7 +791,7 @@ auto_pull: false                    # env: HIMITSU_AUTO_PULL
 tui:
   # Color palette. Accepts either a scalar (one theme for every header
   # info-mode) or a map with `user` / `project` / `all` keys for per-mode
-  # theming. The header info-mode is cycled with `i` (User → Project →
+  # theming. The header info-mode is cycled with `Ctrl+I` (User → Project →
   # All); when a per-mode map is set, the palette swaps as you cycle.
   # Missing map entries fall back to `random`.
   # Accepted: random, himitsu, apathy, apathy-minted, apathy-theory,

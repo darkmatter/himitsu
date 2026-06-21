@@ -68,7 +68,7 @@ auto_pull: false
 #
 # `tui.theme` accepts either a scalar (applies to every header info-mode) or
 # a map with `user` / `project` / `all` keys. The header info-mode is cycled
-# with `i` (User → Project → All); when per-mode themes are set, the palette
+# with `Ctrl+I` (User → Project → All); when per-mode themes are set, the palette
 # swaps as you cycle. Missing map entries fall back to `random`.
 #
 # Scalar form (all modes share one theme):

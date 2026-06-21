@@ -2,6 +2,9 @@
 
 use std::io::{self, Stdout};
 
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -18,6 +21,7 @@ pub struct Guard;
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
@@ -29,6 +33,7 @@ impl Drop for Guard {
 pub fn install() -> Result<Guard> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         default_hook(info);
@@ -36,6 +41,13 @@ pub fn install() -> Result<Guard> {
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
+    // Distinguish Ctrl+I from Tab (and other C1 ambiguities) on terminals
+    // that speak the CSI-u / Kitty keyboard protocol. No-op on legacy
+    // terminals, which keep collapsing Ctrl+I onto Tab.
+    let _ = execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     Ok(Guard)
 }
 
@@ -66,6 +78,7 @@ pub fn check_min_size() -> Result<()> {
 pub fn suspend_then<R>(terminal: &mut Tui, f: impl FnOnce() -> R) -> Result<R> {
     // Leave the alternate screen so the child process writes to the real
     // terminal, and drop raw mode so line-editing works.
+    let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
@@ -74,6 +87,10 @@ pub fn suspend_then<R>(terminal: &mut Tui, f: impl FnOnce() -> R) -> Result<R> {
     // Re-enter raw mode + alt screen and force a full redraw.
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
+    let _ = execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     terminal.clear()?;
     Ok(result)
 }

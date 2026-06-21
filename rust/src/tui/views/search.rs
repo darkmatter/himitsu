@@ -23,7 +23,7 @@ use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-/// Which status pill the header is currently surfacing. Pressing `i`
+/// Which status pill the header is currently surfacing. Pressing `Ctrl+I`
 /// cycles forward through the variants. The cycle is intentionally small —
 /// only the most glanceable info lives on the header.
 ///
@@ -42,7 +42,7 @@ enum InfoMode {
 }
 
 impl InfoMode {
-    /// Advance to the next variant. The header keybind (`i`) cycles this.
+    /// Advance to the next variant. The header keybind (`Ctrl+I`) cycles this.
     fn cycle(self) -> Self {
         match self {
             InfoMode::User => InfoMode::Project,
@@ -196,7 +196,7 @@ pub struct SearchView {
     /// change, join, explicit refresh) — NOT on every query keystroke. The
     /// query fuzzy-filter runs against this cache via [`filter_candidates`].
     candidates: Vec<SearchResult>,
-    /// Which status pill the header surfaces. Pressing `i` cycles this.
+    /// Which status pill the header surfaces. Pressing `Ctrl+I` cycles this.
     info_mode: InfoMode,
     /// Resolved concrete theme names per mode (`[user, project, all]`).
     /// Pre-resolved once at configuration time so cycling modes does not
@@ -375,15 +375,16 @@ impl SearchView {
                 }
                 SearchAction::None
             }
+            (KeyCode::Char('i'), m) if m.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+I cycles the header status pill. Requires a terminal
+                // with the disambiguated keyboard protocol (pushed in
+                // `terminal::install`); on legacy terminals Ctrl+I arrives as
+                // Tab and falls through to column nav instead.
+                self.info_mode = self.info_mode.cycle();
+                self.apply_current_theme();
+                SearchAction::None
+            }
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
-                // Naked `i` cycles the header status pill. We toggle the
-                // mode here and then let the letter fall through into the
-                // query — the cycle is intentionally non-destructive to the
-                // search UX so users don't lose their typing rhythm.
-                if ch == 'i' {
-                    self.info_mode = self.info_mode.cycle();
-                    self.apply_current_theme();
-                }
                 self.query.push(ch);
                 self.mark_search_dirty();
                 SearchAction::None
@@ -868,7 +869,7 @@ impl SearchView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        // The active info-mode picks which pill(s) render. Pressing `i`
+        // The active info-mode picks which pill(s) render. Pressing Ctrl+I
         // cycles `info_mode` through User → Project → All so the user can
         // glance at either status, or both at once, without a modal. The
         // `All` mode stacks the user and project pills side-by-side.
@@ -2339,30 +2340,23 @@ mod tests {
     }
 
     #[test]
-    fn i_key_cycles_info_mode_and_types_into_query() {
+    fn ctrl_i_cycles_info_mode() {
         let km = KeyMap::default();
         let dir = seeded_store();
         let ctx = make_ctx(&dir.path().join("store"));
         let mut view = SearchView::new(&ctx);
 
-        // Default mode is User.
         assert_eq!(view.info_mode, InfoMode::User);
 
-        // First `i` advances to Project and also lands an `i` in the query
-        // (the cycle is intentionally non-destructive to typing).
-        view.on_key(key(KeyCode::Char('i')), &km);
+        view.on_key(ctrl('i'), &km);
         assert_eq!(view.info_mode, InfoMode::Project);
-        assert_eq!(view.query, "i");
+        assert!(view.query.is_empty(), "ctrl-i must not type into query");
 
-        // Second `i` advances to All (both pills stacked).
-        view.on_key(key(KeyCode::Char('i')), &km);
+        view.on_key(ctrl('i'), &km);
         assert_eq!(view.info_mode, InfoMode::All);
-        assert_eq!(view.query, "ii");
 
-        // Third `i` cycles back to User.
-        view.on_key(key(KeyCode::Char('i')), &km);
+        view.on_key(ctrl('i'), &km);
         assert_eq!(view.info_mode, InfoMode::User);
-        assert_eq!(view.query, "iii");
     }
 
     #[test]
@@ -2382,7 +2376,7 @@ mod tests {
 
         // Cycle to project: header should switch to the project pill. When
         // no project store is configured it renders as "project: n/a".
-        view.on_key(key(KeyCode::Char('i')), &KeyMap::default());
+        view.on_key(ctrl('i'), &KeyMap::default());
         let rendered = render_view(&mut view, 120, 20);
         assert!(
             rendered.contains("project:"),
@@ -2394,7 +2388,7 @@ mod tests {
         );
 
         // Cycle to All: both user and project pills render together.
-        view.on_key(key(KeyCode::Char('i')), &KeyMap::default());
+        view.on_key(ctrl('i'), &KeyMap::default());
         let rendered = render_view(&mut view, 140, 20);
         assert!(
             rendered.contains("user:") && rendered.contains("project:"),
