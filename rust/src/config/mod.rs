@@ -55,7 +55,7 @@ impl std::str::FromStr for KeyProvider {
 /// | `data_dir`       | `HIMITSU_DATA_DIR`        |
 /// | `context`        | `HIMITSU_CONTEXT`         |
 /// | `auto_pull`      | `HIMITSU_AUTO_PULL`       |
-/// | `tui.theme`      | `HIMITSU_TUI_THEME`       |
+/// | `tui.theme`      | `HIMITSU_TUI_THEME` (scalar; sets default-for-all-modes) |
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[allow(clippy::manual_non_exhaustive)]
 pub struct Config {
@@ -140,10 +140,14 @@ impl Config {
 /// `tui:` section of the global config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TuiConfig {
-    /// Built-in color theme name. Missing values fall back to `random`,
-    /// which picks one of the bundled palettes on each launch.
-    #[serde(default = "default_tui_theme")]
-    pub theme: String,
+    /// Color theme assignment. Accepts either a scalar string (applies to
+    /// every header info-mode: `user`, `project`, `all`) or a map with
+    /// `user` / `project` / `all` keys for per-mode theming. Missing map
+    /// entries fall back to `"random"`. The scalar form preserves backward
+    /// compatibility with the original `theme: <name>` field and with the
+    /// `HIMITSU_TUI_THEME` env override.
+    #[serde(default = "default_tui_theme", with = "tui_theme_serde")]
+    pub theme: TuiTheme,
 
     /// Opt in to Nerd Font glyphs (e.g.  for git,  for stores).
     /// Defaults to `false` because there is no reliable way to detect
@@ -169,8 +173,111 @@ impl Default for TuiConfig {
     }
 }
 
-fn default_tui_theme() -> String {
-    "random".to_string()
+fn default_tui_theme() -> TuiTheme {
+    TuiTheme::Single("random".to_string())
+}
+
+/// Theme assignment for the TUI. Either a single name applied to every
+/// header info-mode, or a per-mode map. Consumed by the search view to
+/// switch palettes when cycling modes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiTheme {
+    /// Scalar theme name — applied to all three info-modes.
+    Single(String),
+    /// Per-mode overrides; missing entries fall back to `"random"`.
+    PerMode(TuiThemeMap),
+}
+
+/// Per-mode theme-name overrides.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiThemeMap {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<String>,
+}
+
+impl Default for TuiTheme {
+    fn default() -> Self {
+        TuiTheme::Single("random".to_string())
+    }
+}
+
+impl TuiTheme {
+    /// Resolve the configured theme name for a mode key (`"user"`,
+    /// `"project"`, or `"all"`). Missing entries fall back to `"random"`.
+    pub fn name_for(&self, mode: &str) -> &str {
+        match self {
+            TuiTheme::Single(name) => name.as_str(),
+            TuiTheme::PerMode(map) => match mode {
+                "project" => map.project.as_deref().unwrap_or("random"),
+                "all" => map.all.as_deref().unwrap_or("random"),
+                _ => map.user.as_deref().unwrap_or("random"),
+            },
+        }
+    }
+
+    /// Names for all three modes, in `(user, project, all)` order.
+    pub fn names(&self) -> [&str; 3] {
+        [
+            self.name_for("user"),
+            self.name_for("project"),
+            self.name_for("all"),
+        ]
+    }
+}
+
+/// Serde adapter so [`TuiConfig::theme`] accepts either a scalar string
+/// (the historical form) or a `{ user, project, all }` map.
+mod tui_theme_serde {
+    use super::{TuiTheme, TuiThemeMap};
+    use serde::{Deserialize, Serialize};
+
+    pub fn serialize<S>(value: &TuiTheme, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match value {
+            TuiTheme::Single(name) => serializer.serialize_str(name),
+            TuiTheme::PerMode(map) => map.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<TuiTheme, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = TuiTheme;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a theme name string or a { user, project, all } map")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<TuiTheme, E> {
+                Ok(TuiTheme::Single(v.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<TuiTheme, E> {
+                Ok(TuiTheme::Single(v))
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<TuiTheme, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let map =
+                    TuiThemeMap::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(TuiTheme::PerMode(map))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Per-project config discovered by walking up from the current directory.

@@ -59,7 +59,7 @@ impl TuiHarness {
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).expect("TestBackend terminal construction");
         let mut h = Self {
-            app: App::new(ctx, keymap),
+            app: App::new(ctx, keymap, &crate::config::TuiTheme::default()),
             terminal,
         };
         h.tick();

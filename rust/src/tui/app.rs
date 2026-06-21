@@ -55,6 +55,11 @@ pub struct App {
     /// User-configurable keybindings. Cloned into each view via `&KeyMap`
     /// on every key dispatch so views never have to own their own copy.
     keymap: KeyMap,
+    /// Per-mode TUI theme names resolved once at construction (so `random`
+    /// picks are stable for the whole session). Applied to the search view
+    /// whenever it is (re)constructed, and re-applied on each info-mode
+    /// cycle so cycling modes swaps palettes.
+    theme_names: [String; 3],
     /// Modal help overlay. When `Some`, it swallows all key events until
     /// dismissed (Esc or `?`). See [`crate::tui::views::help`].
     help: Option<HelpView>,
@@ -82,14 +87,18 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(ctx: &Context, keymap: KeyMap) -> Self {
+    pub fn new(ctx: &Context, keymap: KeyMap, theme: &crate::config::TuiTheme) -> Self {
         let ctx_owned = clone_ctx(ctx);
+        let theme_names = resolve_theme_names(theme);
+        let mut search = SearchView::new(&ctx_owned);
+        search.set_theme_names(theme_names.clone());
         Self {
             should_quit: false,
             search_dirty: false,
-            view: View::Search(SearchView::new(&ctx_owned)),
+            view: View::Search(search),
             ctx: ctx_owned,
             keymap,
+            theme_names,
             help: None,
             toast: None,
             hint: None,
@@ -97,6 +106,15 @@ impl App {
             pending_chord_deadline: None,
             chord_breadcrumb_active: false,
         }
+    }
+
+    /// Build a fresh search view with the session-resolved per-mode themes
+    /// applied. Used whenever the router returns to search from another
+    /// view so the active info-mode's palette is restored.
+    fn fresh_search(&self) -> SearchView {
+        let mut view = SearchView::new(&self.ctx);
+        view.set_theme_names(self.theme_names.clone());
+        view
     }
 
     /// Publish a transient status-line message. Replaces any previous
@@ -305,7 +323,7 @@ impl App {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
                 self.ctx.store = path;
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.push_toast(format!("switched to {label}"), ToastKind::Info);
             }
             SearchAction::ShowHelp => {
@@ -341,7 +359,7 @@ impl App {
             SecretViewerAction::None => {}
             SecretViewerAction::Quit => self.should_quit = true,
             SecretViewerAction::Back => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
             }
             SecretViewerAction::EditValue(plain) => {
                 return Some(AppIntent::EditSecretValue(plain));
@@ -353,7 +371,7 @@ impl App {
                 self.push_toast(msg, ToastKind::Error);
             }
             SecretViewerAction::Deleted => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.push_toast("deleted", ToastKind::Success);
             }
         }
@@ -365,7 +383,7 @@ impl App {
             OutputsAction::None => {}
             OutputsAction::Quit => self.should_quit = true,
             OutputsAction::Back => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
             }
             OutputsAction::Deleted { label, scope } => {
                 let scope_str = match scope {
@@ -402,17 +420,17 @@ impl App {
             NewSecretAction::None => {}
             NewSecretAction::Quit => self.should_quit = true,
             NewSecretAction::Cancel => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.clear_hint();
                 self.push_toast("create cancelled", ToastKind::Info);
             }
             NewSecretAction::Created(path) => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.clear_hint();
                 self.push_toast(format!("created {path}"), ToastKind::Success);
             }
             NewSecretAction::Failed(err) => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.clear_hint();
                 self.push_toast(format!("create failed: {err}"), ToastKind::Error);
             }
@@ -427,15 +445,15 @@ impl App {
             RemoteAddAction::None => {}
             RemoteAddAction::Quit => self.should_quit = true,
             RemoteAddAction::Cancel => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.push_toast("add remote cancelled", ToastKind::Info);
             }
             RemoteAddAction::Created(slug) => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.push_toast(format!("added remote {slug}"), ToastKind::Success);
             }
             RemoteAddAction::Failed(err) => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
                 self.push_toast(format!("add remote failed: {err}"), ToastKind::Error);
             }
         }
@@ -447,7 +465,7 @@ impl App {
             RecipientListAction::None => {}
             RecipientListAction::Quit => self.should_quit = true,
             RecipientListAction::Back => {
-                self.view = View::Search(SearchView::new(&self.ctx));
+                self.view = View::Search(self.fresh_search());
             }
             RecipientListAction::OpenAdd => {
                 self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
@@ -712,6 +730,24 @@ fn clone_ctx(ctx: &Context) -> Context {
         git: ctx.git.clone(),
         project_config_cell: ctx.project_config_cell.clone(),
     }
+}
+
+/// Resolve a `TuiTheme` into concrete per-mode theme names (`[user,
+/// project, all]`). `random`/`default` are resolved once here so the
+/// session keeps a stable random pick instead of re-rolling on every
+/// info-mode cycle or view rebuild.
+fn resolve_theme_names(theme: &crate::config::TuiTheme) -> [String; 3] {
+    let mut names = [
+        String::from("himitsu"),
+        String::from("himitsu"),
+        String::from("himitsu"),
+    ];
+    for (mode, idx) in [("user", 0usize), ("project", 1), ("all", 2)] {
+        names[idx] = crate::tui::theme::resolve_random(theme.name_for(mode))
+            .unwrap_or("himitsu")
+            .to_string();
+    }
+    names
 }
 
 #[cfg(test)]

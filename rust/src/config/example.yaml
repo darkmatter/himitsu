@@ -66,8 +66,21 @@ auto_pull: false
 #   material        — Material Ocean inspired
 #   rose-pine       — Rosé Pine inspired
 #
+# `tui.theme` accepts either a scalar (applies to every header info-mode) or
+# a map with `user` / `project` / `all` keys. The header info-mode is cycled
+# with `i` (User → Project → All); when per-mode themes are set, the palette
+# swaps as you cycle. Missing map entries fall back to `random`.
+#
+# Scalar form (all modes share one theme):
 # tui:
 #   theme: apathy-storm
+#
+# Per-mode form (each info-mode gets its own palette):
+# tui:
+#   theme:
+#     user: himitsu
+#     project: catppuccin
+#     all: apathy-storm
 #
 #   # Opt in to Nerd Font glyphs (e.g. git logo for the sync state pill).
 #   # Default is false because there's no reliable way to detect Nerd Font

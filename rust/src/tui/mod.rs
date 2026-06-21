@@ -43,14 +43,14 @@ pub fn run(ctx: &Context) -> Result<()> {
     // the defaults; malformed `tui` settings surface as hard errors so the
     // user sees typos immediately instead of silently losing customization.
     let tui = Config::load(&config_path())?.tui;
-    theme::set_theme(&tui.theme)?;
+    theme::set_theme(tui.theme.name_for("user"))?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
     let keymap = tui.keys;
 
     let _guard = terminal::install()?;
     let mut terminal = terminal::new()?;
     terminal::check_min_size()?;
-    let mut app = app::App::new(ctx, keymap);
+    let mut app = app::App::new(ctx, keymap, &tui.theme);
     event::run_loop(&mut terminal, &mut app)?;
     Ok(())
 }
@@ -64,7 +64,7 @@ pub fn run(ctx: &Context) -> Result<()> {
 /// directory) and hand control to the normal dashboard event loop.
 pub fn run_init_flow() -> Result<()> {
     let tui = Config::load(&config_path())?.tui;
-    theme::set_theme(&tui.theme)?;
+    theme::set_theme(tui.theme.name_for("user"))?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
     let keymap = tui.keys;
 
@@ -126,7 +126,7 @@ pub fn run_init_flow() -> Result<()> {
     drop(guard);
 
     let tui = Config::load(&config_path())?.tui;
-    theme::set_theme(&tui.theme)?;
+    theme::set_theme(tui.theme.name_for("user"))?;
     icons::set_use_nerd_fonts(tui.nerd_fonts);
 
     let cfg = Config::load(&config_path()).unwrap_or_default();

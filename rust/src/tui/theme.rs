@@ -95,6 +95,14 @@ pub(crate) fn set_theme(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a theme name (including `random`/`default`) to a concrete
+/// built-in theme name, without mutating the active palette. Useful for
+/// pre-resolving per-mode assignments once at session start so cycling
+/// modes does not re-roll a new random pick each time.
+pub(crate) fn resolve_random(name: &str) -> Result<&'static str> {
+    resolve_theme_name(name)
+}
+
 /// Resolve `random`/`default` aliases into a concrete theme name from
 /// [`RANDOM_POOL`]; pass other known names through unchanged.
 fn resolve_theme_name(name: &str) -> Result<&'static str> {

@@ -789,10 +789,22 @@ key_provider: disk                  # env: HIMITSU_KEY_PROVIDER
 auto_pull: false                    # env: HIMITSU_AUTO_PULL
 
 tui:
-  # Built-in palette. `random` (the default) picks one per launch.
+  # Color palette. Accepts either a scalar (one theme for every header
+  # info-mode) or a map with `user` / `project` / `all` keys for per-mode
+  # theming. The header info-mode is cycled with `i` (User → Project →
+  # All); when a per-mode map is set, the palette swaps as you cycle.
+  # Missing map entries fall back to `random`.
   # Accepted: random, himitsu, apathy, apathy-minted, apathy-theory,
   #           apathy-storm, ayu, catppuccin, material, rose-pine.
-  theme: random                     # env: HIMITSU_TUI_THEME
+  #
+  # Scalar form (env: HIMITSU_TUI_THEME — applies to all modes):
+  theme: random
+  #
+  # Per-mode form:
+  # theme:
+  #   user: himitsu
+  #   project: catppuccin
+  #   all: apathy-storm
 
   # Opt in to Nerd Font glyphs in the dashboard. Off by default because
   # there is no reliable runtime check for font support.

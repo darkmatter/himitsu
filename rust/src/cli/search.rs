@@ -73,12 +73,17 @@ pub struct SearchResult {
 /// individual tag strings is the caller's responsibility — see [`run`] for
 /// the CLI path that runs them through [`crate::crypto::tags::validate_tag`].
 pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<Vec<SearchResult>> {
+    let candidates = collect_candidates(ctx)?;
+    Ok(filter_candidates(&candidates, query, tag_filter))
+}
+
+/// Collect all secret candidates across every known store, decrypting
+/// each one best-effort to extract description + tags. This is the slow
+/// path (~1s for 100+ secrets due to per-file age decryption) and should
+/// be cached by callers that re-filter on changing queries.
+pub fn collect_candidates(ctx: &Context) -> Result<Vec<SearchResult>> {
     let mut candidates: Vec<SearchResult> = Vec::new();
 
-    // Try to load age identities once so we can best-effort extract the
-    // description from each secret's encrypted payload. If identities aren't
-    // available (fresh install, CI test fixture, missing key file) we still
-    // return search results — just without descriptions.
     let identities = ctx.load_identities().ok();
 
     for (slug, store_path) in collect_stores(ctx)? {
@@ -108,17 +113,25 @@ pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<
         }
     }
 
-    let candidates = apply_tag_filter(candidates, tag_filter);
+    Ok(candidates)
+}
 
-    let results = if query.trim().is_empty() {
+/// Filter pre-collected candidates by tag (AND) and fuzzy query. Fast
+/// (<1ms for hundreds of candidates) — safe to call on every keystroke.
+pub fn filter_candidates(
+    candidates: &[SearchResult],
+    query: &str,
+    tag_filter: &[String],
+) -> Vec<SearchResult> {
+    let candidates = apply_tag_filter(candidates.to_vec(), tag_filter);
+
+    if query.trim().is_empty() {
         let mut r = candidates;
         r.sort_by(|a, b| (&a.store, &a.path).cmp(&(&b.store, &b.path)));
         r
     } else {
         fuzzy_filter(&candidates, query)
-    };
-
-    Ok(results)
+    }
 }
 
 /// Drop candidates that don't satisfy the tag filter.

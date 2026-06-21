@@ -23,10 +23,59 @@ use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
+/// Which status pill the header is currently surfacing. Pressing `i`
+/// cycles forward through the variants. The cycle is intentionally small —
+/// only the most glanceable info lives on the header.
+///
+/// - [`InfoMode::User`] — the user's personal store sync health (default).
+/// - [`InfoMode::Project`] — the project store's sync health (the
+///   `default_store` slug from the current repo's `himitsu.yaml`). Falls
+///   back to a muted "n/a" pill when no project store is wired up.
+/// - [`InfoMode::All`] — both pills stacked side-by-side so the user can
+///   glance at user + project health in one mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum InfoMode {
+    #[default]
+    User,
+    Project,
+    All,
+}
+
+impl InfoMode {
+    /// Advance to the next variant. The header keybind (`i`) cycles this.
+    fn cycle(self) -> Self {
+        match self {
+            InfoMode::User => InfoMode::Project,
+            InfoMode::Project => InfoMode::All,
+            InfoMode::All => InfoMode::User,
+        }
+    }
+
+    /// Stable index into `SearchView::theme_names` (`[user, project, all]`).
+    fn idx(self) -> usize {
+        match self {
+            InfoMode::User => 0,
+            InfoMode::Project => 1,
+            InfoMode::All => 2,
+        }
+    }
+
+    /// Display label for the pill rendered by [`render_health_pill`].
+    fn label(self) -> &'static str {
+        match self {
+            InfoMode::User => "user",
+            InfoMode::Project => "project",
+            InfoMode::All => "all",
+        }
+    }
+}
+
 use chrono::Utc;
 
 use crate::cli::Context;
-use crate::cli::search::{SearchResult, humanize_age_compact, parse_ts, search_core};
+use crate::cli::search::{
+    SearchResult, collect_candidates, filter_candidates, humanize_age_compact, parse_ts,
+};
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
 use crate::tui::keymap::{KeyAction, KeyMap};
@@ -143,6 +192,16 @@ pub struct SearchView {
     /// from table navigation.
     autocomplete: SecretRefAutocomplete,
     search_dirty: bool,
+    /// Cached decrypted candidates. Refreshed only by [`recollect`] (store
+    /// change, join, explicit refresh) — NOT on every query keystroke. The
+    /// query fuzzy-filter runs against this cache via [`filter_candidates`].
+    candidates: Vec<SearchResult>,
+    /// Which status pill the header surfaces. Pressing `i` cycles this.
+    info_mode: InfoMode,
+    /// Resolved concrete theme names per mode (`[user, project, all]`).
+    /// Pre-resolved once at configuration time so cycling modes does not
+    /// re-roll a new random pick each press.
+    theme_names: [String; 3],
 }
 
 impl SearchView {
@@ -178,9 +237,31 @@ impl SearchView {
             folded: false,
             autocomplete: SecretRefAutocomplete::new(Vec::new()),
             search_dirty: false,
+            candidates: Vec::new(),
+            info_mode: InfoMode::default(),
+            theme_names: [
+                String::from("himitsu"),
+                String::from("himitsu"),
+                String::from("himitsu"),
+            ],
         };
-        view.refresh_results();
+        view.recollect();
         view
+    }
+
+    /// Store the session-resolved per-mode theme names and apply the
+    /// current mode's theme. Called by the app router once after
+    /// construction; the names are pre-resolved so cycling modes swaps
+    /// palettes without re-rolling `random`.
+    pub fn set_theme_names(&mut self, names: [String; 3]) {
+        self.theme_names = names;
+        let _ = crate::tui::theme::set_theme(&self.theme_names[self.info_mode.idx()]);
+    }
+
+    /// Re-apply the current mode's theme. Used after events that may have
+    /// touched the global palette.
+    fn apply_current_theme(&self) {
+        let _ = crate::tui::theme::set_theme(&self.theme_names[self.info_mode.idx()]);
     }
 
     pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> SearchAction {
@@ -295,6 +376,14 @@ impl SearchView {
                 SearchAction::None
             }
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
+                // Naked `i` cycles the header status pill. We toggle the
+                // mode here and then let the letter fall through into the
+                // query — the cycle is intentionally non-destructive to the
+                // search UX so users don't lose their typing rhythm.
+                if ch == 'i' {
+                    self.info_mode = self.info_mode.cycle();
+                    self.apply_current_theme();
+                }
                 self.query.push(ch);
                 self.mark_search_dirty();
                 SearchAction::None
@@ -390,18 +479,27 @@ impl SearchView {
         }
     }
 
+    /// Re-filter the cached candidates against the current query + tags.
+    /// Fast (<1ms) — safe to call on every keystroke. The slow decryption
+    /// happens in [`recollect`], called only on store changes / explicit
+    /// refresh.
     pub(crate) fn refresh_results(&mut self) {
-        self.results = search_core(&self.ctx, &self.query, &self.tag_filters).unwrap_or_default();
+        self.results = filter_candidates(&self.candidates, &self.query, &self.tag_filters);
         self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.normalize_selected_column();
         self.list_state.select(self.first_selectable());
-        // Keep the autocomplete corpus aligned with what the user could
-        // possibly land on: every secret path search_core just returned for
-        // an unfiltered scan. This is cheap (already in memory) and dodges
-        // having to re-walk the store when the popup wants to open.
         let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
         self.autocomplete.set_corpus(corpus);
         self.autocomplete.update_query(&self.query);
+    }
+
+    /// Re-collect + decrypt all secrets from every known store, then
+    /// re-filter. Slow (~1s for 100+ secrets). Call only when the
+    /// underlying secret set may have changed: store switch, join,
+    /// new-secret save, explicit refresh.
+    pub(crate) fn recollect(&mut self) {
+        self.candidates = collect_candidates(&self.ctx).unwrap_or_default();
+        self.refresh_results();
     }
 
     fn mark_search_dirty(&mut self) {
@@ -723,7 +821,7 @@ impl SearchView {
         // rekeyed store is never left with a dirty tree.
         match store_ops::rekey(&self.ctx, None) {
             Ok(n) => {
-                self.refresh_results();
+                self.recollect();
                 let (g, p) = check_store_health_pair(&self.ctx);
                 self.global_health = g;
                 self.project_health = p;
@@ -770,14 +868,28 @@ impl SearchView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let global_pill = render_health_pill("global", Some(&self.global_health));
-        let project_pill = render_health_pill("project", self.project_health.as_ref());
+        // The active info-mode picks which pill(s) render. Pressing `i`
+        // cycles `info_mode` through User → Project → All so the user can
+        // glance at either status, or both at once, without a modal. The
+        // `All` mode stacks the user and project pills side-by-side.
+        let pill: Vec<Span<'static>> = match self.info_mode {
+            InfoMode::User => render_health_pill(InfoMode::User.label(), Some(&self.global_health)),
+            InfoMode::Project => {
+                render_health_pill(InfoMode::Project.label(), self.project_health.as_ref())
+            }
+            InfoMode::All => {
+                let mut spans =
+                    render_health_pill(InfoMode::User.label(), Some(&self.global_health));
+                spans.push(Span::raw("  "));
+                spans.extend(render_health_pill(
+                    InfoMode::Project.label(),
+                    self.project_health.as_ref(),
+                ));
+                spans
+            }
+        };
 
-        // Right column has to fit both pills side-by-side, separated by two
-        // spaces. Length comes from the rendered span widths so a long
-        // message like "not pushed — run: himitsu git push -u origin main"
-        // doesn't get truncated.
-        let right_width = (span_width(&global_pill) + 2 + span_width(&project_pill)) as u16;
+        let right_width = span_width(&pill) as u16;
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -797,12 +909,9 @@ impl SearchView {
         ));
         frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
 
-        // Right: two health pills (global, project) right-aligned together.
-        let mut right = global_pill;
-        right.push(Span::raw("  "));
-        right.extend(project_pill);
+        // Right: the active status pill, right-aligned.
         frame.render_widget(
-            Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+            Paragraph::new(Line::from(pill)).alignment(Alignment::Right),
             cols[1],
         );
     }
@@ -1131,14 +1240,6 @@ impl SearchView {
                     Span::styled(" open", footer),
                 ]),
                 Line::from(vec![
-                    Span::styled("tab", Style::default().fg(theme::accent())),
-                    Span::styled(" column", footer),
-                ]),
-                Line::from(vec![
-                    Span::styled("^o", Style::default().fg(theme::accent())),
-                    Span::styled(" sort", footer),
-                ]),
-                Line::from(vec![
                     Span::styled("^n", Style::default().fg(theme::accent())),
                     Span::styled(" new", footer),
                 ]),
@@ -1149,6 +1250,10 @@ impl SearchView {
                 Line::from(vec![
                     Span::styled("^p", Style::default().fg(theme::accent())),
                     Span::styled(" commands", footer),
+                ]),
+                Line::from(vec![
+                    Span::styled("i", Style::default().fg(theme::accent())),
+                    Span::styled(" info", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("esc", Style::default().fg(theme::accent())),
@@ -1352,6 +1457,7 @@ impl SearchView {
             ("tab / shift-tab".into(), "select column".into()),
             ("enter".into(), "open selection".into()),
             ("backspace".into(), "delete char".into()),
+            ("i".into(), "cycle header status (info)".into()),
         ];
         rows.extend(crate::tui::keymap::help_rows(
             keymap,
@@ -2229,6 +2335,70 @@ mod tests {
             theme::tag_color("pci"),
             theme::tag_color("stripe"),
             "distinct tags should usually get distinct colors"
+        );
+    }
+
+    #[test]
+    fn i_key_cycles_info_mode_and_types_into_query() {
+        let km = KeyMap::default();
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+
+        // Default mode is User.
+        assert_eq!(view.info_mode, InfoMode::User);
+
+        // First `i` advances to Project and also lands an `i` in the query
+        // (the cycle is intentionally non-destructive to typing).
+        view.on_key(key(KeyCode::Char('i')), &km);
+        assert_eq!(view.info_mode, InfoMode::Project);
+        assert_eq!(view.query, "i");
+
+        // Second `i` advances to All (both pills stacked).
+        view.on_key(key(KeyCode::Char('i')), &km);
+        assert_eq!(view.info_mode, InfoMode::All);
+        assert_eq!(view.query, "ii");
+
+        // Third `i` cycles back to User.
+        view.on_key(key(KeyCode::Char('i')), &km);
+        assert_eq!(view.info_mode, InfoMode::User);
+        assert_eq!(view.query, "iii");
+    }
+
+    #[test]
+    fn draw_header_renders_only_the_active_info_mode_pill() {
+        let dir = seeded_store();
+        let ctx = make_ctx(&dir.path().join("store"));
+        let mut view = SearchView::new(&ctx);
+
+        // User default: "user:" pill should appear somewhere in the
+        // rendered output (the header sits inside the standard canvas, so
+        // its vertical offset depends on terminal size).
+        let rendered = render_view(&mut view, 120, 20);
+        assert!(
+            rendered.contains("user:"),
+            "default header should show user pill:\n{rendered}"
+        );
+
+        // Cycle to project: header should switch to the project pill. When
+        // no project store is configured it renders as "project: n/a".
+        view.on_key(key(KeyCode::Char('i')), &KeyMap::default());
+        let rendered = render_view(&mut view, 120, 20);
+        assert!(
+            rendered.contains("project:"),
+            "cycled header should show project pill:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("user:"),
+            "user pill should be hidden after cycling to project:\n{rendered}"
+        );
+
+        // Cycle to All: both user and project pills render together.
+        view.on_key(key(KeyCode::Char('i')), &KeyMap::default());
+        let rendered = render_view(&mut view, 140, 20);
+        assert!(
+            rendered.contains("user:") && rendered.contains("project:"),
+            "All mode should show both user and project pills:\n{rendered}"
         );
     }
 }
