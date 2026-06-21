@@ -684,7 +684,7 @@ impl Default for KeyMap {
             copy_ref_selected: vec![chord_shift('y')],
             outputs: vec![chord_shift('e')],
             collapse_paths: vec![chord_bare('-')],
-            expand_paths: vec![chord_bare('+'), chord_bare('=')],
+            expand_paths: vec![chord_bare('+'), chord_bare('='), chord_ctrl('=')],
             toggle_autocomplete: vec![chord_ctrl(' ')],
             refine_tag: vec![chord_ctrl('t')],
             sort_column: vec![ctrl('o')],
@@ -1255,7 +1255,7 @@ envs: ["ctrl+l"]
         assert_eq!(chords_display(&km, KeyAction::CollapsePaths), "ctrl-x -");
         assert_eq!(
             chords_display(&km, KeyAction::ExpandPaths),
-            "ctrl-x + / ctrl-x ="
+            "ctrl-x + / ctrl-x = / ctrl-x ctrl-="
         );
     }
 
