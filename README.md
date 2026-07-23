@@ -55,6 +55,11 @@ Use himitsu when you want:
 
 ## Quick Start
 
+```bash
+nix profile add github:darkmatter/himitsu
+
+```
+
 Run himitsu with no arguments to open the TUI. On a fresh machine, the init wizard creates your Age key, scaffolds a store, adds you as the first recipient, and drops you into search.
 
 ```bash
