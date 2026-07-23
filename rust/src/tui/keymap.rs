@@ -1140,7 +1140,10 @@ mod tests {
         assert_eq!(chord_strings(&km.copy_ref_selected), ["ctrl+x shift+y"]);
         assert_eq!(chord_strings(&km.outputs), ["ctrl+x shift+e"]);
         assert_eq!(chord_strings(&km.collapse_paths), ["ctrl+x -"]);
-        assert_eq!(chord_strings(&km.expand_paths), ["ctrl+x +", "ctrl+x ="]);
+        assert_eq!(
+            chord_strings(&km.expand_paths),
+            ["ctrl+x +", "ctrl+x =", "ctrl+x ctrl+="]
+        );
         assert_eq!(chord_strings(&km.copy_ref), ["ctrl+x shift+y"]);
 
         assert!(
@@ -1255,7 +1258,7 @@ envs: ["ctrl+l"]
         assert_eq!(chords_display(&km, KeyAction::CollapsePaths), "ctrl-x -");
         assert_eq!(
             chords_display(&km, KeyAction::ExpandPaths),
-            "ctrl-x + / ctrl-x = / ctrl-x ctrl-="
+            "ctrl-x + / ctrl-x = / ctrl-x ctrl-equals"
         );
     }
 
