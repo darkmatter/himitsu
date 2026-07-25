@@ -30,6 +30,7 @@ Enter
 Sleep 1.5s
 
 # `?` opens the help overlay scoped to the current view (search).
+Ctrl+X
 Type "?"
 Sleep 2.5s
 
@@ -45,6 +46,7 @@ Enter
 Sleep 1.2s
 
 # `?` again — different help, scoped to the secret viewer.
+Ctrl+X
 Type "?"
 Sleep 2.5s
 Escape

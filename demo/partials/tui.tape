@@ -8,6 +8,7 @@ Sleep 1.8s
 Screenshot target/vhs-out/screenshots/0-search.png
 
 # Contextual help for the search dashboard.
+Ctrl+X
 Type "?"
 Wait+Screen /filter results/
 Sleep 1.5s
@@ -31,6 +32,7 @@ Sleep 1.8s
 Screenshot target/vhs-out/screenshots/3-secret-revealed.png
 
 # Viewer help is scoped to the active view.
+Ctrl+X
 Type "?"
 Wait+Screen /reveal/
 Sleep 1.4s
@@ -75,6 +77,7 @@ Sleep 1.2s
 Screenshot target/vhs-out/screenshots/7-new-secret-created.png
 
 # Store picker remains in the TUI and shows registered stores.
+Ctrl+X
 Ctrl+S
 Wait+Screen /demo/
 Sleep 1.4s

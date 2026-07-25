@@ -37,6 +37,7 @@ Sleep 1.8s
 # Open the store picker overlay with Ctrl+S. Both stores listed
 # alphabetically: acme/infra and demo/main; the cursor starts on
 # the active store (demo/main).
+Ctrl+X
 Ctrl+S
 Sleep 1.2s
 
@@ -51,6 +52,7 @@ Enter
 Sleep 1.8s
 
 # Reopen the picker and switch back to demo/main.
+Ctrl+X
 Ctrl+S
 Sleep 1s
 Down
@@ -59,6 +61,7 @@ Enter
 Sleep 1.2s
 
 # One more open and Esc to demonstrate cancel.
+Ctrl+X
 Ctrl+S
 Sleep 800ms
 Escape
