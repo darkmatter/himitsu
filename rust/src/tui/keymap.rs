@@ -590,12 +590,13 @@ pub enum KeyAction {
     CollapsePaths,
     /// In the search view: expand all secret paths back to full depth.
     ExpandPaths,
-    /// In the search view: toggle the secret-ref autocomplete popup.
-    ToggleAutocomplete,
     /// In the search view: refine the query to the selected row's tag.
     RefineTag,
     /// In the search view: sort by the selected results column.
     SortColumn,
+    /// In the search view: cycle the store filter through each store then
+    /// "all" (no filter). Repurposes the former Ctrl+I info-mode cycle.
+    CycleStore,
 
     Reveal,
     CopyValue,
@@ -660,12 +661,13 @@ pub struct KeyMap {
     pub collapse_paths: Vec<KeyChord>,
     /// Expand all secret paths to full depth.
     pub expand_paths: Vec<KeyChord>,
-    /// Toggle the secret-ref autocomplete popup.
-    pub toggle_autocomplete: Vec<KeyChord>,
     /// Refine the query to the selected row's tag.
     pub refine_tag: Vec<KeyChord>,
     /// Sort by the selected results column (default: `Ctrl+O`).
     pub sort_column: Vec<KeyChord>,
+    /// Cycle the store filter through each store then "all"
+    /// (default: `Ctrl+I`).
+    pub cycle_store: Vec<KeyChord>,
 
     // ── Secret viewer ────────────────────────────────────────────────
     pub reveal: Vec<KeyChord>,
@@ -709,10 +711,10 @@ impl Default for KeyMap {
             switch_store: vec![chord_ctrl('s')],
             copy_selected: vec![ctrl('y')],
             copy_ref_selected: vec![chord_shift('y')],
+            cycle_store: vec![ctrl('i')],
             outputs: vec![chord_shift('e')],
             collapse_paths: vec![chord_bare('-')],
             expand_paths: vec![chord_bare('+'), chord_bare('='), chord_ctrl('=')],
-            toggle_autocomplete: vec![chord_ctrl(' ')],
             refine_tag: vec![chord_ctrl('t')],
             sort_column: vec![ctrl('o')],
 
@@ -779,9 +781,9 @@ impl KeyAction {
         KeyAction::Outputs,
         KeyAction::CollapsePaths,
         KeyAction::ExpandPaths,
-        KeyAction::ToggleAutocomplete,
         KeyAction::RefineTag,
         KeyAction::SortColumn,
+        KeyAction::CycleStore,
         // Secret viewer
         KeyAction::Reveal,
         KeyAction::CopyValue,
@@ -866,12 +868,6 @@ pub fn row(action: KeyAction) -> Row {
             scope: Scope::Search,
             palette: None,
         },
-        KeyAction::ToggleAutocomplete => Row {
-            field: |km| &km.toggle_autocomplete,
-            help: "toggle ref autocomplete",
-            scope: Scope::Search,
-            palette: None,
-        },
         KeyAction::RefineTag => Row {
             field: |km| &km.refine_tag,
             help: "refine to selected tag",
@@ -881,6 +877,12 @@ pub fn row(action: KeyAction) -> Row {
         KeyAction::SortColumn => Row {
             field: |km| &km.sort_column,
             help: "sort selected column",
+            scope: Scope::Search,
+            palette: None,
+        },
+        KeyAction::CycleStore => Row {
+            field: |km| &km.cycle_store,
+            help: "cycle store filter",
             scope: Scope::Search,
             palette: None,
         },
@@ -1164,10 +1166,6 @@ mod tests {
 
         assert_eq!(chord_strings(&km.help), ["ctrl+x ?"]);
         assert_eq!(chord_strings(&km.switch_store), ["ctrl+x ctrl+s"]);
-        assert_eq!(
-            chord_strings(&km.toggle_autocomplete),
-            ["ctrl+x ctrl+space"]
-        );
         assert_eq!(chord_strings(&km.refine_tag), ["ctrl+x ctrl+t"]);
         assert_eq!(chord_strings(&km.copy_ref_selected), ["ctrl+x shift+y"]);
         assert_eq!(chord_strings(&km.outputs), ["ctrl+x shift+e"]);
@@ -1185,10 +1183,6 @@ mod tests {
         assert!(
             !km.switch_store
                 .matches(&key(KeyCode::Char('s'), KeyModifiers::CONTROL))
-        );
-        assert!(
-            !km.toggle_autocomplete
-                .matches(&key(KeyCode::Char(' '), KeyModifiers::CONTROL))
         );
         assert!(
             !km.refine_tag
