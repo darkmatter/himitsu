@@ -995,6 +995,40 @@ fn set_get_special_characters() {
         .stdout(special);
 }
 
+#[test]
+fn get_dash_reads_secret_path_from_stdin() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "prod/API_KEY", "from-stdin-path"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "get", "-"])
+        .write_stdin("prod/API_KEY\n")
+        .assert()
+        .success()
+        .stdout("from-stdin-path");
+}
+
+#[test]
+fn get_dash_rejects_empty_stdin() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "get", "-"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stdin was empty"));
+}
+
 // ============ ls tests ============
 
 #[test]

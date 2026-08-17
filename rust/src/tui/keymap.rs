@@ -92,24 +92,33 @@ impl KeyBinding {
     /// `"shift+Y"`, `"ctrl+y"`/`"ctrl+Y"` are equivalent). Shift is never
     /// inferred from an uppercase letter — only an explicit `shift` modifier
     /// counts. Bare bindings ignore an incidental `SHIFT` on the event.
+    ///
+    /// Held-down leader Ctrl is handled only in [`KeyChord::matches_prefix`]
+    /// for later non-letter steps — single-key matching stays strict so
+    /// `ctrl+s` never collides with bare `s`.
     pub fn matches(&self, key: &KeyEvent) -> bool {
+        self.matches_with(key, false)
+    }
+
+    fn matches_with(&self, key: &KeyEvent, sticky_ctrl: bool) -> bool {
         // Mask away modifiers we don't track (e.g. META) so cross-platform
         // events still match cleanly.
         let tracked = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT;
         let event_mods = key.modifiers & tracked;
+        let mut ignore = KeyModifiers::NONE;
+        if !self.modifiers.contains(KeyModifiers::SHIFT) {
+            ignore |= KeyModifiers::SHIFT;
+        }
+        if sticky_ctrl && !self.modifiers.contains(KeyModifiers::CONTROL) {
+            ignore |= KeyModifiers::CONTROL;
+        }
 
         match (self.code, key.code) {
             (KeyCode::Char(a), KeyCode::Char(b)) => {
                 if !a.eq_ignore_ascii_case(&b) {
                     return false;
                 }
-
-                if self.modifiers.contains(KeyModifiers::SHIFT) {
-                    event_mods == self.modifiers
-                } else {
-                    let strip = KeyModifiers::SHIFT;
-                    (self.modifiers & !strip) == (event_mods & !strip)
-                }
+                (self.modifiers & !ignore) == (event_mods & !ignore)
             }
             // BackTab on one side is only equivalent to `Tab + Shift` on
             // the other — never to a bare Tab. This lets a binding written
@@ -118,20 +127,23 @@ impl KeyBinding {
             // `BackTab` into the same key.
             (KeyCode::BackTab, KeyCode::Tab) => {
                 event_mods.contains(KeyModifiers::SHIFT)
-                    && (event_mods & !KeyModifiers::SHIFT)
-                        == (self.modifiers & !KeyModifiers::SHIFT)
+                    && (event_mods & !(ignore | KeyModifiers::SHIFT))
+                        == (self.modifiers & !(ignore | KeyModifiers::SHIFT))
             }
             (KeyCode::Tab, KeyCode::BackTab) => {
                 self.modifiers.contains(KeyModifiers::SHIFT)
-                    && (event_mods & !KeyModifiers::SHIFT)
-                        == (self.modifiers & !KeyModifiers::SHIFT)
+                    && (event_mods & !(ignore | KeyModifiers::SHIFT))
+                        == (self.modifiers & !(ignore | KeyModifiers::SHIFT))
             }
             (KeyCode::BackTab, KeyCode::BackTab) => {
-                let strip = KeyModifiers::SHIFT;
-                (self.modifiers & !strip) == (event_mods & !strip)
+                (self.modifiers & !ignore) == (event_mods & !ignore)
             }
-            (a, b) => a == b && event_mods == self.modifiers,
+            (a, b) => a == b && (self.modifiers & !ignore) == (event_mods & !ignore),
         }
+    }
+
+    fn is_ascii_letter(self) -> bool {
+        matches!(self.code, KeyCode::Char(c) if c.is_ascii_alphabetic())
     }
 
     /// Palette/help style: modifiers joined with `-` so punctuation key names
@@ -449,15 +461,30 @@ impl KeyChord {
     }
 
     /// Does the supplied event sequence (length N) match the chord's first
-    /// N steps exactly? Useful for prefix-matching during chord dispatch.
+    /// N steps? After the leader, a held Ctrl is ignored on non-letter
+    /// continuations so `ctrl+x =` still fires when the user never releases
+    /// Control. Letter continuations stay strict so `ctrl+x s` cannot steal
+    /// `ctrl+x ctrl+s`.
     pub fn matches_prefix(&self, events: &[KeyEvent]) -> bool {
+        self.matches_prefix_with(events, true)
+    }
+
+    fn matches_prefix_with(&self, events: &[KeyEvent], sticky_ctrl: bool) -> bool {
         if events.len() > self.steps.len() {
             return false;
         }
         events
             .iter()
             .zip(self.steps.iter())
-            .all(|(ev, step)| step.matches(ev))
+            .enumerate()
+            .all(|(i, (ev, step))| {
+                let allow_sticky = sticky_ctrl && i > 0 && !step.is_ascii_letter();
+                step.matches_with(ev, allow_sticky)
+            })
+    }
+
+    fn matches_exact_strict(&self, events: &[KeyEvent]) -> bool {
+        events.len() == self.steps.len() && self.matches_prefix_with(events, false)
     }
 
     /// Does the supplied event sequence match the chord exactly (same
@@ -1035,7 +1062,8 @@ impl KeyMap {
         buf.extend_from_slice(pending);
         buf.push(*key);
 
-        let mut exact: Option<KeyAction> = None;
+        let mut strict: Option<KeyAction> = None;
+        let mut sticky: Option<KeyAction> = None;
         let mut has_longer_prefix = false;
 
         for (action, chords) in self.entries() {
@@ -1043,9 +1071,13 @@ impl KeyMap {
                 if !chord.is_leader_chord() {
                     continue;
                 }
-                if chord.matches_exact(&buf) {
-                    if exact.is_none() {
-                        exact = Some(action);
+                if chord.matches_exact_strict(&buf) {
+                    if strict.is_none() {
+                        strict = Some(action);
+                    }
+                } else if chord.matches_exact(&buf) {
+                    if sticky.is_none() {
+                        sticky = Some(action);
                     }
                 } else if chord.len() > buf.len() && chord.matches_prefix(&buf) {
                     has_longer_prefix = true;
@@ -1053,7 +1085,7 @@ impl KeyMap {
             }
         }
 
-        if let Some(action) = exact {
+        if let Some(action) = strict.or(sticky) {
             Dispatch::Match(action)
         } else if has_longer_prefix {
             Dispatch::Pending
@@ -1248,6 +1280,69 @@ envs: ["ctrl+l"]
         let minus = key(KeyCode::Char('-'), KeyModifiers::NONE);
         assert_eq!(
             km.dispatch(&[ctrl_x], &minus),
+            Dispatch::Match(KeyAction::CollapsePaths)
+        );
+
+        let ctrl_equals = key(KeyCode::Char('='), KeyModifiers::CONTROL);
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &ctrl_equals),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+    }
+
+    #[test]
+    fn live_pre_fix_expand_paths_accepts_sticky_ctrl_equals() {
+        // User configs serialized before chord_ctrl('=') was added overwrite
+        // the default Vec with only the bare continuations. Holding Ctrl
+        // through the second key must still complete expand_paths.
+        let km: KeyMap = serde_yaml::from_str(
+            r#"
+expand_paths: ["ctrl+x +", "ctrl+x ="]
+collapse_paths: ["ctrl+x -"]
+"#,
+        )
+        .unwrap();
+        let ctrl_x = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(km.dispatch(&[], &ctrl_x), Dispatch::Pending);
+
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('='), KeyModifiers::CONTROL)),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('+'), KeyModifiers::CONTROL)),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('-'), KeyModifiers::CONTROL)),
+            Dispatch::Match(KeyAction::CollapsePaths)
+        );
+        // Distinct ctrl-modified continuations must still win over a bare
+        // sticky-ctrl lookalike (e.g. switch_store is ctrl+x ctrl+s).
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Dispatch::Match(KeyAction::SwitchStore)
+        );
+    }
+
+    #[test]
+    fn explicit_ctrl_continuation_wins_over_sticky_bare_equals() {
+        // collapse_paths is declared first in the registry. A sticky match
+        // of `ctrl+x =` must not steal an explicit `ctrl+x ctrl+=`.
+        let km: KeyMap = serde_yaml::from_str(
+            r#"
+collapse_paths: ["ctrl+x ="]
+expand_paths: ["ctrl+x ctrl+="]
+"#,
+        )
+        .unwrap();
+        let ctrl_x = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('='), KeyModifiers::CONTROL)),
+            Dispatch::Match(KeyAction::ExpandPaths)
+        );
+        assert_eq!(
+            km.dispatch(&[ctrl_x], &key(KeyCode::Char('='), KeyModifiers::NONE)),
             Dispatch::Match(KeyAction::CollapsePaths)
         );
     }
