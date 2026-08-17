@@ -401,10 +401,11 @@ Optional flags:
 
 ### `himitsu get <path>`
 
-Decrypt and print a secret for humans.
+Decrypt and print a secret for humans. Pass `-` to read the path from stdin:
 
 ```bash
 himitsu get prod/API_KEY
+echo 'prod/API_KEY' | himitsu get -
 ```
 
 ### `himitsu read <path>`
