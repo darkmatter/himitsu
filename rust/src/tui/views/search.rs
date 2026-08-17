@@ -40,17 +40,7 @@ enum InfoMode {
     Project,
     All,
 }
-
 impl InfoMode {
-    /// Advance to the next variant. The header keybind (`Ctrl+I`) cycles this.
-    fn cycle(self) -> Self {
-        match self {
-            InfoMode::User => InfoMode::Project,
-            InfoMode::Project => InfoMode::All,
-            InfoMode::All => InfoMode::User,
-        }
-    }
-
     /// Stable index into `SearchView::theme_names` (`[user, project, all]`).
     fn idx(self) -> usize {
         match self {
@@ -83,7 +73,6 @@ use crate::tui::model::path_folding::{Row, build_rows, prefix_of, split_shared_p
 use crate::tui::model::result_sort::{SearchColumn, SortDirection, SortState};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
-use crate::tui::widgets::secret_ref_autocomplete::SecretRefAutocomplete;
 use crate::tui::widgets::store_health::{StoreHealth, check_store_health_pair, render_health_pill};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
@@ -180,23 +169,22 @@ pub struct SearchView {
     /// `FoldedGroup` row. Ctrl+- collapses and Ctrl++ expands. Singleton
     /// paths render the same in both states. Default: unfolded.
     folded: bool,
-    /// Levenshtein-backed autocomplete popup over the search query.
-    ///
-    /// Wired here (rather than into the secret-viewer rename path, where it
-    /// would also be useful) because the search bar is the highest-frequency
-    /// "I'm typing a reference to a secret" surface in the TUI: every user who
-    /// opens the TUI lands on this view first. The popup is non-modal — the
-    /// query input keeps consuming every printable key — and only intercepts
-    /// Up/Down/Enter while the user has explicitly opened it via Ctrl+Space.
-    /// Tab moves table-column focus, so Ctrl+Space keeps autocomplete separate
-    /// from table navigation.
-    autocomplete: SecretRefAutocomplete,
-    search_dirty: bool,
     /// Cached decrypted candidates. Refreshed only by [`recollect`] (store
     /// change, join, explicit refresh) — NOT on every query keystroke. The
     /// query fuzzy-filter runs against this cache via [`filter_candidates`].
     candidates: Vec<SearchResult>,
-    /// Which status pill the header surfaces. Pressing `Ctrl+I` cycles this.
+    /// Whether the query has changed since the last [`refresh_results`] and
+    /// the app router should re-filter before the next draw. Set by
+    /// [`mark_search_dirty`]; consumed via [`take_search_dirty`].
+    search_dirty: bool,
+    /// Active store filter. `None` = all stores (no filter, the default);
+    /// `Some(slug)` = show only secrets from that store. Cycled by Ctrl+I
+    /// through each available store then back to "all". Initialized from
+    /// the project config's `default_store` when present.
+    pub(crate) selected_store: Option<String>,
+    /// Which status pill the header surfaces. Default is `All` (both pills).
+    /// The former Ctrl+I cycle now cycles the store filter; info-mode is
+    /// always `All` so both health pills are visible at once.
     info_mode: InfoMode,
     /// Resolved concrete theme names per mode (`[user, project, all]`).
     /// Pre-resolved once at configuration time so cycling modes does not
@@ -216,6 +204,11 @@ impl SearchView {
             git: ctx.git.clone(),
             project_config_cell: ctx.project_config_cell.clone(),
         };
+        let default_store = ctx_owned
+            .project_config()
+            .ok()
+            .flatten()
+            .and_then(|(cfg, _)| cfg.default_store.clone());
         let (global_health, project_health) = check_store_health_pair(&ctx_owned);
         let mut view = Self {
             query: String::new(),
@@ -235,10 +228,10 @@ impl SearchView {
                 direction: SortDirection::Asc,
             },
             folded: false,
-            autocomplete: SecretRefAutocomplete::new(Vec::new()),
             search_dirty: false,
+            info_mode: InfoMode::All,
             candidates: Vec::new(),
-            info_mode: InfoMode::default(),
+            selected_store: default_store,
             theme_names: [
                 String::from("himitsu"),
                 String::from("himitsu"),
@@ -255,12 +248,6 @@ impl SearchView {
     /// palettes without re-rolling `random`.
     pub fn set_theme_names(&mut self, names: [String; 3]) {
         self.theme_names = names;
-        let _ = crate::tui::theme::set_theme(&self.theme_names[self.info_mode.idx()]);
-    }
-
-    /// Re-apply the current mode's theme. Used after events that may have
-    /// touched the global palette.
-    fn apply_current_theme(&self) {
         let _ = crate::tui::theme::set_theme(&self.theme_names[self.info_mode.idx()]);
     }
 
@@ -306,16 +293,9 @@ impl SearchView {
             return outcome;
         }
 
-        // Autocomplete toggle, tag refine, and column sort are keymap-driven
-        // actions (ToggleAutocomplete / RefineTag / SortColumn) routed
-        // through `dispatch_action` above — rebindable like everything else,
-        // no hardcoded chords here.
-        // Esc closes the popup before falling through to the view's own
-        // cancel/quit semantics.
-        if key.code == KeyCode::Esc && self.autocomplete.is_open() {
-            self.autocomplete.set_open(false);
-            return SearchAction::None;
-        }
+        // Tag refine and column sort are keymap-driven actions (RefineTag
+        // / SortColumn) routed through `dispatch_action` above —
+        // rebindable like everything else, no hardcoded chords here.
 
         match (key.code, key.modifiers) {
             (KeyCode::BackTab, _) => {
@@ -331,14 +311,6 @@ impl SearchView {
                 SearchAction::None
             }
             (KeyCode::Enter, _) => {
-                // Open popup wins: Enter accepts the highlighted suggestion
-                // into the query field.
-                if let Some(pick) = self.autocomplete.accepted() {
-                    self.query = pick.to_string();
-                    self.autocomplete.set_open(false);
-                    self.refresh_results();
-                    return SearchAction::None;
-                }
                 // On a folded group, Enter expands the entire view (1-level
                 // unfold) and lands the cursor on the first leaf of the
                 // group the user just opened.
@@ -352,19 +324,11 @@ impl SearchView {
                 }
             }
             (KeyCode::Up, _) => {
-                if self.autocomplete.is_open() {
-                    self.autocomplete.move_selection(-1);
-                } else {
-                    self.select_prev();
-                }
+                self.select_prev();
                 SearchAction::None
             }
             (KeyCode::Down, _) => {
-                if self.autocomplete.is_open() {
-                    self.autocomplete.move_selection(1);
-                } else {
-                    self.select_next();
-                }
+                self.select_next();
                 SearchAction::None
             }
             (KeyCode::Backspace, _) => {
@@ -373,15 +337,6 @@ impl SearchView {
                 if changed {
                     self.mark_search_dirty();
                 }
-                SearchAction::None
-            }
-            (KeyCode::Char('i'), m) if m.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+I cycles the header status pill. Requires a terminal
-                // with the disambiguated keyboard protocol (pushed in
-                // `terminal::install`); on legacy terminals Ctrl+I arrives as
-                // Tab and falls through to column nav instead.
-                self.info_mode = self.info_mode.cycle();
-                self.apply_current_theme();
                 SearchAction::None
             }
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
@@ -417,6 +372,10 @@ impl SearchView {
                 ));
                 Some(SearchAction::None)
             }
+            KeyAction::CycleStore => {
+                self.cycle_store();
+                Some(SearchAction::None)
+            }
             KeyAction::CopySelected => Some(self.copy_selected_to_clipboard()),
             KeyAction::CopyRefSelected => Some(self.copy_selected_ref_to_clipboard()),
             KeyAction::CollapsePaths => {
@@ -425,13 +384,6 @@ impl SearchView {
             }
             KeyAction::ExpandPaths => {
                 self.set_folded(false);
-                Some(SearchAction::None)
-            }
-            KeyAction::ToggleAutocomplete => {
-                // Re-toggle (rather than only open) so a user who pulled the
-                // popup up by accident can dismiss it with the same chord.
-                let want_open = !self.autocomplete.is_open();
-                self.autocomplete.set_open(want_open);
                 Some(SearchAction::None)
             }
             KeyAction::RefineTag => Some(self.refine_to_selected_tag()),
@@ -485,13 +437,14 @@ impl SearchView {
     /// happens in [`recollect`], called only on store changes / explicit
     /// refresh.
     pub(crate) fn refresh_results(&mut self) {
-        self.results = filter_candidates(&self.candidates, &self.query, &self.tag_filters);
+        let mut results = filter_candidates(&self.candidates, &self.query, &self.tag_filters);
+        if let Some(store) = &self.selected_store {
+            results.retain(|r| &r.store == store);
+        }
+        self.results = results;
         self.rows = build_rows(&self.results, self.folded, self.sort_state);
         self.normalize_selected_column();
         self.list_state.select(self.first_selectable());
-        let corpus: Vec<String> = self.results.iter().map(|r| r.path.clone()).collect();
-        self.autocomplete.set_corpus(corpus);
-        self.autocomplete.update_query(&self.query);
     }
 
     /// Re-collect + decrypt all secrets from every known store, then
@@ -503,9 +456,50 @@ impl SearchView {
         self.refresh_results();
     }
 
+    /// Cycle the store filter through each distinct store present in the
+    /// candidate set, then back to `None` (all stores). The order follows
+    /// `collect_stores` — the active `ctx.store` first, then the rest — so
+    /// the cycle feels predictable. When there's only one store (or none),
+    /// the cycle is a no-op.
+    fn cycle_store(&mut self) {
+        let stores: Vec<String> = self
+            .candidates
+            .iter()
+            .map(|r| r.store.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if stores.is_empty() {
+            return;
+        }
+        match &self.selected_store {
+            None => self.selected_store = stores.first().cloned(),
+            Some(current) => {
+                let idx = stores.iter().position(|s| s == current);
+                match idx {
+                    Some(i) if i + 1 < stores.len() => {
+                        self.selected_store = Some(stores[i + 1].clone());
+                    }
+                    _ => self.selected_store = None, // past last → all
+                }
+            }
+        }
+        self.refresh_results();
+    }
+
+    /// Return the slug of the "default" store — the one the project config
+    /// names via `default_store`, falling back to the active `ctx.store`.
+    /// Used to decide whether a secret's store cell gets the accent color
+    /// (default store) or a distinct `store_color` (non-default store).
+    fn default_store_slug(&self) -> String {
+        if let Some(ds) = &self.selected_store {
+            return ds.clone();
+        }
+        crate::cli::search::store_label(&self.ctx.store, &self.ctx)
+    }
+
     fn mark_search_dirty(&mut self) {
         self.search_dirty = true;
-        self.autocomplete.update_query(&self.query);
     }
 
     pub(crate) fn take_search_dirty(&mut self) -> bool {
@@ -755,13 +749,6 @@ impl SearchView {
         if self.picker.is_none() && self.palette.is_none() {
             self.draw_selected_description(frame);
         }
-
-        // The autocomplete popup sits between the input bar and the modal
-        // overlays — picker/palette still need to draw on top of it when
-        // they are open, but the popup itself should hide whatever it
-        // overlaps in the results area.
-        self.autocomplete.draw(frame, chunks[2]);
-
         // Render the picker / palette overlays last so they sit on top of
         // the rest of the chrome.
         if let Some(picker) = self.picker.as_mut() {
@@ -818,8 +805,6 @@ impl SearchView {
         if let Err(e) = crate::git::pull(&self.ctx.store) {
             return SearchAction::CommandFailed(format!("sync pull failed: {e}"));
         }
-        // The mutation core owns the commit/push/completions chain — the
-        // rekeyed store is never left with a dirty tree.
         match store_ops::rekey(&self.ctx, None) {
             Ok(n) => {
                 self.recollect();
@@ -869,10 +854,8 @@ impl SearchView {
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        // The active info-mode picks which pill(s) render. Pressing Ctrl+I
-        // cycles `info_mode` through User → Project → All so the user can
-        // glance at either status, or both at once, without a modal. The
-        // `All` mode stacks the user and project pills side-by-side.
+        // Info-mode is always `All` so both health pills render together.
+        // The former Ctrl+I cycle now cycles the store filter instead.
         let pill: Vec<Span<'static>> = match self.info_mode {
             InfoMode::User => render_health_pill(InfoMode::User.label(), Some(&self.global_health)),
             InfoMode::Project => {
@@ -900,14 +883,24 @@ impl SearchView {
             ])
             .split(area);
 
-        // Left: brand chip + active view name. The chip carries the project's
-        // namesake kanji (秘 = "secret", first half of 秘密 / himitsu).
+        // Left: brand chip + active view name + store filter indicator.
         let mut left_spans = theme::brand_chip("秘 himitsu");
         left_spans.push(Span::raw("  "));
         left_spans.push(Span::styled(
             "search",
             Style::default().add_modifier(Modifier::BOLD),
         ));
+        // When a store filter is active (Ctrl+I cycled to a specific store),
+        // show a colored pill next to the view name so the user knows the
+        // list is filtered and which store they're looking at.
+        if let Some(store) = &self.selected_store {
+            left_spans.push(Span::raw("  "));
+            left_spans.extend(theme::pill_with(
+                format!("▸ {store}"),
+                theme::store_color(store),
+                theme::on_accent(),
+            ));
+        }
         frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
 
         // Right: the active status pill, right-aligned.
@@ -1203,9 +1196,14 @@ impl SearchView {
                     }
                     spans.push(Span::raw(format!("{:<tag_pad$}  ", "", tag_pad = tag_pad)));
                     if show_store {
+                        let store_style = if cells.store == self.default_store_slug() {
+                            Style::default().fg(theme::accent())
+                        } else {
+                            Style::default().fg(theme::store_color(&cells.store))
+                        };
                         spans.push(Span::styled(
                             format!("{:<store_w$}", cells.store, store_w = store_w),
-                            Style::default().fg(theme::accent()),
+                            store_style,
                         ));
                     }
                     ListItem::new(Line::from(spans))
@@ -1253,8 +1251,8 @@ impl SearchView {
                     Span::styled(" commands", footer),
                 ]),
                 Line::from(vec![
-                    Span::styled("i", Style::default().fg(theme::accent())),
-                    Span::styled(" info", footer),
+                    Span::styled("^i", Style::default().fg(theme::accent())),
+                    Span::styled(" store", footer),
                 ]),
                 Line::from(vec![
                     Span::styled("esc", Style::default().fg(theme::accent())),
@@ -1386,9 +1384,9 @@ const SEARCH_ACTION_PRIORITY: &[KeyAction] = &[
     KeyAction::CopySelected,
     KeyAction::CollapsePaths,
     KeyAction::ExpandPaths,
-    KeyAction::ToggleAutocomplete,
     KeyAction::RefineTag,
     KeyAction::SortColumn,
+    KeyAction::CycleStore,
 ];
 
 fn match_keymap_action(keymap: &KeyMap, key: &crossterm::event::KeyEvent) -> Option<KeyAction> {
@@ -1458,7 +1456,7 @@ impl SearchView {
             ("tab / shift-tab".into(), "select column".into()),
             ("enter".into(), "open selection".into()),
             ("backspace".into(), "delete char".into()),
-            ("i".into(), "cycle header status (info)".into()),
+            ("^i".into(), "cycle header status (info)".into()),
         ];
         rows.extend(crate::tui::keymap::help_rows(
             keymap,
@@ -2340,59 +2338,64 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_i_cycles_info_mode() {
+    fn ctrl_i_cycles_store_filter() {
         let km = KeyMap::default();
-        let dir = seeded_store();
-        let ctx = make_ctx(&dir.path().join("store"));
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
         let mut view = SearchView::new(&ctx);
 
-        assert_eq!(view.info_mode, InfoMode::User);
+        // Default: no store filter (all stores visible).
+        assert!(view.selected_store.is_none());
 
+        // Ctrl+I should cycle to the first store, not touch info_mode.
         view.on_key(ctrl('i'), &km);
-        assert_eq!(view.info_mode, InfoMode::Project);
+        assert!(
+            view.selected_store.is_some(),
+            "ctrl-i should set a store filter"
+        );
         assert!(view.query.is_empty(), "ctrl-i must not type into query");
+        let first = view.selected_store.clone().unwrap();
 
+        // Second press cycles to the next store.
         view.on_key(ctrl('i'), &km);
-        assert_eq!(view.info_mode, InfoMode::All);
+        assert!(view.selected_store.is_some(), "should be on second store");
+        assert_ne!(
+            view.selected_store.as_deref(),
+            Some(first.as_str()),
+            "should be a different store"
+        );
 
+        // Third press cycles back to "all" (None).
         view.on_key(ctrl('i'), &km);
-        assert_eq!(view.info_mode, InfoMode::User);
+        assert!(
+            view.selected_store.is_none(),
+            "ctrl-i should cycle back to all"
+        );
     }
 
     #[test]
-    fn draw_header_renders_only_the_active_info_mode_pill() {
-        let dir = seeded_store();
-        let ctx = make_ctx(&dir.path().join("store"));
+    fn draw_header_shows_store_filter_pill_when_active() {
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
         let mut view = SearchView::new(&ctx);
 
-        // User default: "user:" pill should appear somewhere in the
-        // rendered output (the header sits inside the standard canvas, so
-        // its vertical offset depends on terminal size).
-        let rendered = render_view(&mut view, 120, 20);
-        assert!(
-            rendered.contains("user:"),
-            "default header should show user pill:\n{rendered}"
-        );
-
-        // Cycle to project: header should switch to the project pill. When
-        // no project store is configured it renders as "project: n/a".
-        view.on_key(ctrl('i'), &KeyMap::default());
-        let rendered = render_view(&mut view, 120, 20);
-        assert!(
-            rendered.contains("project:"),
-            "cycled header should show project pill:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("user:"),
-            "user pill should be hidden after cycling to project:\n{rendered}"
-        );
-
-        // Cycle to All: both user and project pills render together.
-        view.on_key(ctrl('i'), &KeyMap::default());
+        // Default: both health pills render (info_mode is always All).
         let rendered = render_view(&mut view, 140, 20);
         assert!(
             rendered.contains("user:") && rendered.contains("project:"),
-            "All mode should show both user and project pills:\n{rendered}"
+            "header should show both health pills by default:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("▸"),
+            "no store filter pill when no filter is active:\n{rendered}"
+        );
+
+        // Activate store filter via Ctrl+I: a colored pill should appear.
+        view.on_key(ctrl('i'), &KeyMap::default());
+        let rendered = render_view(&mut view, 160, 20);
+        assert!(
+            rendered.contains('▸'),
+            "header should show store filter pill when active:\n{rendered}"
         );
     }
 }

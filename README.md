@@ -863,7 +863,7 @@ The full action list (with defaults) is in
 [`rust/src/tui/keymap.rs`](rust/src/tui/keymap.rs):
 `quit`, `help`, `command_palette`, `new_secret`, `switch_store`,
 `copy_selected`, `copy_ref_selected`, `codegen` (legacy aliases: `outputs`, `envs`),
-`collapse_paths`, `expand_paths`, `toggle_autocomplete`, `refine_tag`,
+`collapse_paths`, `expand_paths`, `refine_tag`,
 `sort_column`, `reveal`, `copy_value`, `copy_ref`, `rekey`, `edit`,
 `delete`, `back`, `save_secret`, `next_field`, `prev_field`, `cancel`.
 
