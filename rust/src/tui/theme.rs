@@ -272,6 +272,27 @@ pub(crate) fn tag_color(tag: &str) -> Color {
     TAG_PALETTE[hash as usize % TAG_PALETTE.len()]
 }
 
+/// Derive a distinct color for a store slug (e.g. "czxtm/secrets") from the
+/// theme's accent palette. Used to visually distinguish secrets that live in
+/// a non-default store. The hash picks a stable color per slug so the same
+/// store always renders the same hue.
+pub(crate) fn store_color(slug: &str) -> Color {
+    const STORE_PALETTE: &[Color] = &[
+        Color::LightCyan,
+        Color::LightGreen,
+        Color::LightMagenta,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightRed,
+        Color::Cyan,
+        Color::Green,
+        Color::Magenta,
+        Color::Yellow,
+    ];
+    let hash = slug.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+    STORE_PALETTE[hash as usize % STORE_PALETTE.len()]
+}
+
 impl Palette {
     fn named(name: &str) -> Result<Self> {
         match normalize_name(name).as_str() {

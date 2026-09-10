@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 
 use clap::Args;
 
@@ -18,15 +18,42 @@ const ANSI_RED: &str = "\x1b[31m";
 pub struct GetArgs {
     /// Secret path. Accepts a bare path (`prod/API_KEY`) or a provider-prefixed
     /// qualified reference (`github:org/repo/prod/API_KEY`) that overrides the
-    /// default store.
+    /// default store. Use `-` to read the path from stdin.
     pub path: String,
 }
 
 pub fn run(args: GetArgs, ctx: &Context) -> Result<()> {
-    let decoded = get_decoded(ctx, &args.path)?;
+    let path = resolve_path_arg(&args.path)?;
+    let decoded = get_decoded(ctx, &path)?;
     io::stdout().write_all(&decoded.data)?;
     emit_metadata_block(&decoded);
     Ok(())
+}
+
+/// Resolve `get`'s path argument. `-` means "read the path from stdin"
+/// (`echo 'prod/API_KEY' | himitsu get -`), matching the Unix dash convention.
+fn resolve_path_arg(path: &str) -> Result<String> {
+    if path != "-" {
+        return Ok(path.to_string());
+    }
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf)?;
+    parse_path_from_stdin(&buf)
+}
+
+/// First non-empty trimmed line of stdin is the secret path.
+fn parse_path_from_stdin(buf: &str) -> Result<String> {
+    let trimmed = buf
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if trimmed.is_empty() {
+        return Err(crate::error::HimitsuError::InvalidReference(
+            "stdin was empty; pass a secret path or pipe one to `get -`".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// Decrypt and return only the raw plaintext bytes for a secret reference.
@@ -172,5 +199,22 @@ fn colorize(s: &str, sev: ExpirySeverity, is_tty: bool) -> String {
         ExpirySeverity::Distant => format!("{ANSI_DIM}{s}{ANSI_RESET}"),
         ExpirySeverity::Soon => format!("{ANSI_YELLOW}{s}{ANSI_RESET}"),
         ExpirySeverity::Expired => format!("{ANSI_RED}{s}{ANSI_RESET}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_path_from_stdin;
+
+    #[test]
+    fn parse_path_from_stdin_takes_first_nonempty_line() {
+        let path = parse_path_from_stdin("prod/API_KEY\n").unwrap();
+        assert_eq!(path, "prod/API_KEY");
+    }
+
+    #[test]
+    fn parse_path_from_stdin_rejects_empty_input() {
+        let err = parse_path_from_stdin("   \n\n").unwrap_err();
+        assert!(err.to_string().contains("stdin was empty"));
     }
 }

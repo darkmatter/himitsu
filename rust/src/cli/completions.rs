@@ -16,11 +16,6 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 /// Keep this list in sync with the subcommand names in [`super::Command`].
 const SECRET_PATH_SUBCOMMANDS: &[&str] = &["get", "read", "set", "write", "ls", "rekey", "exec"];
 
-/// Subcommands whose `<REF>` argument should use FUZZY completion.
-/// These benefit from subsequence matching because the ref format
-/// is flexible (env label, tag selector, glob prefix, or path).
-const FUZZY_PATH_SUBCOMMANDS: &[&str] = &["exec"];
-
 /// Generate shell completion script and print it to stdout.
 #[derive(Debug, Args)]
 pub struct CompletionsArgs {
@@ -250,15 +245,8 @@ fn patch_bash(script: &str) -> String {
         let needle = "COMPREPLY=()\n                    ;;";
         if let Some(rel) = block.find(needle) {
             let abs = block_start + rel;
-            let fuzzy_flag = if FUZZY_PATH_SUBCOMMANDS.contains(sub) {
-                "--fuzzy "
-            } else {
-                ""
-            };
-            let replacement = format!(
-                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths {fuzzy_flag}\"${{cur}}\" 2>/dev/null)\" -- \"${{cur}}\") )\n                    return 0\n                    ;;"
-            );
-            patched.replace_range(abs..abs + needle.len(), &replacement);
+            let replacement = "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${cur}\" 2>/dev/null)\" -- \"${cur}\") )\n                    return 0\n                    ;;";
+            patched.replace_range(abs..abs + needle.len(), replacement);
         }
     }
     patched
@@ -267,8 +255,8 @@ fn patch_bash(script: &str) -> String {
 const BASH_HELPER: &str =
     "# himitsu: dynamic completion helper\n# (injected by `himitsu completions bash`)";
 
-/// For zsh we replace the `_default` action on the `path` positional with
-/// our custom `_himitsu_secrets` function and prepend its definition.
+/// For zsh we replace the `_default` action on item-name positionals with
+/// our custom fuzzy `_himitsu_secrets` function and prepend its definition.
 fn patch_zsh(script: &str) -> String {
     let mut patched = String::with_capacity(script.len() + 512);
     patched.push_str(ZSH_HELPER);
@@ -278,8 +266,8 @@ fn patch_zsh(script: &str) -> String {
     // Match every line of the form
     //   ':path -- ... :_default' \
     //   '::path -- ... :_default' \
-    // and swap `_default` for `_himitsu_secrets`. Descriptions are distinctive
-    // enough that we can scope by the `path --` prefix.
+    // and swap `_default` for `_himitsu_secrets`. The `path --` and `refs --`
+    // descriptions identify the item-name positionals that use fuzzy matching.
     let mut out = String::with_capacity(patched.len());
     for line in patched.split_inclusive('\n') {
         let trimmed = line.trim_start();
@@ -290,10 +278,8 @@ fn patch_zsh(script: &str) -> String {
             || trimmed.starts_with("'::refs -- ")
             || trimmed.starts_with("'*::refs -- "))
             && line.trim_end().ends_with(":_default' \\");
-        if is_path_positional {
+        if is_path_positional || is_ref_positional {
             out.push_str(&line.replace(":_default'", ":_himitsu_secrets'"));
-        } else if is_ref_positional {
-            out.push_str(&line.replace(":_default'", ":_himitsu_secrets_fuzzy'"));
         } else {
             out.push_str(line);
         }
@@ -304,15 +290,6 @@ fn patch_zsh(script: &str) -> String {
 const ZSH_HELPER: &str = r#"# himitsu: dynamic completion helper
 # (injected by `himitsu completions zsh`)
 _himitsu_secrets() {
-    local -a secrets
-    secrets=(${(f)"$(himitsu __complete-paths "${words[CURRENT]}" 2>/dev/null)"})
-    if (( ${#secrets} )); then
-        compadd -a secrets
-    else
-        _default
-    fi
-}
-_himitsu_secrets_fuzzy() {
     local -a secrets
     secrets=(${(f)"$(himitsu __complete-paths --fuzzy "${words[CURRENT]}" 2>/dev/null)"})
     if (( ${#secrets} )); then
@@ -335,13 +312,8 @@ fn patch_fish(script: &str) -> String {
     }
     out.push_str("# himitsu: dynamic completion for secret-path positionals\n");
     for sub in SECRET_PATH_SUBCOMMANDS {
-        let fuzzy_flag = if FUZZY_PATH_SUBCOMMANDS.contains(sub) {
-            "--fuzzy "
-        } else {
-            ""
-        };
         out.push_str(&format!(
-            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths {fuzzy_flag}2>/dev/null)\"\n"
+            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths --fuzzy 2>/dev/null)\"\n"
         ));
     }
     out
@@ -446,7 +418,7 @@ mod tests {
     fn zsh_completions_exec_uses_fuzzy_helper() {
         let text = generate_for(Shell::Zsh);
         assert!(
-            text.contains("_himitsu_secrets_fuzzy"),
+            text.contains("himitsu __complete-paths --fuzzy"),
             "fuzzy helper definition missing"
         );
         let ref_line = text
@@ -454,7 +426,7 @@ mod tests {
             .find(|l| l.trim_start().starts_with("'*::refs -- "))
             .expect("exec refs positional present in generated zsh script");
         assert!(
-            ref_line.trim_end().ends_with(":_himitsu_secrets_fuzzy' \\"),
+            ref_line.trim_end().ends_with(":_himitsu_secrets' \\"),
             "expected exec ref positional to use fuzzy helper, got:\n{ref_line}"
         );
     }
@@ -473,9 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn non_fuzzy_subcommands_dont_use_fuzzy() {
+    fn all_secret_path_subcommands_use_fuzzy() {
         let text = generate_for(Shell::Bash);
-        for sub in ["get", "read"] {
+        for sub in SECRET_PATH_SUBCOMMANDS {
             let marker = format!("himitsu__subcmd__{sub})\n");
             let start = text
                 .find(&marker)
@@ -488,8 +460,8 @@ mod tests {
                 "{sub} block should call __complete-paths"
             );
             assert!(
-                !block.contains("--fuzzy"),
-                "{sub} block should NOT use --fuzzy, got:\n{block}"
+                block.contains("himitsu __complete-paths --fuzzy"),
+                "{sub} block should use fuzzy completion, got:\n{block}"
             );
         }
     }
