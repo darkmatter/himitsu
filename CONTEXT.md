@@ -7,10 +7,10 @@ These are the concepts the codebase uses. When naming modules, prefer these term
 - **Store** — a git repo containing encrypted secrets and metadata at `.himitsu/`
 - **Remote** — a named store slug (`org/repo`) registered in the user's global config
 - **Secret** — one encrypted value stored as `.himitsu/secrets/<path>.yaml`
+- **Env Key** — the environment-variable name a Secret takes when injected or generated; a property of the Secret itself (defaulting to its name), never of the group referencing it
 - **Recipient** — an age public key that can decrypt secrets in a store
-- **Output** — a named group of secrets defined in project config (`codegen:` block)
-- **Selector** — a query over secrets: `tag:pci`, `prod/*`, `tag:A+tag:B`
-- **Reference** — a string that identifies a secret: path, qualified ref (`github:org/repo/path`), or selector
+- **Tag** — a named group of secrets; the only grouping entity (replaces the former Output/env/label concept). A Tag lives in a Store, exactly like a Secret. Its members are the secrets tagged with it plus what the Tag's own references resolve to, counted once. A Tag groups secrets, never other Tags — shared membership is co-tagging. Referenced bare (`web-prod`) or explicitly (`tag:web-prod`).
+- **Reference** — a string that identifies secrets. Bare: a path (`prod/api-key`), a path prefix (`prod/`), or a tag name (`web-prod`; a path beats a tag on name collision). Forced: `tag:web-prod`, `path:prod/api-key`, `regex:<pattern>` (anchored match over paths), or a qualified cross-store ref (`github:org/repo#path`).
 - **Identity** — an age x25519 private key, loaded from disk or macOS Keychain
 
 ## Architecture Terms (from 2026-06-08 review)

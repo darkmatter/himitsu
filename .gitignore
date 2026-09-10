@@ -27,3 +27,4 @@ amp
 .omo
 .beads/issues.jsonl
 .beads/interactions.jsonl
+.envrc.local

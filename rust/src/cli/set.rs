@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Args;
 
 use super::Context;
@@ -17,7 +19,11 @@ pub struct SetArgs {
     /// default store.
     pub path: String,
     /// Secret value.
-    pub value: String,
+    #[arg(required_unless_present = "file", conflicts_with = "file")]
+    pub value: Option<String>,
+    /// Read the secret value as raw bytes from a local file.
+    #[arg(long, value_name = "FILE")]
+    pub file: Option<PathBuf>,
     /// Skip git commit and push.
     #[arg(long)]
     pub no_push: bool,
@@ -63,8 +69,23 @@ pub fn run(args: SetArgs, ctx: &Context) -> Result<()> {
         },
     };
 
+    let data = match (args.value, args.file) {
+        (Some(value), None) => value.into_bytes(),
+        (None, Some(path)) => std::fs::read(&path).map_err(|e| {
+            HimitsuError::Io(std::io::Error::new(
+                e.kind(),
+                format!("could not read file at {}: {e}", path.display()),
+            ))
+        })?,
+        _ => {
+            return Err(HimitsuError::InvalidReference(
+                "provide exactly one secret value or --file".into(),
+            ));
+        }
+    };
+
     let sv = SecretValue {
-        data: args.value.as_bytes().to_vec(),
+        data,
         content_type: String::new(),
         annotations: Default::default(),
         totp: args.totp.clone().unwrap_or_default(),

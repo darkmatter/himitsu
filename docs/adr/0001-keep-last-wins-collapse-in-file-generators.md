@@ -1,7 +1,7 @@
 # ADR-0001: Keep last-wins duplicate-key collapse in file generators
 
 Date: 2026-06-10
-Status: accepted
+Status: superseded by [ADR-0002](0002-hard-error-on-duplicate-env-keys-under-tag-model.md) (2026-08-31)
 
 ## Context
 

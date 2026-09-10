@@ -378,20 +378,29 @@ himitsu init --name you/secrets           # headless, creates/restores a primary
 himitsu init --name org/repo --url <url>  # restore from a custom git remote
 ```
 
-### `himitsu set <path> <value>`
+### `himitsu set <path> [value]`
 
-Encrypt and store a secret. Path is slash-delimited (`prod/API_KEY`).
+Encrypt and store a secret. Path is slash-delimited (`prod/API_KEY`). The
+value comes from the literal argument or from a local file via `--file` --
+exactly one of the two must be given. `add` is an alias for `set`.
 
 ```bash
 himitsu set prod/API_KEY "sk_live_abc123"
 himitsu set dev/DB_PASSWORD "devpass" --no-push
 himitsu set prod/STRIPE_KEY "sk_live_..." --tag pci --tag stripe
+himitsu add prod/TLS_CERT --file certs/server.pem    # value from a file
 ```
+
+With `--file`, binary content and trailing whitespace are encrypted as-is
+and roundtrip byte-for-byte. Read the bytes back with
+`himitsu read <path>` (raw, no decoration) or `himitsu get <path>`.
+
 
 Optional flags:
 
 | Flag | Purpose |
 |------|---------|
+| `--file <path>` | Take the secret's value from the raw bytes of this local file. Exactly one of `<value>` or `--file` must be given. |
 | `--description <text>` | Human-readable description, surfaced in `search` and the TUI viewer. |
 | `--url <url>` | Associated dashboard URL. |
 | `--totp <otpauth-or-base32>` | TOTP secret (URI or raw base32 ≥ 16 chars). |
