@@ -35,6 +35,85 @@ fn setup() -> (TempDir, TempDir) {
     (home, store)
 }
 
+#[test]
+fn add_file_roundtrips_binary_bytes_and_metadata() {
+    let (home, store) = setup();
+    let source = home.path().join("input.bin");
+    let bytes = b"\0\xfffile secret\r\n \t\n";
+    std::fs::write(&source, bytes).unwrap();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "add",
+            "files/blob",
+            "--file",
+        ])
+        .arg(&source)
+        .args(["--description", "Binary attachment", "--tag", "file-test"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &store_flag(&store), "get", "files/blob"])
+        .assert()
+        .success()
+        .stdout(bytes.as_slice())
+        .stderr(predicate::str::contains("Binary attachment"));
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "ls",
+            "-R",
+            "--tag",
+            "file-test",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("files/blob"));
+}
+
+#[test]
+fn set_file_rejects_invalid_inputs_without_overwriting() {
+    let (home, store) = setup();
+    let missing = home.path().join("missing");
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args([
+            "--store",
+            &store_flag(&store),
+            "set",
+            "files/blob",
+            "original",
+        ])
+        .assert()
+        .success();
+
+    for inputs in [
+        vec![],
+        vec!["literal", "--file", missing.to_str().unwrap()],
+        vec!["--file", missing.to_str().unwrap()],
+    ] {
+        himitsu()
+            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+            .args(["--store", &store_flag(&store), "set", "files/blob"])
+            .args(inputs)
+            .assert()
+            .failure();
+        himitsu()
+            .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+            .args(["--store", &store_flag(&store), "read", "files/blob"])
+            .assert()
+            .success()
+            .stdout("original");
+    }
+}
+
 #[allow(deprecated)]
 fn setup_with_legacy_env_field(
     env_value: &str,
@@ -993,6 +1072,40 @@ fn set_get_special_characters() {
         .assert()
         .success()
         .stdout(special);
+}
+
+#[test]
+fn get_dash_reads_secret_path_from_stdin() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "set", "prod/API_KEY", "from-stdin-path"])
+        .assert()
+        .success();
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "get", "-"])
+        .write_stdin("prod/API_KEY\n")
+        .assert()
+        .success()
+        .stdout("from-stdin-path");
+}
+
+#[test]
+fn get_dash_rejects_empty_stdin() {
+    let (home, store) = setup();
+    let s = store_flag(&store);
+
+    himitsu()
+        .env("HIMITSU_CONFIG", home.path().join("config.yaml"))
+        .args(["--store", &s, "get", "-"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stdin was empty"));
 }
 
 // ============ ls tests ============

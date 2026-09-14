@@ -34,6 +34,10 @@ pub enum HimitsuError {
     #[error("invalid selector: {0}")]
     InvalidSelector(String),
 
+    /// A store-local tag definition was not found.
+    #[error("tag not found: {0}")]
+    TagNotFound(String),
+
     /// Selector matched no secrets — subprocess not launched.
     #[error("selector '{0}' matched no secrets")]
     ExecEmptyMatch(String),

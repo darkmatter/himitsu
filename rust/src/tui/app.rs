@@ -84,6 +84,11 @@ pub struct App {
     /// happens to land during a pending chord must not be cleared by
     /// breadcrumb dismissal.
     chord_breadcrumb_active: bool,
+    /// Preserved store filter across `fresh_search()` calls. When the
+    /// user cycles the store filter (Ctrl+I) and then triggers a view
+    /// rebuild (store switch, join, new secret), this carries the
+    /// selected store forward so the filter isn't reset.
+    selected_store: Option<String>,
 }
 
 impl App {
@@ -105,15 +110,14 @@ impl App {
             pending_chord: Vec::new(),
             pending_chord_deadline: None,
             chord_breadcrumb_active: false,
+            selected_store: None,
         }
     }
 
-    /// Build a fresh search view with the session-resolved per-mode themes
-    /// applied. Used whenever the router returns to search from another
-    /// view so the active info-mode's palette is restored.
     fn fresh_search(&self) -> SearchView {
         let mut view = SearchView::new(&self.ctx);
         view.set_theme_names(self.theme_names.clone());
+        view.selected_store = self.selected_store.clone();
         view
     }
 
@@ -318,13 +322,11 @@ impl App {
                 self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
             }
             SearchAction::SwitchStore(path) => {
-                let label = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
+                let slug = crate::cli::search::store_label(&path, &self.ctx);
                 self.ctx.store = path;
+                self.selected_store = Some(slug.clone());
                 self.view = View::Search(self.fresh_search());
-                self.push_toast(format!("switched to {label}"), ToastKind::Info);
+                self.push_toast(format!("switched to {slug}"), ToastKind::Info);
             }
             SearchAction::ShowHelp => {
                 self.help = Some(self.help_for_current_view());
