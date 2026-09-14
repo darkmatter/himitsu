@@ -1,4 +1,5 @@
 pub mod store;
+pub mod tag_store;
 
 use std::path::Path;
 
