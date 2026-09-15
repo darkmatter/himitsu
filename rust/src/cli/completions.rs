@@ -245,10 +245,8 @@ fn patch_bash(script: &str) -> String {
         let needle = "COMPREPLY=()\n                    ;;";
         if let Some(rel) = block.find(needle) {
             let abs = block_start + rel;
-            let replacement = format!(
-                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${{cur}}\" 2>/dev/null)\" -- \"${{cur}}\") )\n                    return 0\n                    ;;"
-            );
-            patched.replace_range(abs..abs + needle.len(), &replacement);
+            let replacement = "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${cur}\" 2>/dev/null)\" -- \"${cur}\") )\n                    return 0\n                    ;;";
+            patched.replace_range(abs..abs + needle.len(), replacement);
         }
     }
     patched
@@ -280,9 +278,7 @@ fn patch_zsh(script: &str) -> String {
             || trimmed.starts_with("'::refs -- ")
             || trimmed.starts_with("'*::refs -- "))
             && line.trim_end().ends_with(":_default' \\");
-        if is_path_positional {
-            out.push_str(&line.replace(":_default'", ":_himitsu_secrets'"));
-        } else if is_ref_positional {
+        if is_path_positional || is_ref_positional {
             out.push_str(&line.replace(":_default'", ":_himitsu_secrets'"));
         } else {
             out.push_str(line);
