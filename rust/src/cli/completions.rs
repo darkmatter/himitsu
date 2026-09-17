@@ -245,8 +245,14 @@ fn patch_bash(script: &str) -> String {
         let needle = "COMPREPLY=()\n                    ;;";
         if let Some(rel) = block.find(needle) {
             let abs = block_start + rel;
-            let replacement = "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${cur}\" 2>/dev/null)\" -- \"${cur}\") )\n                    return 0\n                    ;;";
-            patched.replace_range(abs..abs + needle.len(), replacement);
+            // `__complete-paths --fuzzy` already filtered candidates by
+            // subsequence match against `${cur}`, so we must NOT re-filter
+            // by prefix (`compgen -- "${cur}"`), which would drop matches
+            // like `personal/openai-api-key` for the query `openai`.
+            let replacement = format!(
+                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${{cur}}\" 2>/dev/null)\") )\n                    return 0\n                    ;;"
+            );
+            patched.replace_range(abs..abs + needle.len(), &replacement);
         }
     }
     patched
@@ -293,7 +299,11 @@ _himitsu_secrets() {
     local -a secrets
     secrets=(${(f)"$(himitsu __complete-paths --fuzzy "${words[CURRENT]}" 2>/dev/null)"})
     if (( ${#secrets} )); then
-        compadd -a secrets
+        # `-M 'l:|=* r:|=*'` lets a candidate match anywhere in the word
+        # (substring matching) — the Rust side already scored by
+        # subsequence, so the default prefix-only matcher would wrongly
+        # reject e.g. `personal/openai-api-key` for the query `openai`.
+        compadd -M 'l:|=* r:|=*' -a secrets
     else
         _default
     fi
@@ -313,7 +323,7 @@ fn patch_fish(script: &str) -> String {
     out.push_str("# himitsu: dynamic completion for secret-path positionals\n");
     for sub in SECRET_PATH_SUBCOMMANDS {
         out.push_str(&format!(
-            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths --fuzzy 2>/dev/null)\"\n"
+            "complete -c himitsu -n \"__fish_seen_subcommand_from {sub}\" -f -a \"(himitsu __complete-paths --fuzzy (commandline -ct) 2>/dev/null)\"\n"
         ));
     }
     out
@@ -396,6 +406,9 @@ mod tests {
             );
         }
         assert!(text.contains("himitsu __complete-paths"));
+        // Fish re-filters candidates itself (subsequence match), so the
+        // current token must be passed through for scoring.
+        assert!(text.contains("himitsu __complete-paths --fuzzy (commandline -ct)"));
     }
 
     #[test]
@@ -420,6 +433,13 @@ mod tests {
         assert!(
             text.contains("himitsu __complete-paths --fuzzy"),
             "fuzzy helper definition missing"
+        );
+        // The helper must not re-filter by prefix: it relies on the Rust
+        // side's subsequence scoring, so a plain `compadd -a` with the
+        // default matcher would drop non-prefix matches.
+        assert!(
+            text.contains("compadd -M 'l:|=* r:|=*' -a secrets"),
+            "expected substring matcher in zsh helper"
         );
         let ref_line = text
             .lines()
@@ -462,6 +482,17 @@ mod tests {
             assert!(
                 block.contains("himitsu __complete-paths --fuzzy"),
                 "{sub} block should use fuzzy completion, got:\n{block}"
+            );
+            // The __complete-paths call must not re-filter fuzzy results by
+            // prefix (`compgen -- "${cur}"`), which would drop non-prefix
+            // matches like `personal/openai-api-key` for query `openai`.
+            let line = block
+                .lines()
+                .find(|l| l.contains("__complete-paths"))
+                .unwrap_or_else(|| panic!("{sub} block missing __complete-paths line"));
+            assert!(
+                !line.contains("-- \"${cur}\""),
+                "{sub} __complete-paths line should not prefix-filter, got:\n{line}"
             );
         }
     }
