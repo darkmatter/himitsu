@@ -249,9 +249,8 @@ fn patch_bash(script: &str) -> String {
             // subsequence match against `${cur}`, so we must NOT re-filter
             // by prefix (`compgen -- "${cur}"`), which would drop matches
             // like `personal/openai-api-key` for the query `openai`.
-            let replacement = format!(
-                "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${{cur}}\" 2>/dev/null)\") )\n                    return 0\n                    ;;"
-            );
+            let replacement = "COMPREPLY=( $(compgen -W \"$(himitsu __complete-paths --fuzzy \"${cur}\" 2>/dev/null)\") )\n                    return 0\n                    ;;"
+                .to_string();
             patched.replace_range(abs..abs + needle.len(), &replacement);
         }
     }
