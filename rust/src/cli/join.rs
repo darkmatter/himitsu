@@ -11,7 +11,7 @@ use crate::remote::store as rstore;
 /// After adding, commits and pushes so other members can rekey for you.
 #[derive(Debug, Args)]
 pub struct JoinArgs {
-    /// Recipient name to register as (default: hostname or "self").
+    /// Recipient name (default: username, with a key fingerprint appended if taken).
     #[arg(long)]
     pub name: Option<String>,
 
@@ -49,16 +49,22 @@ pub enum JoinOutcome {
 /// from the TUI (use `store_ops::join`, which adds the mutation chain).
 pub(super) fn join_core(ctx: &Context, name: Option<String>) -> Result<JoinOutcome> {
     let self_pubkey = read_own_pubkey(ctx)?;
-
     let recipients = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref())?;
     if recipients.iter().any(|r| r.to_string() == self_pubkey) {
         return Ok(JoinOutcome::AlreadyRecipient);
     }
 
-    let name = name.unwrap_or_else(default_recipient_name);
     let recipients_dir =
         rstore::recipients_dir_with_override(&ctx.store, ctx.recipients_path.as_deref());
     std::fs::create_dir_all(&recipients_dir)?;
+    let name = name.unwrap_or_else(|| {
+        let base = default_recipient_name();
+        if recipients_dir.join(format!("{base}.pub")).exists() {
+            format!("{base}-{}", crate::keyring::fingerprint(&self_pubkey))
+        } else {
+            base
+        }
+    });
 
     let pub_file = recipients_dir.join(format!("{name}.pub"));
     if let Some(parent) = pub_file.parent() {
@@ -75,7 +81,8 @@ pub(super) fn join_core(ctx: &Context, name: Option<String>) -> Result<JoinOutco
         )));
     }
 
-    std::fs::write(&pub_file, format!("{self_pubkey}\n"))?;
+    use std::io::Write;
+    writeln!(std::fs::File::create_new(&pub_file)?, "{self_pubkey}")?;
     Ok(JoinOutcome::Joined(name))
 }
 
@@ -203,14 +210,20 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(
-            JoinArgs {
-                name: None,
-                no_push: true,
-            },
-            &ctx,
+        assert!(join_core(&ctx, Some(name.clone())).is_err());
+        let public = read_own_pubkey(&ctx).unwrap();
+        let expected = format!("{name}-{}", crate::keyring::fingerprint(&public));
+        assert!(matches!(join_core(&ctx, None).unwrap(), JoinOutcome::Joined(n) if n == expected));
+        assert_eq!(
+            std::fs::read_to_string(rdir.join(format!("{expected}.pub")))
+                .unwrap()
+                .trim(),
+            public
         );
-        assert!(result.is_err());
+        assert!(matches!(
+            join_core(&ctx, None).unwrap(),
+            JoinOutcome::AlreadyRecipient
+        ));
     }
 
     #[test]

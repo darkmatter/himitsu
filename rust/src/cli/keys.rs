@@ -56,6 +56,7 @@ pub fn run(args: KeysArgs, ctx: &Context) -> Result<()> {
 
 fn print_own_public_key(ctx: &Context) -> Result<()> {
     let path = crate::crypto::keystore::pubkey_path(&ctx.data_dir);
+    println!("{}", path.display());
     let contents = std::fs::read_to_string(&path).map_err(|e| {
         HimitsuError::Io(std::io::Error::new(
             e.kind(),
