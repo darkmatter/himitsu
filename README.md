@@ -273,7 +273,11 @@ Launch the interactive terminal UI:
 himitsu        # no subcommand opens the TUI
 ```
 
-Search is the **root view** -- the app opens straight into a fuzzy filter over every secret in the active store. Start typing to narrow the list, arrow keys to move, `enter` to open. Press `ctrl-x ?` in any view for a help overlay, or `ctrl-p` to open the **command palette** -- the canonical, fuzzy-filterable list of every action the current view exposes.
+Search opens in **All**, with results from every store in context. Press `ctrl-i` to cycle through individual stores and back to All, including stores with no search results. Start typing to narrow the list, use the arrow keys to move, and press `enter` to open a secret. Press `ctrl-x ?` for help or `ctrl-p` for the command palette.
+
+On terminals that send the same byte for `ctrl-i` and `tab`, both keys cycle stores. Use `left` / `right` to select a results column. On terminals that distinguish the keys, `tab` still selects the next column.
+
+If your public key is missing from the active store, the TUI names the store and asks whether to join. Press `ctrl-y` to add your public key through the normal `himitsu join` workflow, or `n` / `esc` to skip that store for the session. Joining does not decrypt existing secrets; a recipient still needs to rekey them for you.
 
 ![browse and drill](demo/tui-us-011.gif)
 
@@ -287,6 +291,8 @@ Search is the **root view** -- the app opens straight into a fuzzy filter over e
 | `backspace` | delete filter char |
 | `ctrl-p` | command palette |
 | `ctrl-n` | new secret |
+| `ctrl-i` | cycle the search scope: All → each store → All |
+| `left` / `right` | select previous / next results column |
 | `ctrl-x ctrl-s` | switch store |
 | `ctrl-y` | copy selected value |
 | `ctrl-x shift-y` | copy `himitsu read <ref>` for the selected row |
@@ -804,11 +810,8 @@ key_provider: disk                  # env: HIMITSU_KEY_PROVIDER
 auto_pull: false                    # env: HIMITSU_AUTO_PULL
 
 tui:
-  # Color palette. Accepts either a scalar (one theme for every header
-  # info-mode) or a map with `user` / `project` / `all` keys for per-mode
-  # theming. The header info-mode is cycled with `Ctrl+I` (User → Project →
-  # All); when a per-mode map is set, the palette swaps as you cycle.
-  # Missing map entries fall back to `random`.
+  # Color palette: one theme for every search scope, or a map with
+  # `user`, `project` and `all` entries. Missing entries use `random`.
   # Accepted: random, himitsu, apathy, apathy-minted, apathy-theory,
   #           apathy-storm, ayu, catppuccin, material, rose-pine.
   #

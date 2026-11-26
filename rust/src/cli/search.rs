@@ -82,21 +82,28 @@ pub fn search_core(ctx: &Context, query: &str, tag_filter: &[String]) -> Result<
 /// path (~1s for 100+ secrets due to per-file age decryption) and should
 /// be cached by callers that re-filter on changing queries.
 pub fn collect_candidates(ctx: &Context) -> Result<Vec<SearchResult>> {
+    Ok(collect_candidates_in(ctx, &collect_stores(ctx)?))
+}
+
+pub(crate) fn collect_candidates_in(
+    ctx: &Context,
+    stores: &[(String, PathBuf)],
+) -> Vec<SearchResult> {
     let mut candidates: Vec<SearchResult> = Vec::new();
 
     let identities = ctx.load_identities().ok();
 
-    for (slug, store_path) in collect_stores(ctx)? {
-        let paths = store::list_secrets(&store_path, None).unwrap_or_default();
+    for (slug, store_path) in stores {
+        let paths = store::list_secrets(store_path, None).unwrap_or_default();
         for path in paths {
-            let meta = store::read_secret_meta(&store_path, &path).ok();
+            let meta = store::read_secret_meta(store_path, &path).ok();
             let (created_at, updated_at) = match meta {
                 Some(m) => (m.created_at, m.lastmodified),
                 None => (None, None),
             };
             let (description, tags) = match identities
                 .as_deref()
-                .and_then(|ids| read_metadata(&store_path, &path, ids))
+                .and_then(|ids| read_metadata(store_path, &path, ids))
             {
                 Some((desc, tags)) => (desc, Some(tags)),
                 None => (None, None),
@@ -113,7 +120,7 @@ pub fn collect_candidates(ctx: &Context) -> Result<Vec<SearchResult>> {
         }
     }
 
-    Ok(candidates)
+    candidates
 }
 
 /// Filter pre-collected candidates by tag (AND) and fuzzy query. Fast
@@ -265,7 +272,7 @@ pub fn run(args: SearchArgs, ctx: &Context) -> Result<()> {
 
 // ── Store discovery ────────────────────────────────────────────────────────
 
-fn collect_stores(ctx: &Context) -> Result<Vec<(String, PathBuf)>> {
+pub(crate) fn collect_stores(ctx: &Context) -> Result<Vec<(String, PathBuf)>> {
     let mut stores = Vec::new();
 
     // If the caller specified an explicit store (--store / --remote), include

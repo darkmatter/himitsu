@@ -34,65 +34,8 @@ pub enum StoreHealth {
     Unknown,
 }
 
-/// Compute health for both the global default store and the active project
-/// store. The project store comes from the current repo's `himitsu.yaml`
-/// `default_store` slug, resolved against the global stores directory.
-/// `None` means "no project store is wired up" (no git repo, no project
-/// config, project's slug not registered) — rendered as a gray indicator.
-pub fn check_store_health_pair(ctx: &Context) -> (StoreHealth, Option<StoreHealth>) {
-    let global_health = check_store_health(ctx);
-
-    let project_health = match resolve_project_store(ctx) {
-        Some((project_store, project_recipients_override)) => {
-            let mut project_ctx = ctx.clone();
-            // The ambient context's recipients override belongs to the
-            // ACTIVE store — carrying it across would mis-resolve the
-            // project store's recipient list (false NotRecipient). Mirror
-            // the dispatcher's resolution order: the store-internal config
-            // wins, then the project config's override.
-            project_ctx.recipients_path = crate::remote::store::load_store_config(&project_store)
-                .ok()
-                .and_then(|cfg| cfg.recipients_path)
-                .or(project_recipients_override);
-            project_ctx.store = project_store;
-            Some(check_store_health(&project_ctx))
-        }
-        None => None,
-    };
-    (global_health, project_health)
-}
-
-/// Find the project store referenced by the invocation's project config,
-/// if any, along with the project config's `recipients_path` override.
-/// Returns `None` when there's no project config, no `default_store` in
-/// it, or the slug doesn't resolve to an existing checkout under
-/// `stores_dir`.
-fn resolve_project_store(ctx: &Context) -> Option<(std::path::PathBuf, Option<String>)> {
-    let (project_cfg, _) = ctx.project_config().ok()??;
-    let slug = project_cfg.default_store.as_deref()?;
-    let (org, repo) = crate::config::validate_remote_slug(slug).ok()?;
-    let candidate = ctx.stores_dir().join(org).join(repo);
-    candidate
-        .exists()
-        .then_some((candidate, project_cfg.recipients_path))
-}
-
-/// Render a labelled health pill: `<icon> <label>: <status>`. A `None`
-/// status renders as a muted gray "n/a" so the user sees an explicit
-/// "not configured" instead of a missing chip.
-pub fn render_health_pill(label: &str, health: Option<&StoreHealth>) -> Vec<Span<'static>> {
-    let label_owned = label.to_string();
-    let Some(health) = health else {
-        // No project store configured for this repo. Gray, low-contrast.
-        return vec![
-            Span::styled(icons::health(), Style::default().fg(theme::muted())),
-            Span::raw(" "),
-            Span::styled(
-                format!("{label_owned}: n/a"),
-                Style::default().fg(theme::muted()),
-            ),
-        ];
-    };
+/// Render the active checkout's health; the scope is shown separately.
+pub fn render_health_pill(label: &str, health: &StoreHealth) -> Vec<Span<'static>> {
     let (status, color) = match health {
         StoreHealth::Synced => ("synced".to_string(), theme::success()),
         StoreHealth::Behind(n) => (format!("{n} behind"), theme::warning()),
@@ -104,7 +47,7 @@ pub fn render_health_pill(label: &str, health: Option<&StoreHealth>) -> Vec<Span
         StoreHealth::NotRecipient => ("not a recipient".to_string(), theme::warning()),
         StoreHealth::Unknown => ("unknown".to_string(), theme::muted()),
     };
-    let body = format!("{label_owned}: {status}");
+    let body = format!("{label}: {status}");
     if matches!(health, StoreHealth::Synced) {
         // Quiet steady-state: dot + label on the default background. No
         // bright pill for the happy path.

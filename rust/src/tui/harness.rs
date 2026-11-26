@@ -223,6 +223,7 @@ mod tests {
             let pubkey = identity.to_public().to_string();
             let secret_key = identity.to_string().expose_secret().to_string();
             std::fs::write(data_dir.join("key"), &secret_key).unwrap();
+            std::fs::write(data_dir.join("key.pub"), format!("{pubkey}\n")).unwrap();
             std::fs::write(
                 alpha.join(".himitsu/recipients/me.pub"),
                 format!("{pubkey}\n"),
@@ -522,6 +523,74 @@ mod tests {
             "expired toast text still on screen:\n{}",
             h.rendered()
         );
+    }
+
+    #[test]
+    fn all_and_project_scope_check_the_same_recipient_directory() {
+        let mut fx = Fixture::new();
+        let project = fx._tmp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join("himitsu.yaml"),
+            "default_store: acme/alpha\nrecipients_path: team\n",
+        )
+        .unwrap();
+        fx.ctx.project_root = Some(project);
+        std::fs::rename(
+            fx.alpha_path.join(".himitsu/recipients"),
+            fx.alpha_path.join("team"),
+        )
+        .unwrap();
+        let mut h = TuiHarness::new(&fx.ctx);
+        assert!(h.contains("▸ All"));
+        assert!(!h.contains("Join now?"));
+        h.press_ctrl('i');
+        assert!(h.contains("▸ acme/alpha"));
+        assert!(!h.contains("Join now?"));
+    }
+
+    #[test]
+    fn join_prompt_only_registers_the_confirmed_store() {
+        let fx = Fixture::new();
+        let alpha_recipient = fx.alpha_path.join(".himitsu/recipients/me.pub");
+        let other_key = Identity::generate().to_public().to_string();
+        std::fs::write(&alpha_recipient, &other_key).unwrap();
+        // An empty recipient list is also a known non-membership.
+        std::fs::remove_file(fx.beta_path.join(".himitsu/recipients/me.pub")).unwrap();
+
+        let mut h = TuiHarness::new(&fx.ctx);
+        assert!(h.contains("You are not a recipient of this store."));
+        h.press_ctrl('i');
+        assert!(h.contains("Join now?"));
+        h.press(KeyCode::Esc);
+        assert!(!h.app.should_quit);
+        assert!(!h.contains("Join now?"));
+        h.press_ctrl('i'); // All → alpha, already declined
+        assert!(!h.contains("Join now?"));
+        h.press_ctrl('i'); // alpha → beta
+        assert!(h.contains("Join now?"));
+        assert_eq!(h.app.active_store(), fx.beta_path);
+        assert!(
+            hage::collect_recipients(&fx.beta_path, None)
+                .unwrap()
+                .is_empty()
+        );
+
+        h.press(KeyCode::Char('y'));
+        assert!(
+            h.contains("Join now?"),
+            "query text must never confirm a join"
+        );
+        h.press_ctrl('y');
+        assert!(!h.contains("Join now?"));
+        assert!(h.contains("joined as recipient"));
+        let own = std::fs::read_to_string(fx.ctx.data_dir.join("key.pub")).unwrap();
+        let beta = hage::collect_recipients(&fx.beta_path, None).unwrap();
+        assert_eq!(beta.len(), 1);
+        assert_eq!(beta[0].to_string(), own.trim());
+        let alpha = hage::collect_recipients(&fx.alpha_path, None).unwrap();
+        assert_eq!(alpha.len(), 1);
+        assert_eq!(alpha[0].to_string(), other_key);
     }
 
     // ── Flow 3: Ctrl+S → Down → Enter → store switch ─────────────────

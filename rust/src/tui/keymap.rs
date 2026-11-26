@@ -91,7 +91,8 @@ impl KeyBinding {
     /// Ascii letters compare case-insensitively (`"y"`/`"Y"`, `"shift+y"`/
     /// `"shift+Y"`, `"ctrl+y"`/`"ctrl+Y"` are equivalent). Shift is never
     /// inferred from an uppercase letter — only an explicit `shift` modifier
-    /// counts. Bare bindings ignore an incidental `SHIFT` on the event.
+    /// counts. Bare bindings ignore incidental SHIFT, except on Tab where it
+    /// means backward navigation and may also be reported as BackTab.
     ///
     /// Held-down leader Ctrl is handled only in [`KeyChord::matches_prefix`]
     /// for later non-letter steps — single-key matching stays strict so
@@ -106,7 +107,7 @@ impl KeyBinding {
         let tracked = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT;
         let event_mods = key.modifiers & tracked;
         let mut ignore = KeyModifiers::NONE;
-        if !self.modifiers.contains(KeyModifiers::SHIFT) {
+        if !self.modifiers.contains(KeyModifiers::SHIFT) && self.code != KeyCode::Tab {
             ignore |= KeyModifiers::SHIFT;
         }
         if sticky_ctrl && !self.modifiers.contains(KeyModifiers::CONTROL) {

@@ -23,48 +23,12 @@ use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-/// Which status pill the header is currently surfacing. Pressing `Ctrl+I`
-/// cycles forward through the variants. The cycle is intentionally small —
-/// only the most glanceable info lives on the header.
-///
-/// - [`InfoMode::User`] — the user's personal store sync health (default).
-/// - [`InfoMode::Project`] — the project store's sync health (the
-///   `default_store` slug from the current repo's `himitsu.yaml`). Falls
-///   back to a muted "n/a" pill when no project store is wired up.
-/// - [`InfoMode::All`] — both pills stacked side-by-side so the user can
-///   glance at user + project health in one mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum InfoMode {
-    #[default]
-    User,
-    Project,
-    All,
-}
-impl InfoMode {
-    /// Stable index into `SearchView::theme_names` (`[user, project, all]`).
-    fn idx(self) -> usize {
-        match self {
-            InfoMode::User => 0,
-            InfoMode::Project => 1,
-            InfoMode::All => 2,
-        }
-    }
-
-    /// Display label for the pill rendered by [`render_health_pill`].
-    fn label(self) -> &'static str {
-        match self {
-            InfoMode::User => "user",
-            InfoMode::Project => "project",
-            InfoMode::All => "all",
-        }
-    }
-}
-
 use chrono::Utc;
 
 use crate::cli::Context;
 use crate::cli::search::{
-    SearchResult, collect_candidates, filter_candidates, humanize_age_compact, parse_ts,
+    SearchResult, collect_candidates_in, collect_stores, filter_candidates, humanize_age_compact,
+    parse_ts,
 };
 use crate::crypto::{age, secret_value};
 use crate::remote::store;
@@ -73,7 +37,7 @@ use crate::tui::model::path_folding::{Row, build_rows, prefix_of, split_shared_p
 use crate::tui::model::result_sort::{SearchColumn, SortDirection, SortState};
 use crate::tui::views::command_palette::{Command, CommandPalette, CommandPaletteOutcome};
 use crate::tui::views::store_picker::{StorePicker, StorePickerOutcome};
-use crate::tui::widgets::store_health::{StoreHealth, check_store_health_pair, render_health_pill};
+use crate::tui::widgets::store_health::{StoreHealth, check_store_health, render_health_pill};
 
 /// Outcome of handling a key — lets the app router decide where to go next.
 #[derive(Debug, Clone)]
@@ -129,26 +93,17 @@ pub struct SearchView {
     results: Vec<SearchResult>,
     rows: Vec<Row>,
     list_state: ListState,
-    /// Snapshot of the context used to build this view.
-    ///
-    /// We clone the bits we actually need (`store`, `state_dir`) so the view
-    /// owns its own data — keeping borrow lifetimes simple in the app router.
+    /// Operations use the selected checkout; All restores the invocation target.
     ctx: Context,
+    invocation_store: PathBuf,
+    invocation_recipients: Option<String>,
     /// Embedded store-picker overlay. When `Some`, it intercepts every key.
     picker: Option<StorePicker>,
     /// Embedded command-palette overlay. When `Some`, it intercepts every
     /// key just like the store picker. Mutually exclusive with `picker`
     /// because both are modal popups.
     palette: Option<CommandPalette>,
-    /// Health of the global store, computed once at startup.
-    global_health: StoreHealth,
-    /// Health of the project store (the store referenced by `default_store`
-    /// in the current repo's `himitsu.yaml`). `None` when there's no git
-    /// repo / no project config / the project's `default_store` doesn't
-    /// resolve to a registered checkout — rendered as a gray "no project
-    /// store" indicator so users see at a glance whether they need to wire
-    /// the current repo up.
-    project_health: Option<StoreHealth>,
+    health: StoreHealth,
     /// Whether to render the STORE column in the results table. Off by
     /// default — most users work in a single store at a time, so the
     /// column is dead weight. Toggled via the command palette
@@ -177,15 +132,12 @@ pub struct SearchView {
     /// the app router should re-filter before the next draw. Set by
     /// [`mark_search_dirty`]; consumed via [`take_search_dirty`].
     search_dirty: bool,
-    /// Active store filter. `None` = all stores (no filter, the default);
-    /// `Some(slug)` = show only secrets from that store. Cycled by Ctrl+I
-    /// through each available store then back to "all". Initialized from
-    /// the project config's `default_store` when present.
-    pub(crate) selected_store: Option<String>,
-    /// Which status pill the header surfaces. Default is `All` (both pills).
-    /// The former Ctrl+I cycle now cycles the store filter; info-mode is
-    /// always `All` so both health pills are visible at once.
-    info_mode: InfoMode,
+    /// The same checkout inventory drives search and scope selection, even
+    /// when a checkout has no secrets. None selects All.
+    stores: Vec<(String, PathBuf)>,
+    selected: Option<usize>,
+    /// Project store slug and its optional recipients directory override.
+    project: Option<(String, Option<String>)>,
     /// Resolved concrete theme names per mode (`[user, project, all]`).
     /// Pre-resolved once at configuration time so cycling modes does not
     /// re-roll a new random pick each press.
@@ -194,32 +146,34 @@ pub struct SearchView {
 
 impl SearchView {
     pub fn new(ctx: &Context) -> Self {
-        let ctx_owned = Context {
-            data_dir: ctx.data_dir.clone(),
-            state_dir: ctx.state_dir.clone(),
-            store: ctx.store.clone(),
-            recipients_path: ctx.recipients_path.clone(),
-            key_provider: ctx.key_provider.clone(),
-            project_root: ctx.project_root.clone(),
-            git: ctx.git.clone(),
-            project_config_cell: ctx.project_config_cell.clone(),
-        };
-        let default_store = ctx_owned
+        let mut stores = collect_stores(ctx).unwrap_or_default();
+        stores.sort_unstable_by(|a, b| (a.1 != ctx.store, &a.0).cmp(&(b.1 != ctx.store, &b.0)));
+        let project = ctx
             .project_config()
             .ok()
             .flatten()
-            .and_then(|(cfg, _)| cfg.default_store.clone());
-        let (global_health, project_health) = check_store_health_pair(&ctx_owned);
+            .and_then(|(cfg, _)| cfg.default_store.map(|slug| (slug, cfg.recipients_path)));
+        let mut active = ctx.clone();
+        if let Some((slug, dir)) = &project
+            && active.recipients_path.is_none()
+            && stores
+                .iter()
+                .any(|(name, path)| name == slug && path == &ctx.store)
+        {
+            active.recipients_path.clone_from(dir);
+        }
+        let health = check_store_health(&active);
         let mut view = Self {
             query: String::new(),
             results: Vec::new(),
             rows: Vec::new(),
             list_state: ListState::default(),
-            ctx: ctx_owned,
+            invocation_store: active.store.clone(),
+            invocation_recipients: active.recipients_path.clone(),
+            ctx: active,
             picker: None,
             palette: None,
-            global_health,
-            project_health,
+            health,
             show_store_column: false,
             tag_filters: Vec::new(),
             selected_column: SearchColumn::Path,
@@ -229,9 +183,10 @@ impl SearchView {
             },
             folded: false,
             search_dirty: false,
-            info_mode: InfoMode::All,
+            project,
             candidates: Vec::new(),
-            selected_store: default_store,
+            stores,
+            selected: None,
             theme_names: [
                 String::from("himitsu"),
                 String::from("himitsu"),
@@ -248,7 +203,7 @@ impl SearchView {
     /// palettes without re-rolling `random`.
     pub fn set_theme_names(&mut self, names: [String; 3]) {
         self.theme_names = names;
-        let _ = crate::tui::theme::set_theme(&self.theme_names[self.info_mode.idx()]);
+        self.apply_theme();
     }
 
     pub fn on_key(&mut self, key: KeyEvent, keymap: &KeyMap) -> SearchAction {
@@ -282,12 +237,31 @@ impl SearchView {
             }
         }
 
+        self.on_results_key(key, keymap, crate::tui::terminal::tab_is_ambiguous())
+    }
+
+    fn on_results_key(
+        &mut self,
+        key: KeyEvent,
+        keymap: &KeyMap,
+        ambiguous_tab: bool,
+    ) -> SearchAction {
         // Configurable action bindings take precedence over the fall-through
         // text-editing keys below. Quit is checked first so a user who rebinds
         // new_secret to a printable character still has an escape hatch.
         // All matches route through `dispatch_action` so leader-key chord
         // completions (resolved at the App layer) take the same code path.
-        if let Some(action) = match_keymap_action(keymap, &key)
+        let action = match_keymap_action(keymap, &key).or_else(|| {
+            // Legacy 0x09 is both Tab and Ctrl+I. Try the user's Ctrl+I
+            // binding only when no explicit Tab binding claimed the event.
+            if ambiguous_tab && key.code == KeyCode::Tab && key.modifiers.is_empty() {
+                let ctrl_i = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL);
+                match_keymap_action(keymap, &ctrl_i)
+            } else {
+                None
+            }
+        });
+        if let Some(action) = action
             && let Some(outcome) = self.dispatch_action(action, keymap)
         {
             return outcome;
@@ -298,7 +272,7 @@ impl SearchView {
         // rebindable like everything else, no hardcoded chords here.
 
         match (key.code, key.modifiers) {
-            (KeyCode::BackTab, _) => {
+            (KeyCode::BackTab, _) | (KeyCode::Left, KeyModifiers::NONE) => {
                 self.select_prev_column();
                 SearchAction::None
             }
@@ -306,7 +280,7 @@ impl SearchView {
                 self.select_prev_column();
                 SearchAction::None
             }
-            (KeyCode::Tab, _) => {
+            (KeyCode::Tab, _) | (KeyCode::Right, KeyModifiers::NONE) => {
                 self.select_next_column();
                 SearchAction::None
             }
@@ -368,7 +342,7 @@ impl SearchView {
             KeyAction::SwitchStore => {
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),
-                    self.ctx.store.clone(),
+                    self.active_context().store.clone(),
                 ));
                 Some(SearchAction::None)
             }
@@ -424,7 +398,7 @@ impl SearchView {
         let Some(result) = self.selected_result().cloned() else {
             return SearchAction::CopyFailed("no selection to copy".to_string());
         };
-        let active_label = crate::cli::search::store_label(&self.ctx.store, &self.ctx);
+        let active_label = crate::cli::search::store_label(&self.invocation_store, &self.ctx);
         let cmd = format_read_command(&result.store, &result.path, &active_label);
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(cmd.clone())) {
             Ok(()) => SearchAction::Copied(format!("$ {cmd}")),
@@ -438,8 +412,8 @@ impl SearchView {
     /// refresh.
     pub(crate) fn refresh_results(&mut self) {
         let mut results = filter_candidates(&self.candidates, &self.query, &self.tag_filters);
-        if let Some(store) = &self.selected_store {
-            results.retain(|r| &r.store == store);
+        if let Some(store) = self.selected_store() {
+            results.retain(|r| r.store == store);
         }
         self.results = results;
         self.rows = build_rows(&self.results, self.folded, self.sort_state);
@@ -452,48 +426,85 @@ impl SearchView {
     /// underlying secret set may have changed: store switch, join,
     /// new-secret save, explicit refresh.
     pub(crate) fn recollect(&mut self) {
-        self.candidates = collect_candidates(&self.ctx).unwrap_or_default();
+        self.candidates = collect_candidates_in(&self.ctx, &self.stores);
         self.refresh_results();
     }
 
-    /// Cycle the store filter through each distinct store present in the
-    /// candidate set, then back to `None` (all stores). The order follows
-    /// `collect_stores` — the active `ctx.store` first, then the rest — so
-    /// the cycle feels predictable. When there's only one store (or none),
-    /// the cycle is a no-op.
-    fn cycle_store(&mut self) {
-        let stores: Vec<String> = self
-            .candidates
-            .iter()
-            .map(|r| r.store.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        if stores.is_empty() {
-            return;
-        }
-        match &self.selected_store {
-            None => self.selected_store = stores.first().cloned(),
-            Some(current) => {
-                let idx = stores.iter().position(|s| s == current);
-                match idx {
-                    Some(i) if i + 1 < stores.len() => {
-                        self.selected_store = Some(stores[i + 1].clone());
-                    }
-                    _ => self.selected_store = None, // past last → all
-                }
+    pub(crate) fn selected_store(&self) -> Option<&str> {
+        self.selected.map(|index| self.stores[index].0.as_str())
+    }
+
+    pub(crate) fn active_context(&self) -> &Context {
+        &self.ctx
+    }
+
+    pub(crate) fn active_health(&self) -> &StoreHealth {
+        &self.health
+    }
+
+    fn is_project_scope(&self) -> bool {
+        self.project
+            .as_ref()
+            .is_some_and(|(slug, _)| Some(slug.as_str()) == self.selected_store())
+    }
+
+    fn apply_theme(&self) {
+        let index = if self.selected.is_none() {
+            2
+        } else {
+            usize::from(self.is_project_scope())
+        };
+        let _ = theme::set_theme(&self.theme_names[index]);
+    }
+
+    pub(crate) fn restore_store(&mut self, path: &std::path::Path) -> bool {
+        let Some(index) = self.stores.iter().position(|(_, p)| p == path) else {
+            return false;
+        };
+        self.select_store(Some(index));
+        true
+    }
+
+    fn select_store(&mut self, index: Option<usize>) {
+        self.selected = index;
+        if let Some(i) = index {
+            let (slug, path) = &self.stores[i];
+            self.ctx.store.clone_from(path);
+            let project = self.project.as_ref().filter(|(project, _)| project == slug);
+            if path == &self.invocation_store {
+                self.ctx
+                    .recipients_path
+                    .clone_from(&self.invocation_recipients);
+            } else {
+                self.ctx.recipients_path = store::load_store_config(path)
+                    .ok()
+                    .and_then(|cfg| cfg.recipients_path)
+                    .or_else(|| project.and_then(|(_, dir)| dir.clone()));
             }
+        } else {
+            self.ctx.store.clone_from(&self.invocation_store);
+            self.ctx
+                .recipients_path
+                .clone_from(&self.invocation_recipients);
         }
+        self.health = check_store_health(self.active_context());
+        self.apply_theme();
         self.refresh_results();
     }
 
-    /// Return the slug of the "default" store — the one the project config
-    /// names via `default_store`, falling back to the active `ctx.store`.
+    fn cycle_store(&mut self) {
+        if !self.stores.is_empty() {
+            let next = self.selected.map_or(0, |i| i + 1);
+            self.select_store((next < self.stores.len()).then_some(next));
+        }
+    }
+
+    /// The selected checkout, or the invocation's store in All.
     /// Used to decide whether a secret's store cell gets the accent color
     /// (default store) or a distinct `store_color` (non-default store).
     fn default_store_slug(&self) -> String {
-        if let Some(ds) = &self.selected_store {
-            return ds.clone();
+        if let Some(ds) = self.selected_store() {
+            return ds.to_owned();
         }
         crate::cli::search::store_label(&self.ctx.store, &self.ctx)
     }
@@ -776,7 +787,7 @@ impl SearchView {
             Command::SwitchStore => {
                 self.picker = Some(StorePicker::new(
                     &self.ctx.stores_dir(),
-                    self.ctx.store.clone(),
+                    self.active_context().store.clone(),
                 ));
                 return SearchAction::None;
             }
@@ -802,15 +813,13 @@ impl SearchView {
     fn run_sync(&mut self) -> SearchAction {
         use crate::cli::store_ops;
 
-        if let Err(e) = crate::git::pull(&self.ctx.store) {
+        if let Err(e) = crate::git::pull(&self.active_context().store) {
             return SearchAction::CommandFailed(format!("sync pull failed: {e}"));
         }
-        match store_ops::rekey(&self.ctx, None) {
+        match store_ops::rekey(self.active_context(), None) {
             Ok(n) => {
                 self.recollect();
-                let (g, p) = check_store_health_pair(&self.ctx);
-                self.global_health = g;
-                self.project_health = p;
+                self.health = check_store_health(self.active_context());
                 SearchAction::Synced(format!("pulled, {n} secret(s) rekeyed"))
             }
             Err(e) => SearchAction::CommandFailed(format!("sync rekey failed: {e}")),
@@ -819,11 +828,12 @@ impl SearchView {
 
     fn run_rekey(&self) -> SearchAction {
         use crate::cli::store_ops;
-        match store_ops::rekey(&self.ctx, None) {
+        let ctx = self.active_context();
+        match store_ops::rekey(ctx, None) {
             Ok(n) => {
                 let recipients = crate::crypto::age::collect_recipients(
-                    &self.ctx.store,
-                    self.ctx.recipients_path.as_deref(),
+                    &ctx.store,
+                    ctx.recipients_path.as_deref(),
                 )
                 .map(|r| r.len())
                 .unwrap_or(0);
@@ -835,43 +845,34 @@ impl SearchView {
         }
     }
 
-    fn run_join(&mut self) -> SearchAction {
+    pub(crate) fn run_join(&mut self) -> SearchAction {
         use crate::cli::join::JoinOutcome;
         use crate::cli::store_ops;
 
         // The silent core is idempotent and never prints (printing would
         // corrupt ratatui); the chain commits and pushes on success.
-        match store_ops::join(&self.ctx) {
-            Ok(JoinOutcome::AlreadyRecipient) => SearchAction::Joined("already a recipient".into()),
-            Ok(JoinOutcome::Joined(_)) => {
-                let (g, p) = check_store_health_pair(&self.ctx);
-                self.global_health = g;
-                self.project_health = p;
-                SearchAction::Joined("joined as recipient".into())
+        match store_ops::join(self.active_context()) {
+            Ok(outcome) => {
+                self.health = check_store_health(self.active_context());
+                let message = match outcome {
+                    JoinOutcome::AlreadyRecipient => "already a recipient",
+                    JoinOutcome::Joined(_) => "joined as recipient",
+                };
+                SearchAction::Joined(message.into())
             }
             Err(e) => SearchAction::CommandFailed(format!("join failed: {e}")),
         }
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        // Info-mode is always `All` so both health pills render together.
-        // The former Ctrl+I cycle now cycles the store filter instead.
-        let pill: Vec<Span<'static>> = match self.info_mode {
-            InfoMode::User => render_health_pill(InfoMode::User.label(), Some(&self.global_health)),
-            InfoMode::Project => {
-                render_health_pill(InfoMode::Project.label(), self.project_health.as_ref())
-            }
-            InfoMode::All => {
-                let mut spans =
-                    render_health_pill(InfoMode::User.label(), Some(&self.global_health));
-                spans.push(Span::raw("  "));
-                spans.extend(render_health_pill(
-                    InfoMode::Project.label(),
-                    self.project_health.as_ref(),
-                ));
-                spans
-            }
+        let role = if self.is_project_scope() {
+            "project"
+        } else if self.ctx.store == self.invocation_store {
+            "user"
+        } else {
+            "store"
         };
+        let pill = render_health_pill(role, &self.health);
 
         let right_width = span_width(&pill) as u16;
 
@@ -890,17 +891,13 @@ impl SearchView {
             "search",
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        // When a store filter is active (Ctrl+I cycled to a specific store),
-        // show a colored pill next to the view name so the user knows the
-        // list is filtered and which store they're looking at.
-        if let Some(store) = &self.selected_store {
-            left_spans.push(Span::raw("  "));
-            left_spans.extend(theme::pill_with(
-                format!("▸ {store}"),
-                theme::store_color(store),
-                theme::on_accent(),
-            ));
-        }
+        let scope = self.selected_store().unwrap_or("All");
+        left_spans.push(Span::raw("  "));
+        left_spans.extend(theme::pill_with(
+            format!("▸ {scope}"),
+            theme::store_color(scope),
+            theme::on_accent(),
+        ));
         frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
 
         // Right: the active status pill, right-aligned.
@@ -1674,6 +1671,77 @@ mod tests {
     }
 
     #[test]
+    fn store_cycle_tab_depends_on_keyboard_protocol() {
+        let km = KeyMap::default();
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
+        let tab = key(KeyCode::Tab);
+
+        let mut enhanced = SearchView::new(&ctx);
+        let all = enhanced.results.len();
+        enhanced.on_results_key(tab, &km, false);
+        assert_eq!(enhanced.results.len(), all);
+        assert_eq!(enhanced.selected_column, SearchColumn::Updated);
+        enhanced.on_results_key(ctrl('i'), &km, false);
+        let filtered = enhanced.results.len();
+        assert!(filtered < all, "enhanced Ctrl+I must cycle stores");
+        assert!(enhanced.query.is_empty());
+
+        let mut legacy = SearchView::new(&ctx);
+        legacy.on_results_key(tab, &km, true);
+        assert_eq!(
+            legacy.results.len(),
+            filtered,
+            "legacy 0x09 must also cycle"
+        );
+        assert_eq!(legacy.selected_column, SearchColumn::Path);
+        assert!(legacy.query.is_empty());
+
+        // CSI Z is BackTab + SHIFT. It wraps through every visible column.
+        let backtab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        let columns = legacy.visible_columns();
+        for column in columns.iter().rev() {
+            legacy.on_results_key(backtab, &km, true);
+            assert_eq!(legacy.selected_column, *column);
+        }
+        legacy.on_results_key(key(KeyCode::Right), &km, true);
+        assert_eq!(legacy.selected_column, SearchColumn::Updated);
+        legacy.on_results_key(key(KeyCode::Left), &km, true);
+        assert_eq!(legacy.selected_column, SearchColumn::Path);
+        let shifted_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        legacy.on_results_key(shifted_tab, &km, true);
+        assert_eq!(legacy.selected_column, *columns.last().unwrap());
+        assert_eq!(legacy.results.len(), filtered);
+    }
+
+    #[test]
+    fn store_cycle_tab_respects_configured_bindings() {
+        let dir = seeded_multi_store();
+        let ctx = multi_ctx(dir.path());
+        let mut view = SearchView::new(&ctx);
+        let all = view.results.len();
+        let km: KeyMap = serde_yaml::from_str("cycle_store: ['ctrl+u']").unwrap();
+        view.on_results_key(key(KeyCode::Tab), &km, true);
+        assert_eq!(view.results.len(), all);
+        assert_eq!(view.selected_column, SearchColumn::Updated);
+        view.on_results_key(ctrl('u'), &km, true);
+        assert!(view.results.len() < all);
+
+        let km: KeyMap = serde_yaml::from_str("new_secret: [tab]\ncodegen: ['shift+tab']").unwrap();
+        assert!(matches!(
+            view.on_results_key(key(KeyCode::Tab), &km, true),
+            SearchAction::NewSecret
+        ));
+        for code in [KeyCode::Tab, KeyCode::BackTab] {
+            let shift_tab = KeyEvent::new(code, KeyModifiers::SHIFT);
+            assert!(matches!(
+                view.on_results_key(shift_tab, &km, true),
+                SearchAction::OpenOutputs
+            ));
+        }
+    }
+
+    #[test]
     fn tab_and_shift_tab_move_the_selected_column_without_folding() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -2344,33 +2412,23 @@ mod tests {
         let ctx = multi_ctx(dir.path());
         let mut view = SearchView::new(&ctx);
 
-        // Default: no store filter (all stores visible).
-        assert!(view.selected_store.is_none());
+        assert!(view.selected_store().is_none());
+        assert_eq!(view.results.len(), 3);
 
-        // Ctrl+I should cycle to the first store, not touch info_mode.
         view.on_key(ctrl('i'), &km);
+        assert_eq!(view.active_context().store, ctx.store);
         assert!(
-            view.selected_store.is_some(),
-            "ctrl-i should set a store filter"
+            view.results.is_empty(),
+            "the explicit empty checkout is a scope"
         );
-        assert!(view.query.is_empty(), "ctrl-i must not type into query");
-        let first = view.selected_store.clone().unwrap();
-
-        // Second press cycles to the next store.
+        for (slug, count) in [("acme/alpha", 2), ("acme/beta", 1)] {
+            view.on_key(ctrl('i'), &km);
+            assert_eq!(view.selected_store(), Some(slug));
+            assert_eq!(view.results.len(), count);
+        }
         view.on_key(ctrl('i'), &km);
-        assert!(view.selected_store.is_some(), "should be on second store");
-        assert_ne!(
-            view.selected_store.as_deref(),
-            Some(first.as_str()),
-            "should be a different store"
-        );
-
-        // Third press cycles back to "all" (None).
-        view.on_key(ctrl('i'), &km);
-        assert!(
-            view.selected_store.is_none(),
-            "ctrl-i should cycle back to all"
-        );
+        assert!(view.selected_store().is_none());
+        assert_eq!(view.results.len(), 3);
     }
 
     #[test]
@@ -2379,22 +2437,23 @@ mod tests {
         let ctx = multi_ctx(dir.path());
         let mut view = SearchView::new(&ctx);
 
-        // Default: both health pills render (info_mode is always All).
+        // All shows the invocation store's health, not two statuses.
         let rendered = render_view(&mut view, 140, 20);
         assert!(
-            rendered.contains("user:") && rendered.contains("project:"),
-            "header should show both health pills by default:\n{rendered}"
+            rendered.contains("user:") && !rendered.contains("project:"),
+            "expected a single health status:\n{rendered}"
         );
         assert!(
-            !rendered.contains("▸"),
-            "no store filter pill when no filter is active:\n{rendered}"
+            rendered.contains("▸ All"),
+            "expected All as the initial scope:\n{rendered}"
         );
 
-        // Activate store filter via Ctrl+I: a colored pill should appear.
+        // Skip past the explicit empty checkout to the first registered store.
+        view.on_key(ctrl('i'), &KeyMap::default());
         view.on_key(ctrl('i'), &KeyMap::default());
         let rendered = render_view(&mut view, 160, 20);
         assert!(
-            rendered.contains('▸'),
+            rendered.contains("▸ acme/alpha") && !rendered.contains("user:"),
             "header should show store filter pill when active:\n{rendered}"
         );
     }

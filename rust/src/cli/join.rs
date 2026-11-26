@@ -106,15 +106,15 @@ fn default_recipient_name() -> String {
 /// Check whether the user's own pubkey is in the store's recipient list.
 /// Returns `true` if the user IS a recipient (or if the check can't run).
 pub fn is_self_recipient(ctx: &Context) -> bool {
+    if !ctx.store.is_dir() {
+        return true;
+    }
     let Ok(self_pubkey) = read_own_pubkey(ctx) else {
         return true;
     };
     let Ok(recipients) = age::collect_recipients(&ctx.store, ctx.recipients_path.as_deref()) else {
         return true;
     };
-    if recipients.is_empty() {
-        return true;
-    }
     recipients.iter().any(|r| r.to_string() == self_pubkey)
 }
 

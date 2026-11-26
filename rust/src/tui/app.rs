@@ -7,15 +7,19 @@
 //! Search is the root view: Esc quits, every non-search view pops back to a
 //! fresh search view.
 
-use crossterm::event::KeyEvent;
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Clear};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::cli::Context;
 pub use crate::tui::hint::Hint;
 use crate::tui::keymap::{CHORD_TIMEOUT, Dispatch, KeyAction, KeyMap};
+use crate::tui::layout::{CONFIRM_POPUP_HEIGHT, CONFIRM_POPUP_WIDTH, centered_length_rect};
 use crate::tui::theme;
 pub use crate::tui::toast::{Toast, ToastKind};
 use crate::tui::views::help::{HelpAction, HelpView};
@@ -26,6 +30,7 @@ use crate::tui::views::recipient_list::{RecipientListAction, RecipientListView};
 use crate::tui::views::remote_add::{RemoteAddAction, RemoteAddView};
 use crate::tui::views::search::{SearchAction, SearchView};
 use crate::tui::views::secret_viewer::{SecretViewerAction, SecretViewerView};
+use crate::tui::widgets::store_health::StoreHealth;
 
 enum View {
     Search(SearchView),
@@ -84,19 +89,18 @@ pub struct App {
     /// happens to land during a pending chord must not be cleared by
     /// breadcrumb dismissal.
     chord_breadcrumb_active: bool,
-    /// Preserved store filter across `fresh_search()` calls. When the
-    /// user cycles the store filter (Ctrl+I) and then triggers a view
-    /// rebuild (store switch, join, new secret), this carries the
-    /// selected store forward so the filter isn't reset.
-    selected_store: Option<String>,
+    /// Concrete scope to restore when returning from a subview; None means All.
+    subview_store: Option<Context>,
+    /// A declined (or attempted) join shouldn't interrupt this session again.
+    answered_join: HashSet<PathBuf>,
 }
 
 impl App {
     pub fn new(ctx: &Context, keymap: KeyMap, theme: &crate::config::TuiTheme) -> Self {
-        let ctx_owned = clone_ctx(ctx);
         let theme_names = resolve_theme_names(theme);
-        let mut search = SearchView::new(&ctx_owned);
+        let mut search = SearchView::new(ctx);
         search.set_theme_names(theme_names.clone());
+        let ctx_owned = search.active_context().clone();
         Self {
             should_quit: false,
             search_dirty: false,
@@ -110,15 +114,41 @@ impl App {
             pending_chord: Vec::new(),
             pending_chord_deadline: None,
             chord_breadcrumb_active: false,
-            selected_store: None,
+            subview_store: None,
+            answered_join: HashSet::new(),
         }
     }
 
     fn fresh_search(&self) -> SearchView {
         let mut view = SearchView::new(&self.ctx);
         view.set_theme_names(self.theme_names.clone());
-        view.selected_store = self.selected_store.clone();
+        if let Some(ctx) = &self.subview_store {
+            view.restore_store(&ctx.store);
+        }
         view
+    }
+
+    fn open_from_search(&mut self, open: impl FnOnce(&Context) -> View) {
+        if let View::Search(search) = &self.view {
+            let ctx = search.active_context();
+            self.subview_store = search.selected_store().map(|_| ctx.clone());
+            self.view = open(ctx);
+        }
+    }
+
+    fn subview_context(&self) -> &Context {
+        self.subview_store.as_ref().unwrap_or(&self.ctx)
+    }
+
+    fn join_prompt(&self) -> Option<&Context> {
+        let View::Search(search) = &self.view else {
+            return None;
+        };
+        let ctx = search.active_context();
+        (!ctx.store.as_os_str().is_empty()
+            && matches!(search.active_health(), StoreHealth::NotRecipient)
+            && !self.answered_join.contains(&ctx.store))
+        .then_some(ctx)
     }
 
     /// Publish a transient status-line message. Replaces any previous
@@ -150,6 +180,24 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AppIntent> {
+        if let Some(ctx) = self.join_prompt() {
+            match (key.code, key.modifiers) {
+                (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                    self.answered_join.insert(ctx.store.clone());
+                    if let View::Search(search) = &mut self.view {
+                        let outcome = search.run_join();
+                        self.handle_search_action(outcome);
+                    }
+                }
+                (KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter, _) => {
+                    self.answered_join.insert(ctx.store.clone());
+                }
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
+                _ => {}
+            }
+            return None;
+        }
+
         // ── Help overlay intercept (US-012) ────────────────────────────
         // If the overlay is open, route every key to it. Done before
         // chord dispatch so the help overlay can never accidentally
@@ -291,15 +339,12 @@ impl App {
             SearchAction::None => {}
             SearchAction::Quit => self.should_quit = true,
             SearchAction::OpenViewer(r) => {
-                self.view = View::SecretViewer(SecretViewerView::new(
-                    &self.ctx,
-                    r.store,
-                    r.store_path,
-                    r.path,
-                ));
+                self.open_from_search(|ctx| {
+                    View::SecretViewer(SecretViewerView::new(ctx, r.store, r.store_path, r.path))
+                });
             }
             SearchAction::NewSecret => {
-                self.view = View::NewSecret(NewSecretView::new(&self.ctx));
+                self.open_from_search(|ctx| View::NewSecret(NewSecretView::new(ctx)));
                 // Seed the bottom-left hint with the tip for the initial
                 // focus (Path) so the user sees guidance immediately,
                 // before they press any keys.
@@ -310,22 +355,32 @@ impl App {
                 }
             }
             SearchAction::AddRemote => {
-                self.view = View::RemoteAdd(RemoteAddView::new(&self.ctx));
+                self.open_from_search(|ctx| View::RemoteAdd(RemoteAddView::new(ctx)));
             }
             SearchAction::OpenOutputs => {
-                self.view = View::Outputs(OutputsView::new(&self.ctx));
+                self.open_from_search(|ctx| View::Outputs(OutputsView::new(ctx)));
             }
             SearchAction::OpenRecipientList => {
-                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.open_from_search(|ctx| View::RecipientList(RecipientListView::new(ctx)));
             }
             SearchAction::OpenRecipientAdd => {
-                self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
+                self.open_from_search(|ctx| View::RecipientAdd(RecipientAddView::new(ctx)));
             }
             SearchAction::SwitchStore(path) => {
                 let slug = crate::cli::search::store_label(&path, &self.ctx);
-                self.ctx.store = path;
-                self.selected_store = Some(slug.clone());
-                self.view = View::Search(self.fresh_search());
+                if let View::Search(search) = &mut self.view
+                    && !search.restore_store(&path)
+                {
+                    // The picker also accepts paths outside the registered checkouts.
+                    self.ctx.recipients_path = crate::remote::store::load_store_config(&path)
+                        .ok()
+                        .and_then(|cfg| cfg.recipients_path);
+                    self.ctx.store = path;
+                    let mut view = SearchView::new(&self.ctx);
+                    view.set_theme_names(self.theme_names.clone());
+                    view.restore_store(&self.ctx.store);
+                    self.view = View::Search(view);
+                }
                 self.push_toast(format!("switched to {slug}"), ToastKind::Info);
             }
             SearchAction::ShowHelp => {
@@ -470,7 +525,7 @@ impl App {
                 self.view = View::Search(self.fresh_search());
             }
             RecipientListAction::OpenAdd => {
-                self.view = View::RecipientAdd(RecipientAddView::new(&self.ctx));
+                self.view = View::RecipientAdd(RecipientAddView::new(self.subview_context()));
             }
             RecipientListAction::Removed(name) => {
                 // Stay in the list view (it reloaded itself) and confirm.
@@ -489,15 +544,15 @@ impl App {
             RecipientAddAction::Quit => self.should_quit = true,
             RecipientAddAction::Cancel => {
                 // Return to the recipient list so the user stays in context.
-                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.view = View::RecipientList(RecipientListView::new(self.subview_context()));
                 self.push_toast("add recipient cancelled", ToastKind::Info);
             }
             RecipientAddAction::Created(name) => {
-                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.view = View::RecipientList(RecipientListView::new(self.subview_context()));
                 self.push_toast(format!("added recipient {name}"), ToastKind::Success);
             }
             RecipientAddAction::Failed(err) => {
-                self.view = View::RecipientList(RecipientListView::new(&self.ctx));
+                self.view = View::RecipientList(RecipientListView::new(self.subview_context()));
                 self.push_toast(format!("add recipient failed: {err}"), ToastKind::Error);
             }
         }
@@ -550,7 +605,10 @@ impl App {
     /// router updated `ctx.store` after a `SwitchStore` action.
     #[cfg(test)]
     pub fn active_store(&self) -> &std::path::Path {
-        &self.ctx.store
+        match &self.view {
+            View::Search(search) => &search.active_context().store,
+            _ => &self.subview_context().store,
+        }
     }
 
     /// Borrow the active toast for integration-test assertions. `None` once
@@ -674,6 +732,24 @@ impl App {
         if let Some(help) = self.help.as_ref() {
             help.draw(frame);
         }
+        if let Some(ctx) = self.join_prompt() {
+            let area =
+                centered_length_rect(frame.area(), CONFIRM_POPUP_WIDTH, CONFIRM_POPUP_HEIGHT);
+            let store = crate::cli::search::store_label(&ctx.store, ctx);
+            let prompt = Paragraph::new(format!(
+                "You are not a recipient of this store. Join now?\n{store}"
+            ))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::accent()))
+                    .title(" Join store ")
+                    .title_bottom(" ^Y: add and push key   n/Esc: skip "),
+            )
+            .wrap(Wrap { trim: false });
+            frame.render_widget(Clear, area);
+            frame.render_widget(prompt, area);
+        }
     }
 
     /// Build a [`HelpView`] populated with entries for whichever view is
@@ -719,19 +795,6 @@ fn format_pending(events: &[KeyEvent]) -> String {
     KeyChord::from_events(events)
         .map(|c| c.to_string())
         .unwrap_or_default()
-}
-
-fn clone_ctx(ctx: &Context) -> Context {
-    Context {
-        data_dir: ctx.data_dir.clone(),
-        state_dir: ctx.state_dir.clone(),
-        store: ctx.store.clone(),
-        recipients_path: ctx.recipients_path.clone(),
-        key_provider: ctx.key_provider.clone(),
-        project_root: ctx.project_root.clone(),
-        git: ctx.git.clone(),
-        project_config_cell: ctx.project_config_cell.clone(),
-    }
 }
 
 /// Resolve a `TuiTheme` into concrete per-mode theme names (`[user,

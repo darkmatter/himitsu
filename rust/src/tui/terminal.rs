@@ -1,6 +1,7 @@
 //! Terminal setup/teardown with panic-safe restoration.
 
 use std::io::{self, Stdout};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -16,12 +17,41 @@ use crate::error::Result;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
+// The panic hook and drop guard share this state so only one can pop a push.
+const INACTIVE: u8 = 0;
+const LEGACY: u8 = 1;
+const ENHANCED: u8 = 2;
+static KEYBOARD_MODE: AtomicU8 = AtomicU8::new(INACTIVE);
+
+pub(super) fn tab_is_ambiguous() -> bool {
+    // Native Windows key records distinguish VK_TAB from Ctrl+I without CSI-u.
+    cfg!(unix) && KEYBOARD_MODE.load(Ordering::Relaxed) == LEGACY
+}
+
+fn enter_keyboard_mode(supports_enhancements: bool) {
+    let enhanced = supports_enhancements
+        && execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
+    KEYBOARD_MODE.store(if enhanced { ENHANCED } else { LEGACY }, Ordering::Relaxed);
+}
+
+fn leave_keyboard_mode() -> bool {
+    let enhanced = KEYBOARD_MODE.swap(INACTIVE, Ordering::Relaxed) == ENHANCED;
+    if enhanced {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+    enhanced
+}
+
 /// Drop guard that restores the terminal on scope exit.
 pub struct Guard;
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        leave_keyboard_mode();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
@@ -33,7 +63,7 @@ impl Drop for Guard {
 pub fn install() -> Result<Guard> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        leave_keyboard_mode();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         default_hook(info);
@@ -41,13 +71,8 @@ pub fn install() -> Result<Guard> {
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
-    // Distinguish Ctrl+I from Tab (and other C1 ambiguities) on terminals
-    // that speak the CSI-u / Kitty keyboard protocol. No-op on legacy
-    // terminals, which keep collapsing Ctrl+I onto Tab.
-    let _ = execute!(
-        io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    );
+    // Writing a push sequence can succeed even if the terminal ignores it.
+    enter_keyboard_mode(crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false));
     Ok(Guard)
 }
 
@@ -78,7 +103,7 @@ pub fn check_min_size() -> Result<()> {
 pub fn suspend_then<R>(terminal: &mut Tui, f: impl FnOnce() -> R) -> Result<R> {
     // Leave the alternate screen so the child process writes to the real
     // terminal, and drop raw mode so line-editing works.
-    let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    let enhanced = leave_keyboard_mode();
     let _ = disable_raw_mode();
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
@@ -87,10 +112,7 @@ pub fn suspend_then<R>(terminal: &mut Tui, f: impl FnOnce() -> R) -> Result<R> {
     // Re-enter raw mode + alt screen and force a full redraw.
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
-    let _ = execute!(
-        io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    );
+    enter_keyboard_mode(enhanced);
     terminal.clear()?;
     Ok(result)
 }
