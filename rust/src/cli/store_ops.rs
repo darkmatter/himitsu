@@ -162,6 +162,7 @@ mod tests {
             format!("# public key: {public}\n{secret}\n"),
         )
         .unwrap();
+        std::fs::write(data_dir.join("key.pub"), format!("{public}\n")).unwrap();
         std::fs::write(
             rstore::recipients_dir(&store).join("me.pub"),
             format!("{public}\n"),

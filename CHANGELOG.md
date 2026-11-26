@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - `himitsu migrate envs [--dry-run]`: one-shot migration command that:
 - Folds `environment` proto field into `tags` for every secret in the store
 - Rewrites `.himitsu.yaml` `envs:` → `codegen:` with selector translation
@@ -20,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New store-local tag-definition storage API `himitsu::remote::tag_store` (hm-cw1, storage-only): `TagDefinition { description, keys }` persisted at `<store>/.himitsu/tags/<name>.yaml` with `create_tag` (no-clobber), `read_tag` (re-validates on read), `update_tag`/`delete_tag` (missing tag is a `TagNotFound` error), and `list_tags` (sorted; empty when the tags directory is missing). Every function takes an explicit caller-supplied store root — no global-store resolution convention. `keys` are reference strings (never secret values), validated with `crypto::tags::validate_tag` for names (plus `.`/`..`/path-escape rejection) and `reference::ReferenceExpr::parse` for entries; writes are atomic (temp-file + rename). Storage only — no resolver, CLI, TUI, or codegen change; nothing consumes the API yet and `himitsu` runtime behavior is unchanged.
 
 ### Deprecated
+
 - Proto fields `SecretEntry.environment`, `SecretEnvelope.environment`, `StoreManifest.environments`: marked `[deprecated = true]`. Writing these fields is disabled. A follow-up release will replace them with `reserved`. Rollback to a pre-migration binary is NOT supported once secrets have been re-encrypted by the new binary.
 
 ### Fixed
+
+- `himitsu join` now reads `key.pub`, so joining a store no longer requires the private key to be on disk.
 - `himitsu exec` now correctly exits 1 when a selector matches no secrets.
 - All secret-path subcommands (`get`, `read`, `set`, `write`, `ls`, `rekey`, `exec`) now emit `himitsu __complete-paths --fuzzy` in generated shell completions; previously `exec` was explicitly excluded from fuzzy matching

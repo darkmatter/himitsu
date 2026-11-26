@@ -80,18 +80,14 @@ pub(super) fn join_core(ctx: &Context, name: Option<String>) -> Result<JoinOutco
 }
 
 fn read_own_pubkey(ctx: &Context) -> Result<String> {
-    let key_path = ctx.key_path();
-    let contents = std::fs::read_to_string(&key_path).map_err(|_| {
-        HimitsuError::Recipient("no age key found — run `himitsu init` first".into())
+    let key_path = crate::crypto::keystore::pubkey_path(&ctx.data_dir);
+    let contents = std::fs::read_to_string(&key_path).map_err(|e| {
+        HimitsuError::Recipient(format!(
+            "could not read public key at {}: {e}",
+            key_path.display()
+        ))
     })?;
-    for line in contents.lines() {
-        if let Some(rest) = line.strip_prefix("# public key: ") {
-            return Ok(rest.trim().to_string());
-        }
-    }
-    Err(HimitsuError::Recipient(
-        "cannot extract public key from key file".into(),
-    ))
+    Ok(age::parse_recipient(contents.trim())?.to_string())
 }
 
 fn default_recipient_name() -> String {
@@ -128,12 +124,8 @@ mod tests {
         std::fs::create_dir_all(rstore::recipients_dir(&store)).unwrap();
         std::fs::create_dir_all(rstore::secrets_dir(&store)).unwrap();
 
-        let (secret, public) = age::keygen();
-        std::fs::write(
-            data_dir.join("key"),
-            format!("# public key: {public}\n{secret}\n"),
-        )
-        .unwrap();
+        let (_, public) = age::keygen();
+        std::fs::write(data_dir.join("key.pub"), format!("{public}\n")).unwrap();
 
         Context {
             data_dir,
